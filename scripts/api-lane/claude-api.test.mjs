@@ -23,6 +23,7 @@ echo called >> "$STUB_LOG"
 { echo "key_present=$([ -n "\${ANTHROPIC_API_KEY:-}" ] && echo 1 || echo 0)"
   echo "base_url=\${ANTHROPIC_BASE_URL:-}"; echo "oauth=\${CLAUDE_CODE_OAUTH_TOKEN:-}"
   echo "use_bedrock=\${CLAUDE_CODE_USE_BEDROCK:-}"; echo "auth_token=\${ANTHROPIC_AUTH_TOKEN:-}"
+  echo "lq_api=$(env | grep -c '^LQ_API_')"
   echo "lane_on=\${HIMMEL_API_LANE:-}"; echo "scrub=\${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:-}"
   echo "args=$*"; } > "$STUB_ENV"
 printf '%s' "$STUB_OUT"
@@ -87,6 +88,22 @@ test('funded API account proceeds while the native bank is exhausted; child sees
   const row = f.status();
   assert.equal(row.reserved_usd, '0.000000');
   assert.equal(row.spent_est_usd, '0.012345');
+});
+
+test('judge j2229c: the harness hand-off names (LQ_API_*) never reach claude', () => {
+  const f = fixture();
+  const r = f.run(f.good, { LQ_API_KEY: DUMMY, LQ_API_ACCOUNT: 'B', LQ_API_KEY_ID: 'key-b', LQ_API_LANE: 'on' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(f.paths.env, 'utf8'), /^lq_api=0$/m);
+});
+
+test('HIMMEL-5073: the scrub forces default permission mode, so the launcher declares the tools the fixtures need', () => {
+  const f = fixture();
+  assert.equal(f.run().status, 0);
+  const seen = readFileSync(f.paths.env, 'utf8');
+  assert.match(seen, /--allowedTools Read,Edit,Write,Glob,Grep,Bash/);
+  assert.match(seen, /--tools Read,Edit,Write,Glob,Grep,Bash/);
+  assert.match(seen, /--permission-mode plan/);
 });
 
 test('source metadata is preserved in the secret-free launch record', () => {
@@ -191,6 +208,24 @@ test('unverified completion keeps the full reservation as unknown', () => {
   assert.equal(error.status().reserved_usd, '0.100000');
 });
 
+test('judge: bypass flags in any spelling and caller-supplied tool/settings/mcp flags are refused', () => {
+  const f = fixture();
+  const flags = ['--dangerously-skip-permissions=true', '--dangerously-skip-permissions=anything', '--allow-dangerously-skip-permissions=false',
+    '--allowedTools', '--allowedTools=Bash', '--allowed-tools', '--allowed-tools=Bash', '--settings', '--settings={}', '--mcp-config', '--mcp-config=x.json',
+    '--Dangerously-Skip-Permissions=true', '--dangerously_skip_permissions', '--ALLOWEDTOOLS=Bash', '--allowed_tools', '--MCP_CONFIG',
+    '--tools', '--tools=Bash', '--TOOLS=Bash',
+    '--plugin-dir', '--plugin-dir=x', '--plugin_dir', '--add-dir', '--add-dir=x', '@args.txt',
+    '--plugin-url', '--plugin-url=x', '--environment', '--environment=x', '--remote-control', '--remote_control',
+    '--agent', '--agent=x', '--agents', '--agents={}'];
+  for (const flag of flags) {
+    const r = f.run([...f.good, flag, ...(flag.includes('=') ? [] : ['x'])]);
+    assert.equal(r.status, 2, flag);
+    assert.match(r.stderr, /not allowed/, flag);
+  }
+  assert.equal(f.called(), false);
+  assert.equal(f.status().reserved_usd, '0.000000');
+});
+
 test('an argument terminator is refused so the enforced options stay options', () => {
   const f = fixture();
   const r = f.run(['-p', '--', 'x', '--model', 'm', '--permission-mode', 'plan', '--max-budget-usd', '0.10']);
@@ -234,5 +269,7 @@ test('a non-API child is stripped of the key and every lane selector', () => {
   assert.ok(!r.stdout.includes('ANTHROPIC_API_KEY'));
   assert.ok(!r.stdout.includes(DUMMY));
   assert.ok(!/^HIMMEL_API_/m.test(r.stdout));
+  const lq = spawnSync('bash', [STRIP, '--', 'env'], { env: { ...f.env, LQ_API_KEY: DUMMY, LQ_API_ACCOUNT: 'B', LQ_API_KEY_ID: 'k', LQ_API_LANE: 'on' }, encoding: 'utf8' });
+  assert.ok(!/^LQ_API_/m.test(lq.stdout), 'LQ_API_* survived strip-env');
   assert.match(r.stdout, /^PATH=/m);
 });

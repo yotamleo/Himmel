@@ -68,6 +68,11 @@ case "$prompt" in
   *sweep/a.sh*) t=class-sweep ;; *CHANGELOG*) t=guard-cmd ;; *) t=finding-verify ;;
 esac
 bash "$LQ_FAKE_RUN" materialize "$t" "$PWD" --reference >/dev/null
+# HIMMEL-5069 R3: the candidate script dumps its env when acceptance runs it.
+if [ -n "${LQ_FAKE_ACCEPTENV:-}" ]; then
+  { head -n 1 lq-work/cleanup-old.sh; echo "env >\"$LQ_FAKE_ACCEPTENV\""; tail -n +2 lq-work/cleanup-old.sh; } >lq-work/cleanup-old.new
+  mv lq-work/cleanup-old.new lq-work/cleanup-old.sh
+fi
 # Misbehaviour knobs: a candidate that hangs, a commit outside lq-work/, and a
 # bank that runs dry during the agent call.
 [ -z "${LQ_FAKE_HANG:-}" ] || printf '#!/usr/bin/env bash\nsleep 10\n' >lq-work/semver-cmp.sh
@@ -92,6 +97,7 @@ chmod +x "$TMP/bin/claude"
 cat >"$TMP/bin/preflight" <<'FAKE'
 #!/usr/bin/env bash
 echo "bank-preflight: five_hour=${LQ_FAKE_5H:-10.0} seven_day=3.0" >&2
+[ -z "${LQ_FAKE_PFENV:-}" ] || env >>"$LQ_FAKE_PFENV"
 if [ -n "${LQ_FAKE_PROCEED_N:-}" ]; then
   echo x >>"$LQ_FAKE_CALLS"
   [ "$(wc -l <"$LQ_FAKE_CALLS")" -le "$LQ_FAKE_PROCEED_N" ] || { echo SKIPPED-BANK; exit 0; }
@@ -163,19 +169,35 @@ check "new tasks pass acceptance end to end" '[ "$(jq -s "map(.accept_ok) | all"
 
 # HIMMEL-4986: --lane api routes the agent through scripts/api-lane/claude-api.sh with a
 # hard $1 cap in code, no judge, and no subscription OAuth token in the launcher's env.
-cat >"$TMP/bin/claude-api" <<'FAKE'
+# HIMMEL-5069 R4 / judge B1: the api lane takes its launcher from the harness's own location ($HERE/../../api-lane),
+# never from LQ_REPO or LQ_LANE_BIN. The harness is copied into $TMP/tree so a fake launcher can stand where
+# run.sh looks, while LQ_REPO (the git repo) holds a poisoned launcher that must never run.
+TREE="$TMP/tree"; mkdir -p "$TREE/scripts/eval" "$TREE/scripts/lib" "$TREE/scripts/api-lane"
+cp -R "$(dirname "$RUN")" "$TREE/scripts/eval/lane-quality"
+cp -R "$(dirname "$RUN")/../lib" "$TREE/scripts/eval/lib"
+cp "$(dirname "$RUN")/../../lib/native-auth-pin.sh" "$TREE/scripts/lib/native-auth-pin.sh"
+cp "$(dirname "$RUN")/../../api-lane/strip-env.sh" "$TREE/scripts/api-lane/strip-env.sh"
+RUN_API="$TREE/scripts/eval/lane-quality/run.sh"
+cat >"$TREE/scripts/api-lane/claude-api.sh" <<'FAKE'
 #!/usr/bin/env bash
-{ echo "key=${ANTHROPIC_API_KEY:-}"; echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-}"; echo "job=${HIMMEL_API_JOB_ID:-}"; echo "args=$*"; } >>"$LQ_FAKE_APIENV"
+{ echo "key=${ANTHROPIC_API_KEY:-}"; echo "sel=${HIMMEL_API_LANE:-}/${HIMMEL_API_ACCOUNT:-}/${HIMMEL_API_KEY_ID:-}"; echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-}"; echo "job=${HIMMEL_API_JOB_ID:-}"; echo "args=$*"; } >>"$LQ_FAKE_APIENV"
+if [ -n "${LQ_FAKE_FSMON:-}" ]; then # an agent-written core.fsmonitor: git runs it on the harness's next index refresh
+  printf '#!/usr/bin/env bash\nenv >>"%s"\n' "$LQ_FAKE_FSMON" >"$LQ_FAKE_FSMON.sh"; chmod +x "$LQ_FAKE_FSMON.sh"
+  git config core.fsmonitor "$LQ_FAKE_FSMON.sh"
+fi
 [ -z "${LQ_FAKE_API_REFUSE:-}" ] || { echo "claude-api: refused: fake refusal" >&2; exit 2; }
 exec "$LQ_CLAUDE_BIN" "$@"
 FAKE
-chmod +x "$TMP/bin/claude-api"
+chmod +x "$TREE/scripts/api-lane/claude-api.sh"
+mkdir -p "$TMP/repo/scripts/api-lane"
+printf '#!/usr/bin/env bash\ntouch "%s/poison.ran"\nexit 0\n' "$TMP" >"$TMP/repo/scripts/api-lane/claude-api.sh"
+chmod +x "$TMP/repo/scripts/api-lane/claude-api.sh"
 APIENV="$TMP/api.env"; : >"$TMP/fake.log"
 api_run() { # api_run <out> <args...>: the lane env the operator would set, plus a poisoned OAuth token
   local out="$1"; shift
   HIMMEL_API_LANE=on HIMMEL_API_ACCOUNT=B HIMMEL_API_KEY_ID=key-b ANTHROPIC_API_KEY=sk-ant-dummy-0000 \
-    CLAUDE_CODE_OAUTH_TOKEN=oauth-dummy LQ_LANE_BIN="$TMP/bin/claude-api" LQ_FAKE_APIENV="$APIENV" \
-    bash "$RUN" run --lane api --model claude-sonnet-5-5 --out "$out" "$@"
+    CLAUDE_CODE_OAUTH_TOKEN=oauth-dummy LQ_FAKE_APIENV="$APIENV" \
+    bash "$RUN_API" run --lane api --model claude-sonnet-5-5 --out "$out" "$@"
 }
 api_run "$TMP/out-api0" --no-judge --max-usd 1.5 >"$TMP/api0.log" 2>&1
 rc=$?
@@ -187,7 +209,7 @@ api_run "$TMP/out-api2" --no-judge --dry-run --tasks cr-fix,class-sweep >"$TMP/a
 rc=$?
 check "api dry-run exits 0, names the cap and the command, spends nothing" '[ "$rc" -eq 0 ] && grep -q "cap 1 USD" "$TMP/api2.log" && grep -q "claude-api.sh\|claude-api" "$TMP/api2.log" && [ ! -e "$APIENV" ] && [ ! -s "$TMP/fake.log" ] && [ ! -e "$TMP/out-api2/runs.jsonl" ]'
 check "api dry-run never prints the key" '! grep -q "sk-ant-dummy" "$TMP/api2.log"'
-HIMMEL_API_LANE='' bash "$RUN" run --lane api --model m --no-judge --dry-run --out "$TMP/out-api3" >"$TMP/api3.log" 2>&1
+HIMMEL_API_LANE='' bash "$RUN_API" run --lane api --model m --no-judge --dry-run --out "$TMP/out-api3" >"$TMP/api3.log" 2>&1
 rc=$?
 check "api dry-run refuses while the lane is OFF" '[ "$rc" -ne 0 ] && grep -q "OFF" "$TMP/api3.log"'
 api_run "$TMP/out-api4" --no-judge --tasks cr-fix,class-sweep,shell-red-green >"$TMP/api4.log" 2>&1
@@ -205,6 +227,76 @@ rm -f "$APIENV"
 LQ_FAKE_API_REFUSE=1 api_run "$TMP/out-api6" --no-judge --tasks cr-fix,class-sweep >"$TMP/api6.log" 2>&1
 rc=$?
 check "a launcher refusal is recorded as an error and stops the sweep" '[ "$(wc -l <"$TMP/out-api6/runs.jsonl" | tr -d " ")" = 1 ] && [ "$(jq -s ".[0].is_error" "$TMP/out-api6/runs.jsonl")" = true ] && grep -q "unknown" "$TMP/api6.log"'
+
+# HIMMEL-5069 R3: acceptance runs agent-written code; the API key must not be in its environment.
+ACCENV="$TMP/accept.env"; rm -f "$ACCENV" "$APIENV"
+LQ_FAKE_ACCEPTENV="$ACCENV" api_run "$TMP/out-api7" --no-judge --tasks cr-fix >"$TMP/api7.log" 2>&1
+check "acceptance code ran (the env dump exists)" '[ -s "$ACCENV" ]'
+check "acceptance runs without ANTHROPIC_API_KEY and the lane selectors" '[ -s "$ACCENV" ] && ! grep -q "^ANTHROPIC_API_KEY=" "$ACCENV" && ! grep -q "^HIMMEL_API_" "$ACCENV"'
+# judge: accept.sh's direct parent (the timeout wrapper) must not carry the key either, so strip-env runs outside it.
+mkdir -p "$TMP/tbin"; REALTIMEOUT="$(command -v timeout)"
+printf '#!/usr/bin/env bash\ncase "$*" in *accept.sh*) env >"%s/timeout.env" ;; esac\nexec "%s" "$@"\n' "$TMP" "$REALTIMEOUT" >"$TMP/tbin/timeout"; chmod +x "$TMP/tbin/timeout"
+rm -f "$TMP/timeout.env"
+PATH="$TMP/tbin:$PATH" api_run "$TMP/out-api7b" --no-judge --tasks cr-fix >"$TMP/api7b.log" 2>&1
+check "accept.sh's timeout parent carries no API key or lane selector" '[ -s "$TMP/timeout.env" ] && ! grep -q "^ANTHROPIC_API_KEY=" "$TMP/timeout.env" && ! grep -q "^HIMMEL_API_" "$TMP/timeout.env"'
+# HIMMEL-5069 R4: LQ_LANE_BIN must not replace the launcher on the api lane.
+printf '#!/usr/bin/env bash\ntouch "%s/poison.ran"\nexit 0\n' "$TMP" >"$TMP/bin/poison"; chmod +x "$TMP/bin/poison"
+rm -f "$APIENV" "$TMP/poison.ran"
+LQ_LANE_BIN="$TMP/bin/poison" api_run "$TMP/out-api8" --no-judge --tasks cr-fix >"$TMP/api8.log" 2>&1
+check "LQ_LANE_BIN does not replace the api launcher" '[ ! -e "$TMP/poison.ran" ] && [ -s "$APIENV" ]'
+# judge B1: LQ_REPO pointing at a tree with its own launcher must not run that launcher.
+rm -f "$APIENV" "$TMP/poison.ran"
+api_run "$TMP/out-api9" --no-judge --tasks cr-fix >"$TMP/api9.log" 2>&1
+check "LQ_REPO's launcher never runs on the api lane" '[ ! -e "$TMP/poison.ran" ] && [ -s "$APIENV" ]'
+
+# judge B1 class sweep: the bank preflight (a LQ_PREFLIGHT / LQ_REPO-selected script) runs on the api lane too,
+# so it must not hold the key either.
+rm -f "$TMP/pf.env"
+LQ_FAKE_PFENV="$TMP/pf.env" api_run "$TMP/out-api10" --no-judge --tasks cr-fix >"$TMP/api10.log" 2>&1
+check "the bank preflight runs without the API key and lane selectors on the api lane" '[ -s "$TMP/pf.env" ] && ! grep -q "^ANTHROPIC_API_KEY=" "$TMP/pf.env" && ! grep -q "^HIMMEL_API_" "$TMP/pf.env"'
+
+# judge B2: run.sh's own git calls (worktree add, the fixture commit, git add -A) fire hooks in an LQ_REPO-selected
+# repo and an agent-written core.fsmonitor, so the key and lane selectors must not be in run.sh's environment at all.
+rm -f "$TMP/hook.env" "$TMP/fsmon.env" "$APIENV"
+mkdir -p "$TMP/repo/.git/hooks"  # a git built without templates (CI) has no hooks dir
+for h in post-checkout reference-transaction post-index-change post-commit; do
+  printf '#!/usr/bin/env bash\nenv >>"%s"\n' "$TMP/hook.env" >"$TMP/repo/.git/hooks/$h"; chmod +x "$TMP/repo/.git/hooks/$h"
+done
+LQ_FAKE_FSMON="$TMP/fsmon.env" api_run "$TMP/out-api11" --no-judge --tasks cr-fix >"$TMP/api11.log" 2>&1
+for h in post-checkout reference-transaction post-index-change post-commit; do rm -f "$TMP/repo/.git/hooks/$h"; done
+git -C "$TMP/repo" config --unset core.fsmonitor 2>/dev/null
+check "a hook in LQ_REPO sees no API key or lane selector from run.sh's git calls" '[ -s "$TMP/hook.env" ] && ! grep -q "^ANTHROPIC_API_KEY=\|^HIMMEL_API_" "$TMP/hook.env"'
+check "an agent-written core.fsmonitor sees no API key or lane selector" '[ -s "$TMP/fsmon.env" ] && ! grep -q "^ANTHROPIC_API_KEY=\|^HIMMEL_API_" "$TMP/fsmon.env"'
+check "the launcher still receives the key and selectors" 'grep -q "^key=sk-ant-dummy-0000$" "$APIENV" && grep -q "^sel=on/B/key-b$" "$APIENV"'
+
+# judge j2229c B1: run.sh's base-sha check is a git call on LQ_REPO; in a partial clone a missing object makes git run
+# the repo's core.sshCommand (a lazy fetch), so the key must be out of the environment before ANY git call on the repo.
+LZ="$TMP/lzrepo"; rm -f "$TMP/lz.env"
+git init -q "$LZ"; echo a >"$LZ/a"
+git -C "$LZ" -c user.name=t -c user.email=t@t add -A
+git -C "$LZ" -c user.name=t -c user.email=t@t commit -qm base
+git -C "$LZ" config core.repositoryformatversion 1
+git -C "$LZ" config extensions.partialClone origin
+git -C "$LZ" config remote.origin.url ssh://evil.invalid/x.git
+git -C "$LZ" config remote.origin.promisor true
+printf '#!/usr/bin/env bash\nenv >>"%s"\nexit 1\n' "$TMP/lz.env" >"$TMP/lzssh"; chmod +x "$TMP/lzssh"
+git -C "$LZ" config core.sshCommand "$TMP/lzssh"
+LQ_REPO="$LZ" LQ_BASE_SHA=1111111111111111111111111111111111111111 api_run "$TMP/out-lz1" --no-judge --dry-run --tasks cr-fix >"$TMP/lz1.log" 2>&1
+check "a partial-clone lazy fetch from the base-sha check sees no API key or lane selector" '[ -s "$TMP/lz.env" ] && ! grep -q "^ANTHROPIC_API_KEY=\|^HIMMEL_API_" "$TMP/lz.env"'
+
+# judge j2229c B2: an exported LQ_API_KEY (even empty) on entry must not stay exported: hooks, the preflight and
+# accept.sh would inherit it.
+for v in "" leak-lq-key; do
+  rm -f "$TMP/hook.env" "$TMP/pf.env" "$ACCENV" "$APIENV"
+  for h in post-checkout reference-transaction; do
+    printf '#!/usr/bin/env bash\nenv >>"%s"\n' "$TMP/hook.env" >"$TMP/repo/.git/hooks/$h"; chmod +x "$TMP/repo/.git/hooks/$h"
+  done
+  LQ_API_KEY="$v" LQ_API_ACCOUNT="$v" LQ_API_KEY_ID="$v" LQ_FAKE_PFENV="$TMP/pf.env" LQ_FAKE_ACCEPTENV="$ACCENV" \
+    api_run "$TMP/out-lq1" --no-judge --tasks cr-fix >"$TMP/lq1.log" 2>&1
+  for h in post-checkout reference-transaction; do rm -f "$TMP/repo/.git/hooks/$h"; done
+  check "an inherited exported LQ_API_KEY ('$v') reaches no hook, preflight or acceptance code" '[ -s "$TMP/hook.env" ] && [ -s "$TMP/pf.env" ] && [ -s "$ACCENV" ] && ! grep -q "^LQ_API_" "$TMP/hook.env" "$TMP/pf.env" "$ACCENV"'
+  check "the launcher still receives the key after an inherited LQ_API_KEY ('$v')" 'grep -q "^key=sk-ant-dummy-0000$" "$APIENV"'
+done
 
 # HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
 printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"

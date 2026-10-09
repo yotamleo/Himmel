@@ -35,10 +35,20 @@ PRINT=0 MODE="" MODEL="" BUDGET="" FORMAT=""
 ARGS=()
 while [ "$#" -gt 0 ]; do
   a="$1"; shift
+  # any spelling of a bypass flag (=true, =anything, any case, _ for -), and every caller-supplied tool list, settings,
+  # MCP, plugin, extra-directory, remote or agent-definition source: the launcher's own --tools/--allowedTools are the
+  # only tool flags claude may see. A @file argument is an args file, which could carry any of them. This denylist is a
+  # stopgap; a caller-flag allowlist is the durable shape (follow-up ticket).
+  case "$a" in -*) n="$(printf '%s' "${a%%=*}" | tr 'A-Z_' 'a-z-')" ;; *) n="" ;; esac
+  case "$n" in
+    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--allowedtools|--allowed-tools|--tools|--settings|--mcp-config|--plugin-dir|--add-dir|--plugin-url|--environment|--remote-control|--agent|--agents)
+      refuse "flag ${a%%=*} is not allowed on the api lane" ;;
+  esac
+  case "$a" in @*) refuse "an @argsfile argument is not allowed on the api lane" ;; esac
   case "$a" in
     -p|--print) PRINT=1; ARGS+=("$a"); continue ;;
     --) refuse "the -- argument terminator would turn the enforced options into positionals" ;;
-    --bg|--background|--cloud|--daemon|--dangerously-skip-permissions|--allow-dangerously-skip-permissions) # t13b-ok: refuses the flag, starts no service
+    --bg|--background|--cloud|--daemon) # t13b-ok: refuses the flag, starts no service
       refuse "flag $a is not allowed on the api lane" ;;
     --permission-mode|--model|--max-budget-usd|--output-format)
       [ "$#" -gt 0 ] || refuse "$a needs a value"
@@ -84,6 +94,13 @@ BANK_VERDICT="$(env -u CLAUDE_CODE_OAUTH_TOKEN CADENCE_BANK_LANE=api CADENCE_BAN
   bash "$REPO/scripts/lib/bank-preflight.sh")" || BANK_VERDICT=BANK-UNKNOWN
 [ "$BANK_VERDICT" = "PROCEED" ] || refuse "api bank gate said $BANK_VERDICT"
 
+# HIMMEL-5073: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (what keeps the key out of Bash-tool children) forces
+# permission mode "default" whatever --permission-mode a caller passes (the eval passes auto), and in -p that
+# denies Edit/Write/Bash unless declared here. The scrub is the bwrap sandbox, so it cannot be dropped; this
+# allowance is the fixture-work tool set, the sandbox bounds Bash, and callers cannot add to or replace it.
+# --allowedTools only preapproves; --tools is what limits the tools claude may use at all.
+ALLOWED_TOOLS="Read,Edit,Write,Glob,Grep,Bash"
+
 OUT="$(mktemp "${TMPDIR:-/tmp}/claude-api-out.XXXXXX")" || refuse "no scratch file"
 trap 'rm -f "$OUT"' EXIT
 
@@ -96,9 +113,10 @@ case "$RESERVED" in *'"verdict":"PROCEED"'*) ;; *) refuse "reservation refused: 
 # headless-claude-ok: HIMMEL-4985 one-shot API-credit launch; bank gate, reservation and explicit --permission-mode above
 env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_PROFILE -u ANTHROPIC_FEDERATION_RULE_ID \
   -u ANTHROPIC_ORGANIZATION_ID -u ANTHROPIC_AUTH_TOKEN -u HIMMEL_API_LANE -u HIMMEL_API_KEY_ID \
+  -u LQ_API_KEY -u LQ_API_ACCOUNT -u LQ_API_KEY_ID -u LQ_API_LANE \
   ANTHROPIC_BASE_URL=https://api.anthropic.com CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
   "$CLAUDE_BIN" "${ARGS[@]}" --model "$MODEL" --permission-mode "$MODE" \
-  --max-budget-usd "$BUDGET" --output-format json >"$OUT"
+  --tools "$ALLOWED_TOOLS" --allowedTools "$ALLOWED_TOOLS" --max-budget-usd "$BUDGET" --output-format json >"$OUT"
 RC=$?
 
 # --- settle on verified cost, otherwise keep the reservation as unknown ---

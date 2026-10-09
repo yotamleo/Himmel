@@ -56,6 +56,15 @@
 # $1, enforced here; the launcher also reserves each call's budget in its ledger).
 # The native bank is read for the record but never gates an api run. --dry-run
 # checks all of that and prints the plan and the command, spending nothing.
+# Known limits (HIMMEL-5069), accepted and documented:
+#  R1 the $1 cap is per sweep; the ledger's cap_usd for the account is the bound across sweeps.
+#  R2 --max-budget-usd is checked between turns, so one call can overshoot by up to one turn.
+#  R5 a model name containing [ is refused by the launcher (fails closed); use the plain id.
+# On the api lane LQ_LANE_BIN and LQ_REPO never pick the launcher (it is always the claude-api.sh beside
+# this harness), and acceptance runs with the API key and lane selectors removed from its environment
+# (strip-env outside timeout). This run.sh process itself still holds the key, so same-user /proc reads of it
+# remain an OS-layer exposure that belongs to the sandbox half of HIMMEL-5073.
+# The scrub in the launcher is the bwrap sandbox: where bwrap cannot mount (HIMMEL-5073), the agent has no Bash.
 #
 # Output: <out>/runs.jsonl (one JSON row per task) plus per-task logs, under
 # ~/.himmel/eval/lane-quality/<run-id>/ by default.
@@ -116,7 +125,12 @@ redact() {
 
 bank_read() { # prints "<token> <five_hour>"
   local out tok five
-  out="$("$PREFLIGHT" 2>&1)"
+  # the preflight path is env-selectable (LQ_PREFLIGHT, LQ_REPO): on the api lane it runs without the key
+  if [ "${LANE:-}" = api ]; then
+    out="$(bash "$HERE/../../api-lane/strip-env.sh" -- "$PREFLIGHT" 2>&1)"
+  else
+    out="$("$PREFLIGHT" 2>&1)"
+  fi
   tok="$(printf '%s\n' "$out" | grep -Eo '^(PROCEED|SKIPPED-[A-Z]+|BANK-[A-Z]+)$' | tail -1)"
   five="$(printf '%s\n' "$out" | sed -n 's/.*five_hour=\([0-9.?]*\).*/\1/p' | tail -1)"
   echo "${tok:-BANK-UNKNOWN} ${five:-?}"
@@ -258,7 +272,8 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
       export HIMMEL_API_JOB_ID="lq-$RUN_ID-$stem"
       # headless-claude-ok: HIMMEL-4986 lane-quality api agent run, launcher bank gate and ledger reservation, explicit permission mode, budget-capped
       # launch-profile-ok: HIMMEL-4986 the eval measures the lane's own default config, not a leg profile
-      timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
+      ANTHROPIC_API_KEY="$LQ_API_KEY" HIMMEL_API_LANE="$LQ_API_LANE" HIMMEL_API_ACCOUNT="$LQ_API_ACCOUNT" HIMMEL_API_KEY_ID="$LQ_API_KEY_ID" \
+        timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
         --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
       exit $?
     fi
@@ -283,7 +298,9 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
   tr=""
   [ -n "$sid" ] && tr="$(find "$TRANSCRIPTS" -name "$sid.jsonl" -print 2>/dev/null | head -1)"
   metrics="$(transcript_metrics "$tr" "$OUT/$stem.report.md")"
-  timeout "$TIMEOUT" bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$stem.accept.log" 2>&1; acc_rc=$?
+  # HIMMEL-5069 R3: acceptance runs agent-written code, so the API key and lane selectors are removed first.
+  # strip-env runs outside timeout, so the direct parent of accept.sh never carried the key either.
+  bash "$HERE/../../api-lane/strip-env.sh" -- timeout "$TIMEOUT" bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$stem.accept.log" 2>&1; acc_rc=$?
   acc_line="$(grep -E '^accept: [0-9]+/[0-9]+$' "$OUT/$stem.accept.log" | tail -1)"
   # Staged against the fixture commit, so a file the agent committed counts too.
   git -C "$wt" add -A
@@ -334,14 +351,14 @@ API_PILOT_CAP=1  # HIMMEL-4986: the most one api sweep may be given, in USD
 # api_dry_run <tasks>: every check an api sweep makes before it spends, plus the
 # plan and the exact command. Spends nothing, starts nothing, prints no key.
 api_dry_run() {
-  [ "${HIMMEL_API_LANE:-}" = on ] || die "api lane is OFF (set HIMMEL_API_LANE=on)"
-  case "${HIMMEL_API_ACCOUNT:-}" in A|B) ;; *) die "HIMMEL_API_ACCOUNT must be A or B" ;; esac
-  [ -n "${HIMMEL_API_KEY_ID:-}" ] || die "HIMMEL_API_KEY_ID is absent"
-  [ -n "${ANTHROPIC_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is absent"
+  [ "${LQ_API_LANE:-}" = on ] || die "api lane is OFF (set HIMMEL_API_LANE=on)"
+  case "${LQ_API_ACCOUNT:-}" in A|B) ;; *) die "HIMMEL_API_ACCOUNT must be A or B" ;; esac
+  [ -n "${LQ_API_KEY_ID:-}" ] || die "HIMMEL_API_KEY_ID is absent"
+  [ -n "${LQ_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is absent"
   [ -x "$AGENT_BIN" ] || die "launcher '$AGENT_BIN' is not executable"
   local n; n="$(printf '%s' "$1" | tr ',' '\n' | grep -c .)"
   echo "lane-quality: api dry-run (nothing launched, nothing spent)"
-  echo "  account $HIMMEL_API_ACCOUNT, key id $HIMMEL_API_KEY_ID, model $MODEL${EFFORT:+, effort $EFFORT}"
+  echo "  account $LQ_API_ACCOUNT, key id $LQ_API_KEY_ID, model $MODEL${EFFORT:+, effort $EFFORT}"
   echo "  tasks ($n x $REPS reps): $1 from $TASKS at $BASE_SHA"
   echo "  cap $MAX_USD USD for the sweep (ceiling $API_PILOT_CAP); each call gets the remainder as --max-budget-usd"
   echo "  command: $AGENT_BIN -p <task prompt> --model $MODEL --permission-mode auto --output-format json --max-budget-usd <remainder>${EFFORT:+ --effort $EFFORT}"
@@ -404,6 +421,14 @@ cmd_run() {
   case "$LANE" in
     native|openrouter) ;;
     api)
+      # judge B2/j2229c: the key and lane selectors leave this process's environment before init_env and before any git
+      # call on REPO: its hooks, a partial-clone lazy fetch (core.sshCommand), the preflight and agent-written git config
+      # all run inside run.sh's own calls. They are held in unexported LQ_API_* variables (unset first, so an inherited
+      # exported one does not stay exported) and handed only to the launcher invocation line.
+      unset LQ_API_KEY LQ_API_ACCOUNT LQ_API_KEY_ID LQ_API_LANE
+      LQ_API_KEY="${ANTHROPIC_API_KEY:-}"; LQ_API_ACCOUNT="${HIMMEL_API_ACCOUNT:-}"
+      LQ_API_KEY_ID="${HIMMEL_API_KEY_ID:-}"; LQ_API_LANE="${HIMMEL_API_LANE:-}"
+      unset ANTHROPIC_API_KEY HIMMEL_API_LANE HIMMEL_API_ACCOUNT HIMMEL_API_KEY_ID
       # HIMMEL-4986: the cap and the no-judge rule are code, not convention.
       [ "$NO_JUDGE" -eq 1 ] || die "--lane api needs --no-judge (the judge runs native and would draw the subscription bank)"
       MAX_USD="${MAX_USD:-$API_PILOT_CAP}"
@@ -447,7 +472,10 @@ cmd_run() {
     echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
   fi
   if [ "$LANE" = api ]; then
-    AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/api-lane/claude-api.sh}"
+    # HIMMEL-5069 R4: the launcher comes from this script's own location, never from LQ_LANE_BIN or LQ_REPO
+    # (REPO is only the git repo the worktrees are cut from). The key left this process's environment in the api arm
+    # of the lane case above, before any git call on REPO, and is given only to the launcher invocation line.
+    AGENT_BIN="$(cd "$HERE/../../api-lane" && pwd)/claude-api.sh"
   fi
   if [ "$LANE" = claudex ]; then
     # The claudex launcher wraps claude, so -p and --output-format json work
