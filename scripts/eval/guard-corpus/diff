@@ -660,7 +660,10 @@ def main(argv):
         # fine), so read the tree once, serially and unbounded, before the pool.
         # ponytail: warms the page cache, does not remove the per-launch scan;
         # the upgrade path is one mask list per run (HIMMEL-5055).
-        for root in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
+        # A one-row corpus has no later rows to protect and the walk counts
+        # against its wall time (the bg-child test times a one-row run).
+        for root in (("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
+                     if len(corpus) > 1 else ()):
             for dirpath, dirnames, filenames in os.walk(root):
                 for name in dirnames + filenames:
                     try:
