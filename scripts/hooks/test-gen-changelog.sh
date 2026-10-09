@@ -418,6 +418,32 @@ run_test "HIMMEL-2379: TERM while git hangs exits promptly and removes the temp 
   ! ls "$TMPDIR"/gen-changelog.* >/dev/null 2>&1
 '
 
+# HIMMEL-2379 (CR codex-1): the hung git can sit several shells deep -- the tag
+# filter runs git inside a process-substitution pipeline -- so killing only
+# generate()'s direct children left it running after the script exited.
+run_test "HIMMEL-2379: TERM while a NESTED git hangs also kills the git process" '
+  setup_slow_merge_base && cd "$R" || exit 1;
+  export TMPDIR="$R/tmp";
+  {
+    printf "#!/usr/bin/env bash\n";
+    printf "for a in \"\$@\"; do [ \"\$a\" = \"--is-ancestor\" ] && { echo \$\$ > \"%s/stub.pid\"; exec sleep 86400; }; done\n" "$R";
+    printf "exec %s \"\$@\"\n" "$(command -v git)";
+  } > "$R/shim/git";
+  PATH="$R/shim:$PATH" bash "$GEN" >/dev/null 2>&1 &
+  pid=$!;
+  for _ in $(seq 1 60); do [ -s "$R/stub.pid" ] && break; sleep 0.1; done;
+  stub=$(cat "$R/stub.pid" 2>/dev/null);
+  [ -n "$stub" ] || { kill "$pid" 2>/dev/null; exit 1; };
+  kill -TERM "$pid" 2>/dev/null;
+  dead=0;
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$stub" 2>/dev/null; then dead=1; break; fi;
+    sleep 0.1;
+  done;
+  kill -KILL "$pid" $stub 2>/dev/null;
+  [ "$dead" -eq 1 ]
+'
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

@@ -36,11 +36,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # wedged `git` kept the script alive and the temp files leaked despite the traps
 # above (HIMMEL-2379). generate() therefore runs in the background and the main
 # shell only `wait`s on it -- `wait` is interrupted by a trapped signal at once --
-# and the EXIT trap kills that job (and its current child) before removing files.
+# and the EXIT trap kills that job's process tree before removing files.
+# The wedged git can sit several shells deep (the tag filter runs it inside a
+# process-substitution pipeline), so the whole tree under the job is killed.
+kill_tree() {
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null || true); do kill_tree "$c"; done
+    kill "$1" 2>/dev/null || true
+}
 tmp=""
 mb_err_file=""
 gen_pid=""
-trap '[ -z "$gen_pid" ] || { pkill -TERM -P "$gen_pid" 2>/dev/null || true; kill "$gen_pid" 2>/dev/null || true; }; rm -f -- "$tmp" "$mb_err_file"' EXIT
+trap '[ -z "$gen_pid" ] || kill_tree "$gen_pid"; rm -f -- "$tmp" "$mb_err_file"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 # shellcheck disable=SC1091
