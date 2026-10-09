@@ -281,6 +281,42 @@ check "admission lock with no pid file is reclaimed (dispatch succeeds)" "0" "$R
 rm -f "$LIVE_DIR"/*.json
 rm -rf "$LIVE_DIR/.admission.lock" 2>/dev/null || true
 
+# --- 13b (HIMMEL-2196): two reclaimers that both saw the SAME stale lock must
+# not both enter admission. Sequenced with the HIMMEL_HEADLESS_SEAM_DIR seam,
+# not timers: both park after their stale verdict; A is released, reclaims and
+# parks holding the fresh lock; B is then released with a verdict that is now
+# out of date. B must not delete A's live lock, so only ONE admits.
+SEAM="$W/seam13b"; mkdir -p "$SEAM"
+mkdir -p "$LIVE_DIR/.admission.lock"
+printf '999999999' > "$LIVE_DIR/.admission.lock/pid"
+ART13B_A="$W/artifact13b-a.txt"; ART13B_B="$W/artifact13b-b.txt"
+HIMMEL_HEADLESS_SEAM_DIR="$SEAM" run_sut "$FAKE_OK" "$ART13B_A" >/dev/null 2>&1 &
+PID13B_A=$!
+HIMMEL_HEADLESS_SEAM_DIR="$SEAM" run_sut "$FAKE_OK" "$ART13B_B" >/dev/null 2>&1 &
+PID13B_B=$!
+seam_wait() { # $1 = glob, $2 = count wanted, $3 = max tenths of a second
+  local n=0
+  # shellcheck disable=SC2086  # $1 is a glob, expanded on purpose
+  while [ "$(ls $1 2>/dev/null | wc -l | tr -d ' ')" -lt "$2" ] && [ "$n" -lt "$3" ]; do
+    n=$((n + 1)); sleep 0.1
+  done
+}
+seam_wait "$SEAM/stale-verdict.*.arrived" 2 150
+SV13B="$(ls "$SEAM"/stale-verdict.*.arrived 2>/dev/null | sed -e 's/.*stale-verdict\.//' -e 's/\.arrived$//' | sort -n)"
+SV_A="$(printf '%s\n' "$SV13B" | sed -n 1p)"
+SV_B="$(printf '%s\n' "$SV13B" | sed -n 2p)"
+check "two reclaimers both reached their stale verdict" "2" "$(printf '%s\n' "$SV13B" | grep -c .)"
+: > "$SEAM/stale-verdict.$SV_A.go"
+seam_wait "$SEAM/admitted.*.arrived" 1 100
+: > "$SEAM/stale-verdict.$SV_B.go"
+seam_wait "$SEAM/admitted.*.arrived" 2 30
+check "only one of two stale-lock reclaimers enters admission" "1" "$(ls "$SEAM"/admitted.*.arrived 2>/dev/null | wc -l | tr -d ' ')"
+for P in $SV_A $SV_B; do : > "$SEAM/admitted.$P.go"; done
+wait "$PID13B_A" "$PID13B_B" 2>/dev/null
+check "no reclaim-intent lock is left behind" "no" "$([ -e "$LIVE_DIR/.admission.lock.reclaim" ] && echo yes || echo no)"
+rm -f "$LIVE_DIR"/*.json
+rm -rf "$LIVE_DIR/.admission.lock" "$LIVE_DIR/.admission.lock.reclaim" 2>/dev/null || true
+
 # --- 14: --settings must reach the claude invocation in Windows-form, not
 # the bare POSIX path a caller naturally builds from $W (RETASK gV2t9-4478 /
 # same MSYS_NO_PATHCONV=1-affects-every-argv-element class as the --settings

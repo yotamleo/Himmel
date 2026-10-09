@@ -173,9 +173,64 @@ LIVE_DIR="$(registry_dir)/live"
 # across the claude invocation itself — that would serialize dispatches
 # entirely and defeat the point of a concurrency cap > 1.
 ADMISSION_LOCK="$LIVE_DIR/.admission.lock"
+RECLAIM_LOCK="$ADMISSION_LOCK.reclaim"
 LOCK_HELD=0
+# HIMMEL-2196 test seam: inert unless HIMMEL_HEADLESS_SEAM_DIR is set. Marks
+# `<name>.<pid>.arrived` there, then blocks (bounded) until the test creates
+# `<name>.<pid>.go`, so two reclaimers can be sequenced without racing timers.
+seam() {
+  local n=0
+  # No `return` on the hot path: HIMMEL-4459 shadows `return` and this runs
+  # on every dispatch.
+  if [ -n "${HIMMEL_HEADLESS_SEAM_DIR:-}" ]; then
+    : > "$HIMMEL_HEADLESS_SEAM_DIR/$1.$$.arrived"
+    while [ ! -e "$HIMMEL_HEADLESS_SEAM_DIR/$1.$$.go" ] && [ "$n" -lt 300 ]; do
+      n=$((n + 1)); sleep 0.1 2>/dev/null || sleep 1
+    done
+  fi
+}
+# A lock dir is stale when its recorded owner is gone or never recorded. An
+# empty pid is re-read once after a beat: a lock mkdir'd a moment ago has no
+# pid yet, and must not be mistaken for a dead one.
+lock_is_stale() {
+  local pid
+  pid="$(cat "$ADMISSION_LOCK/pid" 2>/dev/null || true)"
+  if [ -z "$pid" ]; then
+    sleep 0.2 2>/dev/null || sleep 1
+    pid="$(cat "$ADMISSION_LOCK/pid" 2>/dev/null || true)"
+  fi
+  [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null
+}
+# HIMMEL-2196: removal of a stale lock is serialized by a reclaim-intent lock
+# (a sibling dir) and re-verified under it, so a reclaimer that lost the race
+# cannot delete the lock a winner just re-acquired. Contended -> do nothing;
+# the caller keeps polling.
+reclaim_stale_lock() {
+  mkdir "$RECLAIM_LOCK" 2>/dev/null || return 0
+  printf '%s' "$$" > "$RECLAIM_LOCK/pid" 2>/dev/null || true
+  if [ -d "$ADMISSION_LOCK" ] && lock_is_stale; then
+    echo "claude-headless.sh: admission lock held by dead/unrecorded pid — reclaiming stale lock" >&2
+    rm -rf "$ADMISSION_LOCK" 2>/dev/null || true
+  fi
+  rm -rf "$RECLAIM_LOCK" 2>/dev/null || true
+}
+# A reclaimer that died holding the reclaim lock would block every future
+# reclaim. Take it by atomic rename (only one mover wins), and put it back if
+# what was moved is not the dead/empty owner we observed.
+steal_stale_reclaim_lock() {
+  local seen moved="$RECLAIM_LOCK.dead.$$"
+  [ -d "$RECLAIM_LOCK" ] || return 0
+  seen="$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)"
+  if [ -n "$seen" ] && kill -0 "$seen" 2>/dev/null; then return 0; fi
+  mv "$RECLAIM_LOCK" "$moved" 2>/dev/null || return 0
+  if [ "$(cat "$moved/pid" 2>/dev/null || true)" = "$seen" ]; then
+    rm -rf "$moved" 2>/dev/null || true
+  else
+    mv -n "$moved" "$RECLAIM_LOCK" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
+  fi
+}
 lock_acquire() {
-  local tries=0 stale_checked=0 holder_pid
+  local tries=0 stale_checked=0 marker_checked=0
   while ! mkdir "$ADMISSION_LOCK" 2>/dev/null; do
     tries=$((tries + 1))
     # codex-4: a bare mkdir-lock with no owner record blocks EVERY future
@@ -186,29 +241,30 @@ lock_acquire() {
     # contended, not stale) case.
     if [ "$tries" -eq 20 ] && [ "$stale_checked" = "0" ]; then
       stale_checked=1
-      holder_pid="$(cat "$ADMISSION_LOCK/pid" 2>/dev/null || true)"
       # codex-3 (round 4): an EMPTY/unreadable pid file (the write below
-      # failed, or the holder crashed before writing it) must also count as
-      # reclaimable — requiring a non-empty holder_pid meant a lock that
-      # never got a valid owner recorded could never be classified as
-      # stale, blocking admission permanently.
-      if [ -z "$holder_pid" ] || ! kill -0 "$holder_pid" 2>/dev/null; then
-        echo "claude-headless.sh: admission lock held by dead/unrecorded pid '${holder_pid:-<none>}' — reclaiming stale lock" >&2
-        # ponytail: rm -rf here is a plain check-then-act, not atomic against
-        # a second process reclaiming (and re-acquiring) the SAME stale lock
-        # in the same narrow window — a real but doubly-rare race (requires
-        # a crash AND two concurrent reclaimers in the same ~100ms poll
-        # tick). Upgrade path if this ever bites: a reclaim-intent marker
-        # (mkdir a sibling dir as a lock-on-the-reclaim) before the rm -rf.
-        rm -rf "$ADMISSION_LOCK" 2>/dev/null || true
+      # failed, or the holder crashed before writing it) also counts as
+      # stale (lock_is_stale), or a lock that never got a valid owner
+      # recorded would block admission permanently.
+      if lock_is_stale; then
+        seam stale-verdict
+        reclaim_stale_lock
         continue
       fi
+    fi
+    # Still stuck far past the first check: the reclaim lock itself may be
+    # orphaned. Clear it if so, then retry the reclaim once.
+    if [ "$tries" -eq 100 ] && [ "$marker_checked" = "0" ]; then
+      marker_checked=1
+      steal_stale_reclaim_lock
+      reclaim_stale_lock
+      continue
     fi
     [ "$tries" -lt 200 ] || die "could not acquire dispatch admission lock: $ADMISSION_LOCK"
     sleep 0.1 2>/dev/null || sleep 1
   done
   printf '%s' "$$" > "$ADMISSION_LOCK/pid" 2>/dev/null || true
   LOCK_HELD=1
+  seam admitted
 }
 lock_release() {
   [ "$LOCK_HELD" = "1" ] || return 0
