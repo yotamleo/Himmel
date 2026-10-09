@@ -19,6 +19,7 @@
 #   26g  an absolute scan root inside ANOTHER work tree -> rc 6, runs nothing
 #   26h  an exported GIT_DIR cannot redirect the scanning line or the head
 #   26i  an exported GIT_COMMON_DIR cannot either
+#   26j  a git that names no toplevel (a test's fake git) is no mismatch
 #
 # Platform guard: bash-only, like every suite in this family, and no .ps1
 # twin — it runs under Git Bash on Windows as well as Linux.
@@ -163,6 +164,27 @@ if [ "$rc" -eq 0 ] && grepq "$body" "head: $want_head" && grepq "$body" "sha=$wa
   pass "26i: GIT_COMMON_DIR=<foreign repo> leaves head and scanning sha on the scanned tree"
 else
   fail "26i: rc=$rc body: $body output: $out"
+fi
+
+# --- 26j. a git that names no toplevel is "no tree known", never a mismatch -----
+# CI's case 22f puts a fake git on PATH: `git -C <dir> rev-parse --show-toplevel`
+# prints nothing (rc 0) and the plain call exits 1. An empty answer used to be
+# cd'd into in place and compared against the empty root top -> a false refusal.
+FAKEBIN="$PLAIN/fakebin"
+mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/git" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  rev-parse) exit 1 ;;
+esac
+exit 0
+EOF
+chmod +x "$FAKEBIN/git"
+out=$(cd "$SRC_ROOT" && env -u SUITE_TIER_MODE PATH="$FAKEBIN:$PATH" bash "$RUNNER" "$SCANDIR" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && ! grepq "$out" 'REFUSED'; then
+  pass "26j: a git that names no toplevel does not refuse the scan root"
+else
+  fail "26j: rc=$rc output: $out"
 fi
 rm -f "$GH_STUB" "$GH_BODY"
 

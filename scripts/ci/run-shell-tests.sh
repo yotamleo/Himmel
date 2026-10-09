@@ -2826,9 +2826,13 @@ fi
 # (HIMMEL-5104). A root outside every work tree is unaffected.
 _scan_dir=$(cd "${scan%/}" 2>/dev/null && pwd -P) || _scan_dir=""
 if [ -n "$_scan_dir" ]; then
-  _scan_top=$(git -C "$_scan_dir" rev-parse --show-toplevel 2>/dev/null) && _scan_top=$(cd "$_scan_top" 2>/dev/null && pwd -P) || _scan_top=""
-  _root_top=$(git rev-parse --show-toplevel 2>/dev/null) && _root_top=$(cd "$_root_top" 2>/dev/null && pwd -P) || _root_top=""
-  if [ -n "$_scan_top" ] && [ "$_scan_top" != "$_root_top" ]; then
+  # An empty answer is "no tree known" (a fake git in a test prints nothing, and
+  # `cd ""` would succeed in place), so only a printed path counts as a toplevel.
+  _scan_top=$(git -C "$_scan_dir" rev-parse --show-toplevel 2>/dev/null) || _scan_top=""
+  [ -n "$_scan_top" ] && { _scan_top=$(cd "$_scan_top" 2>/dev/null && pwd -P) || _scan_top=""; }
+  _root_top=$(git rev-parse --show-toplevel 2>/dev/null) || _root_top=""
+  [ -n "$_root_top" ] && { _root_top=$(cd "$_root_top" 2>/dev/null && pwd -P) || _root_top=""; }
+  if [ -n "$_scan_top" ] && [ -n "$_root_top" ] && [ "$_scan_top" != "$_root_top" ]; then
     printf 'run-shell-tests.sh: REFUSED - scan root %s is inside git work tree %s, but this run is rooted at %s; the scanning line would name the wrong tree (HIMMEL-5104).\n' "$_scan_dir" "$_scan_top" "$(pwd -P)" >&2
     printf '  Run the copy of this script that lives in that tree instead.\n' >&2
     exit 6
