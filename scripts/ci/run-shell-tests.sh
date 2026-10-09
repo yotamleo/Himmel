@@ -43,6 +43,10 @@
 #                                                        # SUITE_REPORT_PR=N; HIMMEL-2383) —
 #                                                        # never default-on, never posted
 #                                                        # without one of these set
+#   --scan-repo-of-script  allow a caller whose cwd is in a DIFFERENT git work tree
+#                                                        # than this script's: without it that call
+#                                                        # is refused rc 2 (HIMMEL-2504), because
+#                                                        # the runner scans ITS OWN repo
 #   --shard <i>/<n>      run only slice <i> of <n> of the final run list
 #   --impacted <base>..<head>   run ONLY the suites that reference a file the
 #                                                        # range changed (HIMMEL-2821): the
@@ -182,6 +186,11 @@ chokepoint_seam_guard scripts/ci/run-shell-tests.sh || exit 96
 # REPO_ROOT is used only to source libs the runner itself needs; it is NOT
 # used for discovery. Discovery uses $scan (the positional scan-root arg).
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# The caller's git work tree, captured BEFORE the cd below throws the caller's
+# cwd away (HIMMEL-2504): the scan-root guard after arg parsing compares it with
+# REPO_ROOT. Empty when the caller is not inside a work tree. Physical (-P) form
+# on both sides so a symlinked spelling of the same tree is not a mismatch.
+caller_top=$(git rev-parse --show-toplevel 2>/dev/null) && caller_top=$(cd "$caller_top" 2>/dev/null && pwd -P) || caller_top=""
 cd "$REPO_ROOT" || exit 1
 
 # Captured HERE, before the (potentially hours-long) suite run below, not
@@ -2681,6 +2690,7 @@ suite_lock_release() {
 #   first non-flag       scan-root (default: scripts)
 # --------------------------------------------------------------------------
 list_only=0
+scan_repo_of_script=0
 scan=""
 # Shard selection (HIMMEL-2872). Flag-only, no env default: the CI workflow is
 # the only caller and an ambient SUITE_SHARD would be one more way for a stray
@@ -2745,6 +2755,10 @@ while [ "$#" -gt 0 ]; do
       report_pr="$2"
       shift 2
       ;;
+    --scan-repo-of-script)
+      scan_repo_of_script=1
+      shift
+      ;;
     --impacted)
       case "${2:-}" in
         ''|-*)
@@ -2779,6 +2793,28 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+# Scan-root guard (HIMMEL-2504). The cd to REPO_ROOT above means a runner called
+# by absolute path from another checkout (a worktree invoking the primary's
+# copy) silently runs THAT repo's suites, and with --pr posts a green SUMMARY
+# for code the caller's tree does not contain. Refuse (rc 2, this runner's
+# refusal code) when the caller sits in a git work tree that is not the
+# script's own, unless --scan-repo-of-script says that is intended. A caller
+# outside any work tree (caller_top empty) is not a mismatch, so CI and the
+# normal invocation from the repo root are unaffected.
+if [ "$scan_repo_of_script" -eq 0 ] && [ -n "$caller_top" ]; then
+  _script_top=$(cd "$REPO_ROOT" && pwd -P)
+  if [ "$caller_top" != "$_script_top" ]; then
+    printf 'run-shell-tests.sh: REFUSED - called from git work tree %s, but this script belongs to %s and would scan THAT tree, not yours (HIMMEL-2504).\n' "$caller_top" "$_script_top" >&2
+    printf '  Run the copy in your own tree (scripts/ci/run-shell-tests.sh), or pass --scan-repo-of-script to scan the script'"'"'s repo on purpose.\n' >&2
+    exit 2
+  fi
+fi
+
+# Name the tree this run scans, once, in the plan header and (below) the --pr
+# SUMMARY, so a report that scanned the wrong tree says so itself (HIMMEL-2504).
+scanning_line="scanning: root=$(pwd -P) branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown) sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+echo "$scanning_line"
 
 # Validate report_pr uniformly, regardless of source (HIMMEL-2383 CR
 # finding codex-2, round 7): the --pr FLAG path validates its value inline,
@@ -4128,7 +4164,7 @@ if [ -n "$report_pr" ]; then
   # SOME scoped run against this head happened to pass. base-status.sh
   # requires this scope to be an ancestor of (or equal to) the fence it is
   # certifying before treating the SUMMARY as covering it.
-  summary_block=$(printf '== Summary ==\n head: %s\n scope: %s\n PASS: %s\n SKIP: %s\n FAIL: %s\n skipped=%s (suites counted in PASS that printed a SKIP line)' "$REPORT_HEAD" "$scan" "$pass" "$skip" "$fail" "$skipped_ran")
+  summary_block=$(printf '== Summary ==\n head: %s\n %s\n scope: %s\n PASS: %s\n SKIP: %s\n FAIL: %s\n skipped=%s (suites counted in PASS that printed a SKIP line)' "$REPORT_HEAD" "$scanning_line" "$scan" "$pass" "$skip" "$fail" "$skipped_ran")
   # $(...) strips the trailing newline each printf above would otherwise
   # end with (HIMMEL-2383 CR finding codex-3, round 4) — without the
   # explicit newline below, an optional TIMED OUT/TRUNCATED line lands
