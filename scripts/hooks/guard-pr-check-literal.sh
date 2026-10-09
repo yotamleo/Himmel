@@ -859,7 +859,7 @@ short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
     return 1
 }
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0 es
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -882,13 +882,17 @@ git_mentions_only() { # git_mentions_only <command-word index>
         fi
         # After --, option-shaped words are literal pathspec operands.
         if [ "$paths" = 1 ]; then j=$((j + 1)); continue; fi
+        # HIMMEL-5095: while no subcommand is identified yet (and none is a known
+        # non-grep builtin) the grammar is unknown: strict any-O reading.
+        es=$sub
+        if [ -z "$sub" ] && [ "$nsub" = 0 ]; then es='*'; fi
         # Refuse these even when the older text classifier cannot see a
         # runner: git aliases/config and helper options can execute operands.
         case "$w" in
             --oneline | --extended | --extended-regexp) ;;
             -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
                 --o* | --ext*) PR_GIT_UNSAFE=1; bad=1 ;;
-            *) if short_cluster_has_O "$w" "$sub"; then PR_GIT_UNSAFE=1; bad=1; fi ;;
+            *) if short_cluster_has_O "$w" "$es"; then PR_GIT_UNSAFE=1; bad=1; fi ;;
         esac
         # HIMMEL-4958: an exec/write option is denied whatever the pathspec; a
         # directory or empty pathspec matches guarded scripts without naming them.
@@ -904,7 +908,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
                 if [ -n "$sub" ] && [ "${w#--}" = "$w" ]; then
                     # After the subcommand -c* is a short-flag cluster (grep -c),
                     # not a config option; -O inside it is the pager/orderfile flag.
-                    if short_cluster_has_O "$w" "$sub"; then
+                    if short_cluster_has_O "$w" "$es"; then
                         case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
                     fi
                 else
@@ -922,7 +926,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     esac
                 fi ;;
             # -O runs a pager only for grep; diff/log/show take it as an orderfile.
-            -*) if short_cluster_has_O "$w" "$sub"; then
+            -*) if short_cluster_has_O "$w" "$es"; then
                     case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
                 fi ;;
         esac

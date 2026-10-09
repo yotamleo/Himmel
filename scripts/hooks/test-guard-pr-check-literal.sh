@@ -1741,7 +1741,13 @@ for v in \
     'S=grep; git $S -oObash -e x' \
     'git $S -Obash -e x' \
     'git "grep" -oObash x' \
-    'git -C "a b" grep -oObash x'; do
+    'git -C "a b" grep -oObash x' \
+    'git -oObash grep -e x' \
+    'git -mOx grep -e x' \
+    'git -C . -oObash grep -e x' \
+    'git --no-pager -oObash zz -e x' \
+    'git -C -oObash grep -e x' \
+    'FOO=1 git -oObash grep -e x'; do
     run "HIMMEL-5095 O before any value letter [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
