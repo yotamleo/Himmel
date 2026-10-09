@@ -221,3 +221,42 @@ test("an auto-mode classifier refusal is classified denied", () => {
   ].join("\n") + "\n").events;
   expect(evs.find((e) => e.type === "TOOL_CALL_RESULT")).toMatchObject({ failure: "denied" });
 });
+
+// HIMMEL-4835: a bus delivery is the delivery hook's isMeta additionalContext record.
+describe("bus delivery", () => {
+  const at = "2026-10-09T10:00:05.000Z";
+  const ms = Date.parse(at);
+  const prompt = '{"type":"user","uuid":"p1","sessionId":"s","timestamp":"2026-10-09T10:00:00.000Z","message":{"role":"user","content":"go"}}';
+  const meta = (text: string) => JSON.stringify({ type: "user", isMeta: true, uuid: "m1", sessionId: "s", timestamp: at, message: { role: "user", content: [{ type: "text", text }] } });
+  const run = (...lines: string[]) => mapJournal([prompt, ...lines].join("\n") + "\n").events;
+  const deltas = (evs: AguiEvent[]) => evs.filter((e) => e.type === "STATE_DELTA");
+
+  test("a console delivery maps to STATE_DELTA add /bus/msgs/<n>/delivered", () => {
+    const evs = run(meta("bus: 2 new\nbus #7 from some-console re #3:\n| ruling text\n"));
+    expect(deltas(evs)).toEqual([{ type: "STATE_DELTA", delta: [{ op: "add", path: "/bus/msgs/7/delivered", value: ms }], timestamp: ms }]);
+    valid(evs);
+  });
+
+  test("a data delivery and a batch map one delta per header", () => {
+    const evs = run(meta("bus #8 data from leg-a:\n| x\nbus #9 from some-console:\n| y"));
+    expect(deltas(evs).flatMap((e) => (e as { delta: { path: string }[] }).delta.map((d) => d.path))).toEqual(["/bus/msgs/8/delivered", "/bus/msgs/9/delivered"]);
+  });
+
+  test("a body line that looks like a header is not a delivery", () => {
+    expect(deltas(run(meta("bus #7 from a:\n| bus #8 from b:\n| z")))).toHaveLength(1);
+    expect(deltas(run(meta("see bus #7 from a:")))).toHaveLength(0);
+    expect(deltas(run(meta("ordinary context")))).toHaveLength(0);
+  });
+
+  test("a non-meta user text with a header is a prompt, not a delivery", () => {
+    const evs = mapJournal('{"type":"user","uuid":"p2","sessionId":"s","message":{"role":"user","content":"bus #7 from a:"}}\n').events;
+    expect(deltas(evs)).toHaveLength(0);
+  });
+
+  test("both send tool-name forms appear as the send timeline entry", () => {
+    for (const name of ["mcp__himmel-bus__send", "mcp__plugin_himmel-bus_himmel-bus__send"]) {
+      const evs = run(`{"type":"assistant","uuid":"a1","sessionId":"s","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu_b","name":"${name}","input":{"to":"x","body":"hi"}}]}}`);
+      expect(evs.find((e) => e.type === "TOOL_CALL_START")).toMatchObject({ toolCallName: "mcp__himmel-bus__send" });
+    }
+  });
+});
