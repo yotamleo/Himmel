@@ -1573,6 +1573,18 @@ assert "find / FF DENY"                       DENY  "$(decide "$(j_bash "find / 
 assert "find / VT DENY"                       DENY  "$(decide "$(j_bash "find / -name x${VT}")")"
 assert "find / U+2028 bypass still PASS"      PASS  "$(FIND_ROOTWALK_OK=1 decide "$(j_bash "find / -name x${LS}")")"
 assert "find / maxdepth U+2028 PASS"          PASS  "$(decide "$(j_bash "find / -maxdepth 2 -name x${LS}")")"
+# HIMMEL-5034 (judge j2194 on HIMMEL-4967): bash splits words on space, tab and
+# newline only, so a FF/VT/U+2028 inside the keyword or in place of the space
+# makes ONE word (command not found), never a root walk. No DENY for these.
+TB=$'\t'
+assert "FF before find / is one word PASS"     PASS  "$(decide "$(j_bash "${FF}find / -name x")")"
+assert "find FF / is one word PASS"            PASS  "$(decide "$(j_bash "find${FF}/ -name x")")"
+assert "VT before find / is one word PASS"     PASS  "$(decide "$(j_bash "${VT}find / -name x")")"
+assert "find VT / is one word PASS"            PASS  "$(decide "$(j_bash "find${VT}/ -name x")")"
+assert "U+2028 before find / is one word PASS" PASS  "$(decide "$(j_bash "${LS}find / -name x")")"
+assert "find U+2028 / is one word PASS"        PASS  "$(decide "$(j_bash "find${LS}/ -name x")")"
+assert "for-loop FF find / is one word PASS"   PASS  "$(decide "$(j_bash "for f in a; do ${FF}find / -name x; done")")"
+assert "tab-separated find / still DENY"       DENY  "$(decide "$(j_bash "find${TB}/ -name x")")"
 assert "impacted-suites literal FF never ALLOW" PASS "$(decide "$(j_bash "bash scripts/cr/impacted-suites.sh${FF}")")"
 
 echo ""
