@@ -38,6 +38,7 @@ export const OPS: Record<string, { script: string | null }> = {
   "close-wrapped": { script: "close-wrapped" },
   "relaunch-console": { script: "relaunch-console" },
   "restart-bridge": { script: "restart-bridge" },
+  "allow-rule": { script: "allow-rule" },
 };
 export const KNOWN_OPS = new Set(Object.keys(OPS));
 
@@ -55,7 +56,7 @@ export const KNOWN_OPS = new Set(Object.keys(OPS));
 // the supervisor's POLLER_MAX_FAILS breaker as the backstop.
 // The HIMMEL-5047 break-glass ops are named one by one too, even the read-only
 // /station-status: an operator turns on exactly the station powers they mean to.
-export const BREAK_GLASS_OPS = new Set(["station-status", "revert-main", "repin-hooks", "launch-leg", "cr-reset", "close-wrapped", "relaunch-console", "restart-bridge"]);
+export const BREAK_GLASS_OPS = new Set(["station-status", "revert-main", "repin-hooks", "launch-leg", "cr-reset", "close-wrapped", "relaunch-console", "restart-bridge", "allow-rule"]);
 export const EXPLICIT_ONLY_OPS = new Set(["merge-public", "launch-bypass-leg", "cr-grant-delta", ...BREAK_GLASS_OPS]);
 
 // Break-glass ops that change something. Each runs only after the operator sends

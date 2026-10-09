@@ -11,7 +11,7 @@ import { KNOWN_OPS, CONFIRM_OPS, parseEnabledOps, type AuditFields } from "./aut
 import { classify, type Route } from "./router";
 import { handleInbound, handleAutoCommand } from "./poller";
 
-const BREAK_GLASS = ["station-status", "revert-main", "repin-hooks", "launch-leg", "cr-reset", "close-wrapped", "relaunch-console", "restart-bridge"];
+const BREAK_GLASS = ["station-status", "revert-main", "repin-hooks", "launch-leg", "cr-reset", "close-wrapped", "relaunch-console", "restart-bridge", "allow-rule"];
 const now = () => Math.floor(Date.now() / 1000);
 const auto = (text: string): Extract<Route, { kind: "auto" }> => {
   const r = classify(text);
@@ -33,6 +33,7 @@ test("router: each break-glass command classifies to its op, arg and time", () =
     ["/relaunch-console", "relaunch-console", "-", "-"],
     ["/relaunch-console roadmap-console", "relaunch-console", "roadmap-console", "-"],
     ["/restart-bridge", "restart-bridge", "-", "-"],
+    ["/allow-rule merge-forward-check", "allow-rule", "merge-forward-check", "-"],
     ["/confirm 0a1b2c3d", "confirm", "0a1b2c3d", "-"],
   ]) {
     expect(classify(text)).toEqual({ kind: "auto", op, arg, time } as Route);
@@ -44,6 +45,7 @@ test("router: malformed or embedded break-glass text stays chat", () => {
     "/revert-main", "/revert-main abc", "/revert-main 2202 now", "/launch-leg", "/launch-leg x/../y",
     "/launch-leg N1 --no-verify", "/launch-leg N1 --hook-bypass extra", "/cr-reset", "/close-wrapped N1 N2",
     "/relaunch-console Bad_Name", "/relaunch-console --hook-bypass", "/station-status now",
+    "/allow-rule", "/allow-rule Bad_Id", "/allow-rule a b", "/allow-rule --x", "/allow-rule Bash(ls:*)", "please /allow-rule x",
     "/confirm", "/confirm 0a1b2c3", "/confirm 0a1b2c3d9", "/confirm zzzzzzzz", "please /repin-hooks",
   ]) expect(classify(text).kind).toBe("chat");
 });
@@ -69,6 +71,11 @@ test("handleInbound: non-operator, caption, forwarded-free disabled op and tagge
     ["/confirm 0a1b2c3d", {}, ["revert-main"], true],
     ["/confirm 0a1b2c3d", {}, ["station-status"], false],
     ["/confirm 0a1b2c3d", { from: 2 }, ["revert-main"], false],
+    ["/allow-rule merge-forward-check", {}, ["allow-rule"], true],
+    ["/allow-rule merge-forward-check", { from: 2 }, ["allow-rule"], false],
+    ["/allow-rule merge-forward-check", { caption: true }, ["allow-rule"], false],
+    ["/allow-rule merge-forward-check", {}, ["revert-main"], false],
+    ["model:opus /allow-rule merge-forward-check", {}, ["allow-rule"], false],
   ];
   for (const [text, over, enabled, want] of cases) {
     const root = await mkdtemp(join(tmpdir(), "bg-gate-"));
@@ -116,7 +123,7 @@ test("station-status is read-only: it runs at once, no confirm code", async () =
 test("a mutating op issues a code and runs nothing; the matching /confirm runs it once", async () => {
   for (const text of BREAK_GLASS.filter((op) => op !== "station-status").map((op) => ({
     "revert-main": "/revert-main 2202", "repin-hooks": "/repin-hooks", "launch-leg": "/launch-leg N7 --hook-bypass",
-    "cr-reset": "/cr-reset 9", "close-wrapped": "/close-wrapped", "relaunch-console": "/relaunch-console", "restart-bridge": "/restart-bridge",
+    "cr-reset": "/cr-reset 9", "close-wrapped": "/close-wrapped", "relaunch-console": "/relaunch-console", "restart-bridge": "/restart-bridge", "allow-rule": "/allow-rule merge-forward-check",
   } as Record<string, string>)[op])) {
     const root = await mkdtemp(join(tmpdir(), "bg-ok-"));
     const h = harness(0, "done=1\n");
@@ -169,7 +176,7 @@ test("a wrong, missing, expired, other-user, group-chat or forwarded confirm ref
 });
 
 test("break-glass ops are DM-only: in a group every op refuses and issues no code", async () => {
-  for (const text of ["/station-status", "/revert-main 2202", "/repin-hooks", "/launch-leg N7", "/cr-reset 9", "/close-wrapped", "/relaunch-console", "/restart-bridge"]) {
+  for (const text of ["/station-status", "/revert-main 2202", "/repin-hooks", "/launch-leg N7", "/cr-reset 9", "/close-wrapped", "/relaunch-console", "/restart-bridge", "/allow-rule merge-forward-check"]) {
     const root = await mkdtemp(join(tmpdir(), "bg-group-"));
     const h = harness();
     await handleAutoCommand(root, msg(text, { chat_id: -100 }), auto(text), h.deps);

@@ -87,7 +87,7 @@ export OTHER_GUARD_OK=1 TELEGRAM_BOT_TOKEN=secret-token-fixture
 bg() { (unset CLAUDECODE; bash "$SUT" "$@") 2>"$TMP/err"; }
 
 # --- gate 0 and the closed op list ------------------------------------------
-for op in station-status revert-main repin-hooks launch-leg cr-reset close-wrapped relaunch-console restart-bridge; do
+for op in station-status revert-main repin-hooks launch-leg cr-reset close-wrapped relaunch-console restart-bridge allow-rule; do
     out=$(CLAUDECODE=1 bash "$SUT" "$op" 1 - 2>&1); rc=$?
     assert_rc "B1 $op refuses the agent marker" 19 "$rc"
 done
@@ -336,6 +336,58 @@ out=$(bg restart-bridge - -); rc=$?
 assert_rc "X1 restart-bridge schedules the restart" 0 "$rc"
 [ -s "$RECORD" ] && echo "PASS X2 the restart command ran" || { echo "FAIL X2 restart command not run"; FAILED=$((FAILED + 1)); }
 SYSTEMCTL_CAT_RC=1 bg restart-bridge - - >/dev/null; assert_rc "X3 a missing unit is rc 20" 20 "$?"
+
+# --- /allow-rule ---------------------------------------------------------------
+# The registry and the target are fixtures; nothing here touches a live settings file.
+RULE='Bash(bash scripts/example/reviewed.sh:*)'
+jq -n --arg r "$RULE" '{"reviewed-one":$r,"multi-line":"Bash(a)\nBash(b)","not-string":7}' > "$TMP/rules.json"
+AR_TARGET="$TMP/ar/fixture-allow.json"
+export BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules.json" BREAK_GLASS_ALLOW_TARGET="$AR_TARGET"
+mkdir -p "$TMP/ar"
+bg allow-rule nope - >/dev/null; assert_rc "A1 an id missing from the registry is refused" 26 "$?"
+[ ! -e "$AR_TARGET" ] && echo "PASS A2 and nothing is written" || { echo "FAIL A2 target created for an unknown id"; FAILED=$((FAILED + 1)); }
+for bad in 'Bash(ls:*)' 'Bad_Id' '--x' 'a b' ''; do
+    bg allow-rule "$bad" - >/dev/null; rc=$?
+    [ "$rc" = 1 ] || [ "$rc" = 26 ] && [ ! -e "$AR_TARGET" ] && echo "PASS A3 free text '$bad' is refused (rc=$rc), nothing written" || { echo "FAIL A3 free text '$bad' rc=$rc"; FAILED=$((FAILED + 1)); }
+done
+bg allow-rule multi-line - >/dev/null; assert_rc "A4 a multi-line registry entry is refused" 26 "$?"
+bg allow-rule not-string - >/dev/null; assert_rc "A5 a non-string registry entry is refused" 26 "$?"
+BREAK_GLASS_ALLOW_REGISTRY="$TMP/absent.json" bg allow-rule reviewed-one - >/dev/null; assert_rc "A6 a missing registry is rc 20" 20 "$?"
+out=$(bg allow-rule reviewed-one -); rc=$?
+assert_rc "A7 a known id is applied to an absent target" 0 "$rc"
+[ "$(jq -r '.permissions.allow[0]' "$AR_TARGET")" = "$RULE" ] && [ "$(jq '.permissions.allow | length' "$AR_TARGET")" = 1 ] \
+    && echo "PASS A8 exactly the registry text was added" || { echo "FAIL A8 target: $(cat "$AR_TARGET" 2>/dev/null)"; FAILED=$((FAILED + 1)); }
+out2=$(bg allow-rule reviewed-one -); rc=$?
+assert_rc "A9 a second apply is a no-op" 0 "$rc"
+assert_contains "A10 and says so" "already present" "$out2"
+[ "$(jq '.permissions.allow | length' "$AR_TARGET")" = 1 ] && [ -z "$(find "$TMP/ar" -name '*.bak-*')" ] \
+    && echo "PASS A11 no duplicate, no backup for a no-op" || { echo "FAIL A11 duplicate or backup on a no-op"; FAILED=$((FAILED + 1)); }
+printf '{"permissions":{"allow":["Bash(keep:*)"],"deny":["Bash(x)"]},"env":{"K":"v"}}\n' > "$AR_TARGET"
+before="$(cat "$AR_TARGET")"
+out=$(bg allow-rule reviewed-one -); rc=$?
+assert_rc "A12 a rule is added to an existing target" 0 "$rc"
+bak="$(find "$TMP/ar" -name '*.bak-*' | head -n 1)"
+[ -n "$bak" ] && [ "$(cat "$bak")" = "$before" ] && echo "PASS A13 the pre-write content is backed up verbatim" || { echo "FAIL A13 backup missing or differs"; FAILED=$((FAILED + 1)); }
+[ "$(jq -c '.permissions.allow' "$AR_TARGET")" = "[\"Bash(keep:*)\",\"$RULE\"]" ] && [ "$(jq -c '.permissions.deny,.env' "$AR_TARGET" | tr '\n' ' ')" = '["Bash(x)"] {"K":"v"} ' ] \
+    && echo "PASS A14 other keys and rules are preserved" || { echo "FAIL A14 target: $(cat "$AR_TARGET")"; FAILED=$((FAILED + 1)); }
+printf 'not json' > "$AR_TARGET"
+bg allow-rule reviewed-one - >/dev/null; assert_rc "A15 an unparseable target is refused" 27 "$?"
+[ "$(cat "$AR_TARGET")" = "not json" ] && echo "PASS A16 and left untouched" || { echo "FAIL A16 target rewritten"; FAILED=$((FAILED + 1)); }
+printf '{"permissions":{"allow":"oops"}}\n' > "$AR_TARGET"
+bg allow-rule reviewed-one - >/dev/null; assert_rc "A17 a non-array allow list is refused" 27 "$?"
+# Default target: the primary's untracked local file, never the tracked one.
+unset BREAK_GLASS_ALLOW_TARGET
+mkdir -p "$PRIMARY/.claude"
+out=$(bg allow-rule reviewed-one -); rc=$?
+assert_rc "A18 the default target is applied" 0 "$rc"
+[ "$(jq -r '.permissions.allow[0]' "$PRIMARY/.claude/settings.local.json")" = "$RULE" ] && [ ! -e "$PRIMARY/.claude/settings.json" ] \
+    && echo "PASS A19 it is the primary's local file, not the tracked one" || { echo "FAIL A19 wrong default target"; FAILED=$((FAILED + 1)); }
+rm -f "$PRIMARY/.claude/settings.local.json"
+unset BREAK_GLASS_ALLOW_REGISTRY
+bg allow-rule merge-forward-check - >/dev/null; rc=$?
+[ "$rc" = 0 ] && [ "$(jq -r '.permissions.allow[0]' "$PRIMARY/.claude/settings.local.json")" = 'Bash(bash scripts/handover/merge-forward-check.sh:*)' ] \
+    && echo "PASS A20 the checked-in registry resolves its seed id" || { echo "FAIL A20 checked-in registry rc=$rc"; FAILED=$((FAILED + 1)); }
+rm -f "$PRIMARY/.claude/settings.local.json"
 
 # --- cr-reset.sh -----------------------------------------------------------------
 crr() { (unset CLAUDECODE; CR_RESET_PRIMARY="$PRIMARY" CR_RESET_GH="$TMP/bin/gh" CR_RESET_LOCK_LIB="$LOCK_LIB" bash "$CRR" "$@") 2>"$TMP/err"; }
