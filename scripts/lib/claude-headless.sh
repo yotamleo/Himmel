@@ -214,7 +214,10 @@ reclaim_stale_lock() {
     echo "claude-headless.sh: admission lock held by dead/unrecorded pid — reclaiming stale lock" >&2
     rm -rf "$ADMISSION_LOCK" 2>/dev/null || true
   fi
-  rm -rf "$RECLAIM_LOCK" 2>/dev/null || true
+  # Only drop the marker if it is still ours (a steal may have replaced it).
+  if [ "$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -rf "$RECLAIM_LOCK" 2>/dev/null || true
+  fi
 }
 # A reclaimer that died holding the reclaim lock would block every future
 # reclaim. Take it by atomic rename (only one mover wins), and put it back if
