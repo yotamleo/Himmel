@@ -141,7 +141,10 @@ contains() {
 # exactly as `command rm -rf /` is a miss in the sibling — widening this copy
 # alone would fork a grammar whose whole value is being identical. Closing any
 # of these properly needs the HIMMEL-912 shared tokenizer, not a wider regex.
-EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&`"'\'']*[/\\])?'
+# HIMMEL-5101: the path run stops at `(`, itself a CMDPOS anchor, so a `((((...`
+# run is not rescanned from every anchor (quadratic; a timed-out hook does not
+# deny). `/tmp/a(b)/git` still matches, from the anchor at its `(`.
+EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&(`"'\'']*[/\\])?'
 ASSIGN='[[:alnum:]_]+=('\''[^'\'']*'\''|"[^"]*"|[^[:space:]|;&]*)'
 CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
 

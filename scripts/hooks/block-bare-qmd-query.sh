@@ -369,7 +369,8 @@ _qw_q() {
 }
 
 # EXEPFX / ASSIGN / SEP are block-git-stash.sh's, verbatim.
-EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&`"'\'']*[/\\])?'
+# HIMMEL-5101: EXEPFX stops at `(`, a CMDPOS anchor, so a `((((...` run stays linear.
+EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&(`"'\'']*[/\\])?'
 ASSIGN='[[:alnum:]_]+=('\''[^'\'']*'\''|"[^"]*"|[^[:space:]|;&]*)'
 SEP='([[:space:]]|\\[[:space:]]*;+)+[[:space:]]*'
 # A run of options, each optionally taking ONE non-dash value (`-n 10`, `-k 5`).

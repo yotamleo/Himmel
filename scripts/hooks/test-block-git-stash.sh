@@ -242,6 +242,32 @@ else
     echo "SKIP 4576 B1 under bash < 4.4 (set HIMMEL_TEST_OLD_BASH)"
 fi
 
+# --- HIMMEL-5101: the path prefix stops at an open paren (linear on a `(` run) ---
+# Every `(` is a CMDPOS anchor; a prefix that crosses `(` rescans the whole run
+# from each one (quadratic), and a timed-out PreToolUse hook does not deny.
+# shellcheck disable=SC2046 # one word per repeat is the point
+printf -v pad_o '(%.0s' $(seq 1 20000)
+printf -v pad_a 'a%.0s' $(seq 1 20000)
+# Timed against a same-size run of a non-paren character in the same process, so
+# runner load scales both sides; a fixed wall-clock budget failed on loaded CI.
+now_ms() { local n; n=$(date +%s%N 2>/dev/null); case "$n" in ''|*[!0-9]*) echo $((SECONDS * 1000)) ;; *) echo $((n / 1000000)) ;; esac; }
+t0=$(now_ms)
+run_case "$(j_bash "echo hi$pad_a; git stash drop")" >/dev/null
+t1=$(now_ms)
+assert_rc 'open-paren run x20000 then git stash drop (linear)' 2 "$(run_case "$(j_bash "echo hi$pad_o; git stash drop")")"
+t2=$(now_ms)
+if [ $((t2 - t1)) -gt $(( (t1 - t0) * 3 + 500 )) ]; then
+    echo "FAIL open-paren run x20000 took $((t2 - t1))ms (control $((t1 - t0))ms, budget 3x + 500ms)"; FAILED=$((FAILED + 1)); fi
+# A `(` or `)` inside the path must still reach the program name.
+assert_rc 'path with (b) then git stash drop'         2 "$(run_case "$(j_bash '/tmp/a(b)/git stash drop')")"
+assert_rc 'quoted path with (b) then git stash drop'  2 "$(run_case "$(j_bash '"/tmp/a(b)/git" stash drop')")"
+assert_rc 'path with ) then git stash drop'           2 "$(run_case "$(j_bash '/tmp/a)/git stash drop')")"
+assert_rc 'path with )) then git stash drop'          2 "$(run_case "$(j_bash '/tmp/a))/git stash drop')")"
+assert_rc 'path with ){ then git stash drop'          2 "$(run_case "$(j_bash '/tmp/a){/git stash drop')")"
+assert_rc 'c: path with (x86) then git stash drop'    2 "$(run_case "$(j_bash 'c:/p(x86)/git stash drop')")"
+assert_rc 'sudo path with (b) then git stash drop'    2 "$(run_case "$(j_bash 'sudo /tmp/a(b)/git stash drop')")"
+assert_rc 'path with (b) then git stash list allowed' 0 "$(run_case "$(j_bash '/tmp/a(b)/git stash list')")"
+
 # --- BYPASS case ---
 assert_rc "GIT_STASH_OK bypass"       0 "$(run_case "$(j_bash 'git stash drop')" "GIT_STASH_OK=1")"
 

@@ -966,6 +966,33 @@ case "$msg" in
     *) echo "FAIL deny text does not name qmd-bounded.sh: $msg"; FAILED=$((FAILED + 1)) ;;
 esac
 
+# --- HIMMEL-5101: the path prefix stops at an open paren (linear on a `(` run) ---
+# Every `(` is a CMDPOS anchor; a prefix that crosses `(` rescans the whole run
+# from each one (quadratic), and a timed-out PreToolUse hook does not deny.
+# shellcheck disable=SC2046 # one word per repeat is the point
+printf -v pad_o '(%.0s' $(seq 1 16000)
+printf -v pad_a 'a%.0s' $(seq 1 16000)
+# Timed against a same-size run of a non-paren character in the same process, so
+# runner load scales both sides; a fixed wall-clock budget failed on loaded CI.
+now_ms() { local n; n=$(date +%s%N 2>/dev/null); case "$n" in ''|*[!0-9]*) echo $((SECONDS * 1000)) ;; *) echo $((n / 1000000)) ;; esac; }
+t0=$(now_ms)
+run_case "$(j_bash "echo hi$pad_a; qmd query x")" >/dev/null
+t1=$(now_ms)
+deny "echo hi$pad_o; qmd query x"
+t2=$(now_ms)
+if [ $((t2 - t1)) -gt $(( (t1 - t0) * 3 + 500 )) ]; then
+    echo "FAIL open-paren run x16000 took $((t2 - t1))ms (control $((t1 - t0))ms, budget 3x + 500ms)"; FAILED=$((FAILED + 1)); fi
+# A `(` or `)` inside the path must still reach the program name.
+deny '/tmp/a(b)/qmd query x'
+deny '"/tmp/a(b)/qmd" query x'
+deny '/tmp/a)/qmd query x'
+deny '/tmp/a))/qmd query x'
+deny '/tmp/a){/qmd query x'
+deny 'c:/p(x86)/qmd query x'
+deny 'sudo /tmp/a(b)/qmd query x'
+deny 'node /tmp/a(b)/qmd query x'
+allow '/tmp/a(b)/qmd status'
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0
