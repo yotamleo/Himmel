@@ -42,7 +42,12 @@ permissions:
 #                   context). Each completed sweep therefore tests the tip at
 #                   its start, so the completed sweeps cover contiguous ranges
 #                   of merges and a red on main is always attributed to a
-#                   range (see main-sweep-red.yml);
+#                   range (see main-sweep-red.yml). A running sweep is NOT
+#                   cancelled by a newer push (HIMMEL-5036): sweeps take ~1h45m
+#                   under the backlog and merges land every few minutes, so
+#                   cancelling would starve main of any completed sweep and a
+#                   red would never be attributed. The pending-run collapse
+#                   above is the safe half and is kept;
 #   everything else (schedule, workflow_dispatch) -> ci-<run_id>: unique to the
 #                   run, so the nightly / a dispatch is never cancelled nor
 #                   queued behind anything.
@@ -57,6 +62,7 @@ concurrency:
 jobs:
   secret-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 8s over 10 green PR runs; 2x, floor 10
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/check-no-secrets.sh
@@ -72,6 +78,7 @@ jobs:
   # (never a branch) and runs the gate's own suite under it, gating every PR.
   bwk-awk-mktemp-gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 18s; floor 10
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/run-unchecked-mktemp-under-bwk.sh
@@ -86,6 +93,7 @@ jobs:
   unchecked-mktemp-range:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 37s; floor 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -102,6 +110,7 @@ jobs:
   # 4 classes still run.
   leak-classes:
     runs-on: ubuntu-latest
+    timeout-minutes: 25 # p95 672s (11m); 2x
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,6 +126,7 @@ jobs:
   # (HIMMEL-3570; already caught twice as real bugs, PR 1212 and PR 1217).
   git-env-scrub:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 207s; 2x = 7m, floor 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -129,6 +139,7 @@ jobs:
   # the author-time hook agree. fetch-depth: 0 → full history for the range walk.
   commit-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 19s; floor 10
     env:
       TICKET_ID_REQUIRED: '1'
       JIRA_PROJECT_KEY: HIMMEL
@@ -164,6 +175,7 @@ jobs:
   plugin-version-bump:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 9s; floor 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -173,6 +185,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 25 # p95 736s (12m); 2x
     steps:
       # fetch-depth: 0 so the PR base sha is reachable for the shellcheck range.
       - uses: actions/checkout@v7
@@ -218,6 +231,7 @@ jobs:
 
   node-suites:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 51s (matrix); floor 10
     strategy:
       matrix:
         pkg: [jira, bitbucket, himmel-run, ci-orchestrator]
@@ -249,6 +263,7 @@ jobs:
   # green. Offline and secret-free (dummy JIRA_* values, a local mock server).
   jira-cli-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 26s; floor 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -273,6 +288,7 @@ jobs:
   # have no claude CLI; this job is where it runs.
   claude-startup:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 86s; floor 10
     env:
       CLAUDE_CLI_VERSION: '2.1.289'
     steps:
@@ -316,6 +332,7 @@ jobs:
     # package.json (a committed one under scripts/ trips the npm-audit gates for a
     # package with nothing to install). Run its node:test suites directly.
     runs-on: ubuntu-latest
+    timeout-minutes: 15 # p95 423s (7m); 2x
     steps:
       - uses: actions/checkout@v7
         with:
@@ -389,6 +406,7 @@ jobs:
     # here — Actions is OFF on the private repo, so a green private PR is not
     # evidence either suite ran.
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 15s; floor 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -418,8 +436,9 @@ jobs:
   # the required check either way.
   #
   # `shell: bash` because the run lines below chain with `&&` — the default
-  # shell on windows-latest is pwsh. `fail-fast: false` so a red Windows leg
-  # still reports the Linux result instead of cancelling it.
+  # shell on windows-latest is pwsh. The windows leg exists only on `schedule`,
+  # where fail-fast stays false so a red Windows leg still reports the Linux
+  # result instead of cancelling it; a pull_request run stops at its first red leg.
   bun-suites:
     # issues:write (beyond the workflow-level contents:read) is needed only by
     # the windows-nightly-issue.sh steps above/below — scoped to this job
@@ -442,12 +461,15 @@ jobs:
       group: bun-suites-${{ matrix.os }}-${{ matrix.os == 'windows-latest' && 'shared' || github.ref }}
       cancel-in-progress: false
     strategy:
-      fail-fast: false
+      # HIMMEL-5036: PR-only fail-fast; the windows leg only exists on schedule,
+      # where this stays false so a red Windows leg still reports Linux.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         os: ${{ github.event_name == 'schedule'
                && fromJSON('["ubuntu-latest","windows-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15 # p95 269s (4.5m, matrix incl. windows); 2x = 9m, kept 15 for the windows leg
     continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     defaults:
       run:
@@ -554,6 +576,7 @@ jobs:
   # every step below silently passes without checking anything.
   doc-invariants:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # p95 38s; floor 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -754,7 +777,10 @@ jobs:
   # check-run context branch protection names.
   shell-unit-shard:
     strategy:
-      fail-fast: false
+      # HIMMEL-5036: a PR stops at its first red shard (siblings are cancelled and
+      # the shell-unit aggregator reads the rollup as failure); push-to-main and
+      # the nightly keep the full red set so a red stays attributable.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         os: ${{ github.event_name == 'schedule'
                && fromJSON('["ubuntu-latest","windows-latest"]')
@@ -784,6 +810,9 @@ jobs:
     # does not absorb, so a windows cap below its real duration would turn the
     # aggregate red every night. There are no macos rows in this matrix
     # (macos-cadence.yml / os-verify.yml carry their own 120).
+    # HIMMEL-5036: cap NOT lowered. PR shards run only impacted suites (p95 1676s,
+    # 28m, over 10 green PR runs); the main sweep runs the full set per shard and
+    # the p95 measured here does not cover it, so 60 stays until sweep data does.
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 60 }}
     steps:
       # fetch-depth: 0 (not the default shallow clone) so --changed-since below
@@ -1022,6 +1051,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10 # p95 179s; 2x = 6m, floor 10
     steps:
       # Full history: impacted-selection.sh diffs base...HEAD and checks the
       # base is on origin/main, exactly as the shards did.
