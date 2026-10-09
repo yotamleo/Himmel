@@ -37,7 +37,7 @@ for f in $SOURCES; do
 done
 primary="${primary:-unknown}"
 
-apt() { $SUDO timeout "$1" "$APT_GET" "${@:2}"; }
+apt() { $SUDO timeout -k 10 "$1" "$APT_GET" "${@:2}"; }
 
 if compgen -G "$ARCHIVES/*.deb" > /dev/null; then
   if apt "$T_CACHED" install --no-download "${opts[@]}" "$@"; then

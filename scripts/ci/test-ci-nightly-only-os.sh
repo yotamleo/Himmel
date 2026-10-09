@@ -179,7 +179,7 @@ if [ ! -f "$HELPER_SH" ]; then
   bad "shell-unit-shard: apt-install.sh helper missing"
 else
   # every apt call runs under `timeout`, with a dpkg-lock wait
-  if grep -Fq 'apt() { $SUDO timeout "$1" "$APT_GET"' "$HELPER_SH" \
+  if grep -Fq 'apt() { $SUDO timeout -k 10 "$1" "$APT_GET"' "$HELPER_SH" \
      && [ "$(grep -c '"\$APT_GET"' "$HELPER_SH")" -eq 1 ] \
      && [ "$(grep -c 'DPkg::Lock::Timeout=' "$HELPER_SH")" -ge 2 ]; then
     ok "shell-unit-shard: every helper apt call is timeout-bounded and carries DPkg::Lock::Timeout"
