@@ -98,6 +98,12 @@ printf 'not json\n' >> "$SUB/agent-a1.jsonl"
 rc=0; detect --session "$SID" >/dev/null 2>&1 || rc=$?
 check "detector: unparseable child transcript -> rc 2 (cannot decide)" "$rc" "2"
 reset_session
+if [ "$(id -u)" -ne 0 ]; then
+    chmod 000 "$SUB"
+    rc=0; detect --session "$SID" >/dev/null 2>&1 || rc=$?
+    chmod 755 "$SUB"
+    check "detector: unlistable subagents/ registry -> rc 2 (cannot decide)" "$rc" "2"
+fi
 
 # --- the wrap gate: console.sh wrap ------------------------------------------
 # A predecessor console with a fake live judge child: wrap refused, nothing
@@ -130,6 +136,16 @@ notify j1 toolu_J1 2026-10-09T01:00:00.010Z
 rc=0; out=$(wrap "$DOC" "not-the-token" "handed to B" 2>&1) || rc=$?
 check "wrap: wrong release token -> refused" "$([ "$rc" -ne 0 ] && echo refused)" "refused"
 check "wrap: wrong token -> no WRAPPED written" "$(grep -c WRAPPED "$DOC")" "0"
+rc=0; HANDOVER_DIR="$ROOT" bash "$QL" status "$DOC" >/dev/null 2>&1 || rc=$?
+check "wrap: wrong token -> lock still held" "$([ "$rc" -ne 0 ] && echo held)" "held"
+chmod 444 "$DOC"
+if [ "$(id -u)" -ne 0 ]; then
+    rc=0; out=$(wrap "$DOC" "$TOKEN" "handed to B" 2>&1) || rc=$?
+    check "wrap: append fails -> refused" "$([ "$rc" -ne 0 ] && echo refused)" "refused"
+    rc=0; HANDOVER_DIR="$ROOT" bash "$QL" status "$DOC" >/dev/null 2>&1 || rc=$?
+    check "wrap: append fails -> lock still held" "$([ "$rc" -ne 0 ] && echo held)" "held"
+fi
+chmod 644 "$DOC"
 rc=0; out=$(wrap "$DOC" "$TOKEN" "handed to B" 2>&1) || rc=$?
 check "wrap: child stopped -> rc 0" "$rc" "0"
 check "wrap: WRAPPED is the last bullet" "$(grep '^- ' "$DOC" | tail -n 1 | sed -E 's/^- [0-9:]+ ([A-Z]+).*/\1/')" "WRAPPED"

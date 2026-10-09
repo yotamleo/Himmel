@@ -70,6 +70,11 @@ if [ -z "$parent" ]; then
 fi
 
 subdir="${parent%.jsonl}/subagents"
+# an absent registry is "no children"; one we cannot list is not
+if [ -e "$subdir" ] && ! { [ -d "$subdir" ] && [ -r "$subdir" ] && [ -x "$subdir" ]; }; then
+    echo "live-subagents: unreadable registry $subdir - cannot decide" >&2
+    exit 2
+fi
 live=0
 for meta in "$subdir"/agent-*.meta.json; do
     [ -f "$meta" ] || continue
