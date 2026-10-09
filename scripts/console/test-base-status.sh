@@ -285,7 +285,7 @@ echo "TEST: 250 merged PRs in the window certify clean (no QUERY-ERROR)"
 out=$(GH_CMD="$GH_STUB8B" "$BASE_STATUS" scripts/hooks 2>"$TMP_ROOT/err9b")
 rc=$?
 err=$(cat "$TMP_ROOT/err9b")
-if [ "$rc" -eq 0 ] && [ -z "$out" ] && ! printf '%s' "$err" | grep -qF "QUERY-ERROR"; then
+if [ "$rc" -eq 0 ] && [ -z "$out" ] && ! grep -qF "QUERY-ERROR" <<< "$err"; then
     pass "250-PR window certifies clean"
 else
     fail "250-PR window" "rc=$rc out='$out' err='$err'"
