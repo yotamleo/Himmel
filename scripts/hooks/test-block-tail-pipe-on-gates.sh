@@ -950,6 +950,8 @@ deny "2082 gate ; two more segments" 'bash scripts/check-ci.sh 12; echo a; echo 
 # shellcheck disable=SC2016 # the payload is data for the hook, not for this shell
 deny "2082 \$? read past an intervening command" 'bash scripts/check-ci.sh 12; echo done; echo "RC=$?"'
 deny "2082 absolute-path gate ; echo" 'bash /home/x/himmel/scripts/check-ci.sh 12; echo done'
+deny "2082 PIPESTATUS as plain text is no capture" 'bash scripts/check-ci.sh 12; echo PIPESTATUS; echo done'
+allow "2082 allow: gate in a compound if condition" 'if true && bash scripts/check-ci.sh 12; then echo ok; fi'
 res=$(run_hook "$(j_bash 'bash scripts/check-ci.sh 12; echo done')")
 case $res in
     *"gate must be the final segment"*) pass "2082 deny text names the rule" ;;

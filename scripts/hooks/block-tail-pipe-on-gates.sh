@@ -795,7 +795,7 @@ stmt_runs_gate() {
 # next is a residual (the substitution bodies normalise() lifts onto their own
 # lines make "the next line" ambiguous).
 scan_trailing() {
-    local stmt st w only_close n i j later later_gates later_status
+    local stmt st w only_close n i j later later_gates later_status in_cond=0
     local -a S
     S=()
     while IFS= read -r stmt; do
@@ -815,7 +815,13 @@ EOF
     i=0
     while [ "$((i + 1))" -lt "$n" ]; do
         st=${S[i]}
-        case $st in 'if '* | 'elif '* | 'while '* | 'until '*) i=$((i + 1)); continue ;; esac
+        # A compound condition (`if a && gate; then`) splits into segments
+        # that lose the `if`; stay in condition mode until `then`/`do`/`else`.
+        case $st in
+            'if '* | 'elif '* | 'while '* | 'until '*) in_cond=1; i=$((i + 1)); continue ;;
+            'then' | 'then '* | 'do' | 'do '* | 'else' | 'else '*) in_cond=0 ;;
+        esac
+        if [ "$in_cond" = 1 ]; then i=$((i + 1)); continue; fi
         if stmt_runs_gate "$st"; then
             later_gates=1; later_status=0
             j=$((i + 1))
@@ -826,7 +832,7 @@ EOF
                 # Only the segment right after the gate still sees its status;
                 # anything past an intervening command reads that command's.
                 if [ "$j" -eq "$((i + 1))" ]; then
-                    case $later in *'$?'* | *'${?}'* | *PIPESTATUS*) later_status=1 ;; esac
+                    case $later in *'$?'* | *'${?}'* | *'$PIPESTATUS'* | *'${PIPESTATUS'*) later_status=1 ;; esac
                 fi
                 j=$((j + 1))
             done
