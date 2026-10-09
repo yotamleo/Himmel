@@ -258,6 +258,7 @@ check "the bank preflight runs without the API key and lane selectors on the api
 # judge B2: run.sh's own git calls (worktree add, the fixture commit, git add -A) fire hooks in an LQ_REPO-selected
 # repo and an agent-written core.fsmonitor, so the key and lane selectors must not be in run.sh's environment at all.
 rm -f "$TMP/hook.env" "$TMP/fsmon.env" "$APIENV"
+mkdir -p "$TMP/repo/.git/hooks"  # a git built without templates (CI) has no hooks dir
 for h in post-checkout reference-transaction post-index-change post-commit; do
   printf '#!/usr/bin/env bash\nenv >>"%s"\n' "$TMP/hook.env" >"$TMP/repo/.git/hooks/$h"; chmod +x "$TMP/repo/.git/hooks/$h"
 done
