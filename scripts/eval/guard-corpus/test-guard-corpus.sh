@@ -30,12 +30,13 @@ hasnt() { case "$2" in *"$3"*) fail "$1: unexpected '$3' in output";; *) pass "$
 # HIMMEL-4912: every diff run launches a fresh sandbox, ~32s locally and ~6x that on
 # the CI runner (the full replay measured 1437s locally, so ~8600s there). PR CI runs
 # SUITE_TIER_MODE=fast and gets the subset below (regression, control, ledger, the host
-# canary and the real-hook replay, plus every single-row case); the nightly (tier all)
-# and a bare local run still replay everything.
+# canary and the real-hook replay, plus every single-row case). The shard jobs also set
+# GUARD_CORPUS_TIER=fast on the nightly (tier all), so a 60-minute shard never carries the
+# full replay; the scheduled-only guard-corpus-full job and a bare local run replay everything.
 # ponytail: the PR-CI subset skips the env-scrub, timeout, deny-control, JSON-decision
 # and over-deny replays, upgrade path: shard the full replay across runners (HIMMEL-5055).
 FULL=1
-if [ "${SUITE_TIER_MODE:-}" = fast ]; then FULL=0; fi
+if [ "${SUITE_TIER_MODE:-}" = fast ] || [ "${GUARD_CORPUS_TIER:-}" = fast ]; then FULL=0; fi
 defer() { echo "SKIP (fast tier; the nightly full replay covers it): $1"; }
 
 # --- 1. determinism -----------------------------------------------------------

@@ -294,12 +294,14 @@ _suite_timeout_for() {
       # Full replay: 1407s local sequential, 1437s timed (2026-10-08); PR CI
       # killed it at 3000s with the replay unfinished (run 37840193447, shard
       # 6), so the CI figure is ~6x local (~8600s). Fast tier (PR CI) runs the
-      # suite's subset: 117s local, ~700s on CI; the cap kills a regression at
-      # 1200s so a hung subset cannot hold a shard. Do not cache scans or drop
+      # suite's subset: 117s local, 745-1004s on CI; the cap (1800s, x1.8 of the
+      # slowest) kills a regression so a hung subset cannot hold a shard. Do not cache scans or drop
       # masks to fit the generic 600s cap.
       # ponytail: the full-tier cap is the CI estimate x1.25 and unmeasured on
       # CI, upgrade path: shard the full replay and re-measure (HIMMEL-5055).
-      if [ "${SUITE_TIER_MODE:-all}" = fast ]; then printf '1200'; else printf '10800'; fi ;;
+      # The nightly shards run tier all with GUARD_CORPUS_TIER=fast: the full
+      # replay runs in the scheduled-only guard-corpus-full job, not a 60-min shard.
+      if [ "${SUITE_TIER_MODE:-all}" = fast ] || [ "${GUARD_CORPUS_TIER:-}" = fast ]; then printf '1800'; else printf '10800'; fi ;;
     scripts/hooks/test-block-destructive-commands.sh|*/scripts/hooks/test-block-destructive-commands.sh)
       # HIMMEL-4912: every fixture now starts a fresh bwrap sandbox. Linux with
       # bwrap working measured 263s alone (2026-10-08). On the CI runner (bwrap

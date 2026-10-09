@@ -937,6 +937,9 @@ jobs:
         env:
           FAIL_LOG_DIR: failed-suite-logs
           SUITE_TIER_MODE: ${{ github.event_name == 'schedule' && 'all' || 'fast' }}
+          # HIMMEL-4912: the shards (60 min) always run the fast guard-corpus
+          # subset; the full replay runs in the schedule-only guard-corpus-full job.
+          GUARD_CORPUS_TIER: fast
           SUITE_CHANGED_SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
           SUITE_IMPACTED_FROM_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.base.sha || '' }}
           SUITE_MANIFEST: shard-manifest/manifest-shard${{ matrix.shard }}.txt
@@ -1146,3 +1149,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/shell-extended-nightly-issue.sh 1 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # HIMMEL-4912: the full guard-corpus replay (every row in a fresh bwrap
+  # sandbox) takes ~143 min on a CI runner (1407s local x ~6; unmeasured here
+  # until the first nightly), far past the 60-min shell-unit-shard cap, so it
+  # runs in its own schedule-only job instead of a shard. PR CI and the
+  # nightly shards run the fast subset (GUARD_CORPUS_TIER=fast). The 240-min
+  # cap is the estimate x1.7; a red here is the nightly's own signal and
+  # gates no PR.
+  # ponytail: one job, serial; upgrade path: shard the replay (HIMMEL-5055).
+  guard-corpus-full:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install bubblewrap + socat
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
+      - name: Allow unprivileged user namespaces (bwrap sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Full guard-corpus replay
+        run: bash scripts/eval/guard-corpus/test-guard-corpus.sh

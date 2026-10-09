@@ -1074,7 +1074,7 @@ else
   check_timeout_2267() {  # $1=suite path as passed to _suite_timeout_for; $2=expected timeout; $3=SUITE_TIER_MODE (default all)
     local got
     # shellcheck disable=SC2034 # SUITE_TIMEOUT/SUITE_TIMEOUT_EXPLICIT/SUITE_TIER_MODE are read by the eval-defined _suite_timeout_for, invisible to static analysis
-    got=$(eval "$fn2267"; SUITE_TIMEOUT=600; SUITE_TIMEOUT_EXPLICIT=''; SUITE_TIER_MODE="${3:-all}"; _suite_timeout_for "$1")
+    got=$(eval "$fn2267"; SUITE_TIMEOUT=600; SUITE_TIMEOUT_EXPLICIT=''; SUITE_TIER_MODE="${3:-all}"; GUARD_CORPUS_TIER="${4:-}"; _suite_timeout_for "$1")
     if [ "$got" = "$2" ]; then
       pass "2267: _suite_timeout_for '$1' (tier ${3:-all}) -> ${2}s"
     else
@@ -1089,10 +1089,13 @@ else
   # HIMMEL-4912: per-hook namespace/runtime inspection measured 1407s alone
   # and 1434s with another suite (full replay, ~6x on CI). PR CI runs the fast
   # subset (117s local) under a 1200s cap; the nightly keeps the full cap.
-  check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "1200" fast
-  check_timeout_2267 "/repo/scripts/eval/guard-corpus/test-guard-corpus.sh" "1200" fast
+  check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "1800" fast
+  check_timeout_2267 "/repo/scripts/eval/guard-corpus/test-guard-corpus.sh" "1800" fast
   check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "10800" all
   check_timeout_2267 "/repo/scripts/eval/guard-corpus/test-guard-corpus.sh" "10800"
+  # The nightly shards run tier all with GUARD_CORPUS_TIER=fast (the full replay lives in
+  # the guard-corpus-full job), so the subset cap applies there too.
+  check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "1800" all fast
   check_timeout_2267 "scripts/hooks/test-block-destructive-commands.sh" "3000"
   check_timeout_2267 "/repo/scripts/hooks/test-block-destructive-commands.sh" "3000"
 
