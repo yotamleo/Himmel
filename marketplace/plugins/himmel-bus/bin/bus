@@ -1,17 +1,167 @@
 #!/usr/bin/env node
-// himmel-bus CLI: register | bind | rebind | adopt | status | peers
+// himmel-bus CLI: register | bind | rebind | adopt | status | peers | send | gc
 import { parseArgs } from 'node:util';
+import { constants } from 'node:fs';
+import { readFile, readdir, lstat, mkdtemp, writeFile, rm, stat } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { openChainFile, withChainLock } from '../../../../scripts/telegram/bus.ts';
 import * as store from '../lib/store.mjs';
 import * as identity from '../lib/identity.mjs';
 import * as edges from '../lib/edges.mjs';
 
 const USAGE = `usage: bus register <name> --role leg|console|judge|consult [--console <c>] [--pair <leg>] [--predecessor <old>]
-       bus bind <name> <pid> | rebind <name> <pid> | adopt <new-console> | status <name> | peers`;
+       bus bind <name> <pid> | rebind <name> <pid> | adopt <new-console> | status <name> | peers
+       bus send <to> <body-file> [--re <n>] [--summary <text>] [--doc <handover doc>]
+       bus status [--unacked] [--for <console>] | gc`;
+
+// Same limits as the MCP server's `send` (spec §4).
+const MAX_BODY = 64 * 1024, INLINE_CAP = 1500, MAX_SUMMARY = 300;
+const GC_AGE_MS = 30 * 24 * 3600e3;
+const EXPIRY_MS = 4 * 3600e3;
+const INBOX_SEND = fileURLToPath(new URL('../../../../scripts/handover/console-kit/inbox-send.sh', import.meta.url));
+
+const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+function ulid(now = Date.now()) {
+  let time = '';
+  for (let t = now, i = 0; i < 10; i++, t = Math.floor(t / 32)) time = ULID_ALPHABET[t % 32] + time;
+  return time + [...randomBytes(16)].map(byte => ULID_ALPHABET[byte % 32]).join('');
+}
+
+// The CLI acts as the session it descends from, exactly like the server: the
+// sender is never an argument.
+async function caller(root) {
+  const me = await identity.resolveIdentity(root);
+  if (me.error) throw new Error(me.error);
+  return me.name;
+}
+
+async function writeAck(root, acker, row) {
+  await withChainLock(join(root, 'lock', acker), async () => {
+    const handle = await openChainFile(join(root, 'ack', `${acker}.jsonl`), constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT);
+    try { await handle.write(JSON.stringify(row) + '\n'); } finally { await handle.close(); }
+  });
+}
+
+// Mirrors the ruling under the leg doc's "## Console Rulings" section by running
+// inbox-send.sh itself (its writer and doc hash-lock), with its own inbox
+// pointed at a scratch dir (delivery is the bus's job) and its author set to
+// the bus identity instead of the CLAUDE_PID/-n recovery.
+async function mirror(from, to, body, doc) {
+  const scratch = await mkdtemp(join(tmpdir(), 'bus-doc-'));
+  try {
+    const cmdline = join(scratch, 'cmdline');
+    await writeFile(cmdline, `claude\0-n\0${from}\0`);
+    // The body already committed to the bus, not a re-read of the caller's file.
+    const bodyFile = join(scratch, 'body');
+    await writeFile(bodyFile, body);
+    const env = { ...process.env, HANDOVER_DIR: scratch, CLAUDE_PID: '1', SESSION_NAME_CMDLINE_FILE: cmdline };
+    const r = spawnSync('bash', [INBOX_SEND, to, '--file', bodyFile, '--doc', doc], { env, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`doc mirror failed (rc=${r.status}): ${(r.stderr || '').trim()}`);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
+async function send(root, to, file, { re, summary, doc }) {
+  if (!to || !file) throw new Error(USAGE);
+  const me = await caller(root);
+  if (to === me) throw new Error('cannot send to yourself');
+  const peers = await identity.loadPeers(root);
+  const verdict = edges.check(peers, me, to);
+  if (!verdict.ok) throw new Error(verdict.error);
+  const b = await readFile(file, 'utf8');
+  if (Buffer.byteLength(b) > MAX_BODY) throw new Error('body over 64 KiB');
+  if (Buffer.byteLength(b) > INLINE_CAP && !summary) throw new Error('body over 1500 bytes needs --summary');
+  if (summary !== undefined && Buffer.byteLength(summary) > MAX_SUMMARY) throw new Error('summary over 300 bytes');
+  if (re !== undefined && !/^[1-9]\d*$/.test(re)) throw new Error('--re must be a positive message number');
+  // Checked before anything is sent so a retry cannot duplicate the message.
+  if (doc !== undefined && !(await stat(doc).catch(() => null))?.isFile()) throw new Error(`--doc target not found: ${doc}`);
+
+  const record = { i: ulid(), t: Date.now(), f: me, r: to, b };
+  if (peers[to].console === me) record.c = 1;
+  if (summary !== undefined) record.s = summary;
+  if (re !== undefined) {
+    const own = (await store.scan(root, me)).find(rec => rec.n === Number(re));
+    if (!own) throw new Error(`no message #${re}`);
+    if (own.r !== me || own.f !== to) throw new Error(`#${re} was not sent to you by ${to}`);
+    record.re = own.i;
+  }
+  const stamped = await store.append(root, to, record);
+  console.log(`sent #${stamped.n} to ${to}`);
+  if (record.re) {
+    try { await writeAck(root, me, { i: record.re, re: record.i, t: record.t }); }
+    catch (error) { console.error(`bus: sent, but ack not recorded: ${error.message}`); process.exitCode = 1; }
+  }
+  if (doc !== undefined) {
+    try { await mirror(me, to, b, doc); }
+    catch (error) { console.error(`bus: sent #${stamped.n}, but ${error.message}`); process.exitCode = 1; }
+  }
+}
+
+async function cursorOf(root, name) {
+  try { return JSON.parse(await readFile(join(root, 'cur', name), 'utf8')); }
+  catch (error) { return error.code === 'ENOENT' ? { k: 0 } : null; }
+}
+
+// Reports closed segments that are fully delivered and older than 30 days.
+// Undelivered, halted or unreadable-cursor segments are kept and reported. Deletes nothing yet.
+async function gc(root) {
+  const logs = join(root, 'log');
+  const names = Object.keys(await identity.loadPeers(root));
+  const cutoff = Date.now() - GC_AGE_MS;
+  let removable = 0, kept = 0;
+  for (const name of names) {
+    const pattern = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(\\d+)\\.jsonl(?:\\.(?:zst|gz))?$`);
+    const files = (await readdir(logs)).flatMap(file => { const m = pattern.exec(file); return m ? [[Number(m[1]), join(logs, file)]] : []; });
+    if (!files.length) continue;
+    await withChainLock(join(root, 'lock', name), async () => {
+      const cur = await cursorOf(root, name);
+      const ks = [...new Set(files.map(([k]) => k))].sort((a, b) => a - b);
+      for (const k of ks) {
+        const mine = files.filter(([n]) => n === k).map(([, file]) => file);
+        const label = `${name}.${k}`;
+        const reason = !cur ? 'unreadable cursor' : cur.halted ? 'halted' : cur.k <= k ? 'undelivered' : null;
+        if (reason) { console.log(`kept ${label} (${reason})`); kept++; continue; }
+        const infos = await Promise.all(mine.map(file => lstat(file)));
+        if (infos.some(i => !i.isFile()) || Math.max(...infos.map(i => i.mtimeMs)) > cutoff) continue;
+        // ponytail: report-only, store.scan chain-verifies from n=0 so a removed segment empties it (--re, read); upgrade path HIMMEL-5072.
+        console.log(`would remove ${label}`); removable++;
+      }
+    });
+  }
+  console.log(`gc: ${removable} removable, ${kept} kept; nothing deleted (deletion waits on HIMMEL-5072: scan must survive a removed segment)`);
+}
+
+// Rulings (c=1) involving the caller. `expired` is computed, never stored: an
+// unacked ruling older than 4 hours.
+async function rulings(root, { unacked, from }) {
+  const me = await caller(root);
+  const now = Date.now();
+  const lines = [];
+  for (const to of Object.keys(await identity.loadPeers(root))) {
+    const acked = new Set();
+    try { for (const line of (await readFile(join(root, 'ack', `${to}.jsonl`), 'utf8')).split('\n')) { try { acked.add(JSON.parse(line).i); } catch { /* partial line */ } } }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    for (const rec of await store.scan(root, to)) {
+      if (rec.c !== 1 || (rec.f !== me && rec.r !== me) || (from && rec.f !== from)) continue;
+      const state = acked.has(rec.i) ? 'acked' : now - rec.t > EXPIRY_MS ? 'expired' : 'unacked';
+      if (unacked && state === 'acked') continue;
+      lines.push(`${to} #${rec.n} ${rec.i} from=${rec.f} ${new Date(rec.t).toISOString()} ${state}`);
+    }
+  }
+  console.log(lines.join('\n'));
+}
 
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { role: { type: 'string' }, console: { type: 'string' }, pair: { type: 'string' }, predecessor: { type: 'string' } },
+    options: {
+      role: { type: 'string' }, console: { type: 'string' }, pair: { type: 'string' }, predecessor: { type: 'string' },
+      re: { type: 'string' }, summary: { type: 'string' }, doc: { type: 'string' },
+      unacked: { type: 'boolean' }, for: { type: 'string' },
+    },
   });
   const [verb, name, extra] = positionals;
   const root = await store.busRoot();
@@ -21,7 +171,12 @@ async function main() {
     case 'register': await identity.register(root, need(name), values); return;
     case 'bind': await identity.bind(root, need(name), pid()); return;
     case 'rebind': await identity.rebind(root, need(name), pid()); return;
-    case 'status': console.log(await identity.status(root, need(name))); return;
+    case 'status':
+      if (name) { console.log(await identity.status(root, name)); return; }
+      await rulings(root, { unacked: values.unacked, from: values.for });
+      return;
+    case 'send': await send(root, name, extra, values); return;
+    case 'gc': await gc(root); return;
     case 'adopt': case 'peers': {
       // Both act as the calling session: a descendant of a bound claude.
       const me = await identity.resolveIdentity(root);
