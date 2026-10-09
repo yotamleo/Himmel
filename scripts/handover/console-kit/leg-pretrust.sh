@@ -36,10 +36,16 @@ fi
 [ -d "$dir" ] || { echo "leg-pretrust: not a directory: $dir" >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { echo "leg-pretrust: node not on PATH" >&2; exit 2; }
 
-abs="$(cd -P "$dir" 2>/dev/null && pwd -P)" || { echo "leg-pretrust: cannot resolve: $dir" >&2; exit 2; }
+# The trailing "x" keeps $(...) from eating a newline that is part of the directory name.
+abs="$(cd -P "$dir" 2>/dev/null && pwd -P && printf x)" || { echo "leg-pretrust: cannot resolve: $dir" >&2; exit 2; }
+abs="${abs%x}"; abs="${abs%$'\n'}"   # drop the x, then the one newline pwd added
 home="$(cd -P "${LEG_PRETRUST_HOME:-$HOME}" 2>/dev/null && pwd -P)" || { echo "leg-pretrust: cannot resolve HOME" >&2; exit 2; }  # LEG_PRETRUST_HOME: test seam
 
 refuse() { echo "leg-pretrust: REFUSED $abs: $1" >&2; exit 3; }
+
+case "$abs" in
+    *$'\n'*|*/) refuse "path has a newline or ends in / (it would not round-trip as a projects key)" ;;
+esac
 
 ok=0
 case "$abs/" in
@@ -64,52 +70,133 @@ case "$lane" in
     deepseek) cfg="$home/.claude-deepseek/.claude.json" ;;
     *) echo "leg-pretrust: unknown lane: $lane" >&2; exit 2 ;;
 esac
+# Jailed rows (HIMMEL-5068, pilot p20): claude runs inside a bwrap jail where the
+# worktree is bound at another path and ~/.claude-<lane> is a per-row copy, so the
+# flag must land in THAT config under THAT path. LEG_PRETRUST_CONFIG names the
+# config file and LEG_PRETRUST_KEY the project key; the directory is still checked
+# above. The jail can write the row's config dir, so in that mode nothing in it is
+# trusted: the config, its sidecar and its lock must not be symlinks (the host would
+# write through them), the dir must be ours, and the config must not be a real lane
+# config. The key is honoured only with the config, as <repo>/.claude/worktrees/<same
+# last component as the checked dir> with no empty or dot segment (the jail re-binds
+# the same worktree, it never trusts a different one).
+if [ -n "${LEG_PRETRUST_KEY:-}" ] && [ -z "${LEG_PRETRUST_CONFIG:-}" ]; then
+    refuse "LEG_PRETRUST_KEY is honoured only together with LEG_PRETRUST_CONFIG"
+fi
+if [ -n "${LEG_PRETRUST_CONFIG:-}" ]; then
+    case "$LEG_PRETRUST_CONFIG" in
+        /*/.claude.json) cfg="$LEG_PRETRUST_CONFIG" ;;
+        *) echo "leg-pretrust: LEG_PRETRUST_CONFIG must be an absolute path ending in /.claude.json" >&2; exit 2 ;;
+    esac
+    cfgdir="$(cd -P "$(dirname "$cfg")" 2>/dev/null && pwd -P)" || cfgdir=""
+    [ -n "$cfgdir" ] || { echo "leg-pretrust: lane config dir absent (launcher not seeded yet): $(dirname "$cfg")" >&2; exit 4; }
+    case "$cfgdir" in
+        "$home"|"$home/.claude-codex"|"$home/.claude-openrouter"|"$home/.claude-deepseek"|"$home/.claude-glm"|"$home/.claude-routed") refuse "LEG_PRETRUST_CONFIG is a real lane config" ;;
+    esac
+    [ -O "$cfgdir" ] || refuse "LEG_PRETRUST_CONFIG dir is not owned by the current user"
+    for f in "$cfg" "$cfg.lock" "$cfg.leg-pretrust.owner"; do
+        [ ! -L "$f" ] || refuse "$f is a symlink (a jailed lane could point it outside the row)"
+    done
+fi
+if [ -n "${LEG_PRETRUST_KEY:-}" ]; then
+    case "$LEG_PRETRUST_KEY" in
+        *$'\n'*|*/|*//*|*/./*|*/.|*/../*|*/..) refuse "LEG_PRETRUST_KEY has a newline, trailing /, empty or dot segment" ;;
+        /*/.claude/worktrees/"${abs##*/}") abs="$LEG_PRETRUST_KEY" ;;
+        *) refuse "LEG_PRETRUST_KEY must be <repo>/.claude/worktrees/${abs##*/}" ;;
+    esac
+fi
 # Never create a lane config dir: the lane launcher seeds it, and a dir it did not
 # seed reads to it as a half-seeded one.
 [ -d "$(dirname "$cfg")" ] || { echo "leg-pretrust: lane config dir absent (launcher not seeded yet): $(dirname "$cfg")" >&2; exit 4; }
 
-# mkdir lock beside the config; a holder that died is reclaimed after 1-2 min.
-lock="$cfg.leg-pretrust.lock"
+# Take the lock claude itself takes when it saves this file (claude 2.1.295
+# saveConfigWithLock: proper-lockfile with lockfilePath "<cfg>.lock" - a mkdir
+# directory whose mtime the holder refreshes every 5 s, stale after 10 s), so
+# pretrust and a live claude exclude each other. Nothing may live INSIDE that
+# dir (claude releases it with rmdir), so our owner pid is a sidecar file.
+# ponytail: pid reuse can keep a dead owner "alive", a pid on another host is
+# not checked; upgrade path is a host+start-time stamp in the sidecar.
+lock="$cfg.lock"
+owner="$cfg.leg-pretrust.owner"
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# Stale = claude's own rule (no mtime refresh for >10 s) AND no live owner of ours.
+lock_reclaimable() {
+    local m opid
+    m="$(mtime_of "$lock")" || return 1
+    [ -n "$m" ] && [ $(( $(date +%s) - m )) -gt 10 ] || return 1
+    opid="$(cat "$owner" 2>/dev/null)"
+    [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null && return 1
+    return 0
+}
+tries="${LEG_PRETRUST_LOCK_TRIES:-150}"   # x 0.1 s; > a 10 s stale window. LEG_PRETRUST_LOCK_TRIES: test seam
 waited=0
 until mkdir "$lock" 2>/dev/null; do
-    if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-        rm -f "$lock/owner"; rmdir "$lock" 2>/dev/null || true
+    # A reclaim that cannot remove the dir falls through to the timeout count below.
+    if [ -d "$lock" ] && lock_reclaimable && rmdir "$lock" 2>/dev/null; then
         continue
     fi
     waited=$((waited + 1))
-    [ "$waited" -le 100 ] || { echo "leg-pretrust: lock timeout: $lock" >&2; exit 5; }
+    [ "$waited" -le "$tries" ] || { echo "leg-pretrust: lock timeout: $lock" >&2; exit 5; }
     sleep 0.1
 done
-echo "$$" > "$lock/owner" 2>/dev/null || true
+# The sidecar may be stale or a planted symlink: drop it (rm never follows) and create
+# it O_EXCL (noclobber), so the pid is never written through a link.
+rm -f "$owner" 2>/dev/null
+( set -C; echo "$$" > "$owner" ) 2>/dev/null || true
 # Release only a lock we still own: a reclaimed-then-retaken lock is the successor's.
-trap '[ "$(cat "$lock/owner" 2>/dev/null)" = "$$" ] && { rm -f "$lock/owner"; rmdir "$lock" 2>/dev/null; }; true' EXIT
+trap '[ "$(cat "$owner" 2>/dev/null)" = "$$" ] && { rm -f "$owner"; rmdir "$lock" 2>/dev/null; }; true' EXIT
 
-WT_KEY="$abs" WT_CONFIG="$cfg" node -e '
+WT_KEY="$abs" WT_CONFIG="$cfg" WT_SEAM="${LEG_PRETRUST_CONFIG:+1}" node -e '
 const fs = require("fs");
-const p = process.env.WT_CONFIG, key = process.env.WT_KEY;
+const key = process.env.WT_KEY;
+// A symlinked config is written THROUGH (the link stays); the rename targets the real file.
+let p = process.env.WT_CONFIG;
+// Seam mode: the jailed lane can swap the config for a symlink after bash checked it, so
+// refuse a link here (lstat) and read through O_NOFOLLOW; the rename replaces a link, never follows it.
+const seam = process.env.WT_SEAM === "1";
+const refuseLink = () => { console.error("leg-pretrust: " + p + " is a symlink (seam mode) - refusing"); process.exit(3); };
+try { if (seam && fs.lstatSync(p).isSymbolicLink()) refuseLink(); } catch (e) { if (e.code !== "ENOENT") throw e; }
+// Seam mode never resolves the path (a second lstat/realpath is itself a race window).
+if (!seam) try { if (fs.lstatSync(p).isSymbolicLink()) p = fs.realpathSync(p); } catch (e) {
+    if (e.code !== "ENOENT") { console.error("leg-pretrust: cannot resolve " + p + " (" + e.message + ")"); process.exit(4); }
+    try { fs.lstatSync(p); console.error("leg-pretrust: " + p + " is a dangling symlink - refusing to write"); process.exit(4); } catch (_) {}
+}
 const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const sig = () => { try { const s = fs.statSync(p); return s.mtimeMs + ":" + s.size; } catch (_) { return "none"; } };
+const sig = () => { try { const s = seam ? fs.lstatSync(p) : fs.statSync(p); return s.mtimeMs + ":" + s.size; } catch (_) { return "none"; } };
 // Live claude sessions write this file without our lock, so re-check its
 // mtime+size right before the rename and redo the read-modify-write if it moved.
 for (let attempt = 0; attempt < 5; attempt++) {
     const before = sig();
     let j = {};
+    let fmode = null;   // seam mode: mode of the file we actually opened (fstat), never an lstat that could see the 0777 of a link
     try {
-        j = JSON.parse(fs.readFileSync(p, "utf8"));
+        if (seam) {
+            const rfd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            try { fmode = fs.fstatSync(rfd).mode & 0o777; j = JSON.parse(fs.readFileSync(rfd, "utf8")); } finally { fs.closeSync(rfd); }
+        } else j = JSON.parse(fs.readFileSync(p, "utf8"));
     } catch (e) {
+        if (e.code === "ELOOP") refuseLink();
         if (e.code !== "ENOENT") {
             console.error("leg-pretrust: cannot use " + p + " (" + e.message + ") - refusing to overwrite");
             process.exit(4);
         }
     }
     if (!obj(j)) { console.error("leg-pretrust: " + p + " is not a JSON object - refusing to overwrite"); process.exit(4); }
-    if (!obj(j.projects)) j.projects = {};
-    if (!obj(j.projects[key])) j.projects[key] = {};
+    // A present-but-non-object projects / projects[key] is data we do not own: refuse, never overwrite.
+    if (j.projects !== undefined && !obj(j.projects)) { console.error("leg-pretrust: " + p + " has a non-object projects - refusing to overwrite"); process.exit(4); }
+    if (j.projects === undefined) j.projects = {};
+    if (j.projects[key] !== undefined && !obj(j.projects[key])) { console.error("leg-pretrust: " + p + " has a non-object projects[" + key + "] - refusing to overwrite"); process.exit(4); }
+    if (j.projects[key] === undefined) j.projects[key] = {};
     if (j.projects[key].hasTrustDialogAccepted === true) process.exit(0);
     j.projects[key].hasTrustDialogAccepted = true;
     const tmp = p + ".tmp-pretrust-" + process.pid;
+    // Keep the mode as found (claude does the same); a new file gets the 0600 default claude uses.
+    let mode = 0o600;
+    if (seam) { if (fmode !== null) mode = fmode; } else try { mode = fs.statSync(p).mode & 0o777; } catch (_) {}
     try {
-        fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
+        // fchmod the fd we created (wx), not the path: a path can be swapped between calls.
+        const wfd = fs.openSync(tmp, "wx", 0o600);
+        try { fs.fchmodSync(wfd, mode); fs.writeFileSync(wfd, JSON.stringify(j, null, 2) + "\n"); } finally { fs.closeSync(wfd); }
         if (sig() !== before) { fs.unlinkSync(tmp); continue; }
         fs.renameSync(tmp, p);
         process.exit(0);

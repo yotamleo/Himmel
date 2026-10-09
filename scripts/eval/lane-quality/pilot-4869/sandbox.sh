@@ -208,6 +208,11 @@ case "$mode" in
   run|check) [ $# -gt 0 ] || die "$mode needs a command"; exec bwrap "${A[@]}" --chdir "$WT" -- "$@" ;;
   launch)
     mkdir -p "$ROWCONF" "$TX" || die "cannot create $ROWCONF or $TX"
+    # The jailed claude runs at $JWT with $ROWCONF as its lane config, so the folder-trust
+    # flag (HIMMEL-5068) must be seeded there, under that exact key; non-fatal like the caller's.
+    LEG_PRETRUST_CONFIG="$ROWCONF/.claude.json" LEG_PRETRUST_KEY="$JWT" \
+      bash "$REPO/scripts/handover/console-kit/leg-pretrust.sh" "$LANE" "$WT" \
+      || echo "pilot-sandbox: warning: could not pre-trust $JWT in $ROWCONF" >&2
     if [ -z "${!KEY:-}" ]; then
       # shellcheck source=/dev/null
       . "$REPO/scripts/lib/load-dotenv.sh"
