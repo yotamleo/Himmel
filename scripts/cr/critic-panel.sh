@@ -2146,6 +2146,23 @@ if [ "$ndb" -gt 0 ]; then
                 --model critic-panel --status unavailable --reason certify-refused \
                 --detail "citation-guard digest unavailable (sha256sum/shasum); run refused, exit 6" >/dev/null \
                 || echo "critic-panel.sh: could not record certify-refused on the CR ledger" >&2
+            # HIMMEL-5110: clear-cr-marker.sh reads only the FIXED
+            # <git-common-dir> ledger. When CR_LEDGER pointed this run
+            # elsewhere the row above never reaches the gate, so record the
+            # refusal on the fixed ledger too. A refusal row only ever tightens.
+            _fixed_common="$(git -C "$REVIEW_ROOT" rev-parse --git-common-dir 2>/dev/null)" || _fixed_common=""
+            if [ -n "$_fixed_common" ]; then
+                case "$_fixed_common" in
+                    /*|[A-Za-z]:/*) _fixed_ledger="$_fixed_common/cr-critic-scores.jsonl" ;;
+                    *) _fixed_ledger="$REVIEW_ROOT/$_fixed_common/cr-critic-scores.jsonl" ;;
+                esac
+                if [ "$_fixed_ledger" != "$PANEL_LEDGER" ]; then
+                    CR_LEDGER="$_fixed_ledger" bash "$LEDGER_APPEND" avail --branch "$REVIEW_BRANCH" --head "$REVIEW_HEAD" \
+                        --model critic-panel --status unavailable --reason certify-refused \
+                        --detail "citation-guard digest unavailable (sha256sum/shasum); run refused, exit 6" >/dev/null \
+                        || echo "critic-panel.sh: could not record certify-refused on the CR ledger" >&2
+                fi
+            fi
         fi
         exit 6
     fi

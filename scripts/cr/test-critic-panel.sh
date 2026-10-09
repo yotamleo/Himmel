@@ -677,10 +677,16 @@ print("## Important Issues (0 found)")
 print("## Suggestions (0 found)")
 PYEOF
 DIGF_LEDGER="$tmp/digest-fail-ledger.jsonl"; : > "$DIGF_LEDGER"
+# HIMMEL-5110: run from a throwaway repo. The refusal is also recorded on the
+# FIXED <git-common-dir> ledger of the reviewed repo, which must not be this one.
+DIGF_REPO="$tmp/digf-repo"; mkdir -p "$DIGF_REPO"; git init -q "$DIGF_REPO"
+git -C "$DIGF_REPO" config user.name test
+git -C "$DIGF_REPO" config user.email t@e.invalid
+printf 'x\n' > "$DIGF_REPO/README"; git -C "$DIGF_REPO" add README; git -C "$DIGF_REPO" commit -q -m init
 digf_rc=0
-PATH="$FAKEBIN:$PATH" HERMES_PY="$AD_PY" CR_LEDGER="$DIGF_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+( cd "$DIGF_REPO" && PATH="$FAKEBIN:$PATH" HERMES_PY="$AD_PY" CR_LEDGER="$DIGF_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
     CRITICS_JSON="$AD_JSON" CRITIC_FIRST_PASS="$HERE/critic-first-pass.sh" \
-    bash "$PANEL" <<< "$DIFF" > "$tmp/digf-out-a" 2> "$tmp/digf-err-a" || digf_rc=$?
+    bash "$PANEL" <<< "$DIFF" > "$tmp/digf-out-a" 2> "$tmp/digf-err-a" ) || digf_rc=$?
 check "HIMMEL-1871 round 7: digest failure refuses the run (exit 6)" "$digf_rc" "6"
 check_contains "HIMMEL-1871 round 7: refusal is loud on stderr" "$(cat "$tmp/digf-err-a")" "refusing to certify"
 check "HIMMEL-1871 round 7: no review body is emitted on refusal" \
@@ -692,9 +698,9 @@ print("## Important Issues (0 found)")
 print("## Suggestions (0 found)")
 PYEOF
 digf_rc_b=0
-PATH="$FAKEBIN:$PATH" HERMES_PY="$AD_PY" CR_LEDGER="$DIGF_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+( cd "$DIGF_REPO" && PATH="$FAKEBIN:$PATH" HERMES_PY="$AD_PY" CR_LEDGER="$DIGF_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
     CRITICS_JSON="$AD_JSON" CRITIC_FIRST_PASS="$HERE/critic-first-pass.sh" \
-    bash "$PANEL" <<< "$DIFF" > "$tmp/digf-out-b" 2> "$tmp/digf-err-b" || digf_rc_b=$?
+    bash "$PANEL" <<< "$DIFF" > "$tmp/digf-out-b" 2> "$tmp/digf-err-b" ) || digf_rc_b=$?
 check "HIMMEL-1871 round 7: second distinct-evidence run also refuses (exit 6)" "$digf_rc_b" "6"
 check "HIMMEL-1871 round 7: distinct same-head drops share NO ledger key (no guard rows)" \
     "$(grep -c '"model":"citation-guard"' "$DIGF_LEDGER" || true)" "0"
@@ -709,6 +715,11 @@ check "HIMMEL-1871 round 7: refused runs append NOTHING to the ledger but score 
     "$(grep -vc '"kind":"score"\|"kind":"avail"' "$DIGF_LEDGER" || true)" "0"
 check "HIMMEL-1932: the refusal is recorded as exactly one avail unavailable certify-refused row" \
     "$(grep -c '"kind":"avail".*"status":"unavailable".*"reason":"certify-refused"' "$DIGF_LEDGER" || true)" "1"
+# HIMMEL-5110 item 1: CR_LEDGER pointed the run at an override ledger, but
+# clear-cr-marker.sh reads only the FIXED <git-common-dir> one, so the refusal
+# must land there too or the gate never sees it.
+check "HIMMEL-5110: the refusal is also recorded on the fixed git-common-dir ledger" \
+    "$(grep -c '"kind":"avail".*"status":"unavailable".*"reason":"certify-refused"' "$DIGF_REPO/.git/cr-critic-scores.jsonl" 2>/dev/null || true)" "1"
 check "HIMMEL-1932: the refusal row is an avail row, not a finding (no finding row, no guard id)" \
     "$(grep -c '"kind":"finding"\|citation-guard-' "$DIGF_LEDGER" || true)" "0"
 check "HIMMEL-3104: each refused run that got an answer records one score row" \

@@ -163,6 +163,17 @@ contains "$(cat "$stderr_file")" "docs-audit cross-model critic unavailable (all
 contains "$(cat "$stderr_file")" "panel-availability: fake unavailable (rc=1)" "T7 stderr re-emits the panel's availability line"
 [ -e "$STUB_MARKER" ] || { echo "FAIL: T7 stub was never invoked"; fail=1; }
 
+# 7b. HIMMEL-5110: panel exit 6 is the deliberate certify refusal, not a failed
+# panel: same fail-open degrade, but the message must say REFUSED.
+export CR_REQUIRE_CROSS_MODEL=1
+unset CR_PROFILE 2>/dev/null || true
+export STUB_RC=6 STUB_OUT="should-be-discarded" STUB_ERR="panel-availability: fake unavailable (rc=6)"
+rc=$(run_sut --head "$head_feat" --branch feat)
+check "$rc" "0" "T7b rc (degrade, not abort)"
+check "$(cat "$stdout_file")" "" "T7b stdout (findings discarded)"
+contains "$(cat "$stderr_file")" "docs-audit critic panel REFUSED to certify this run (exit 6" "T7b stderr names the refusal"
+case "$(cat "$stderr_file")" in *"all critics failed"*) echo "FAIL: T7b exit 6 must not read as all critics failed"; fail=1 ;; esac
+
 # 8. Stubbed panel exit 0: findings land on stdout ONLY, panel-availability
 # lands on stderr ONLY - the two streams never merge.
 export CR_REQUIRE_CROSS_MODEL=1
