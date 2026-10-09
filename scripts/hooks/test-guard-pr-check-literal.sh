@@ -1664,6 +1664,9 @@ for v in \
     'git grep -e .' \
     'git log --oneline -3' \
     'git diff --stat' \
+    'git diff -Oorderfile' \
+    'git log -Oorderfile --oneline' \
+    'git grep --only-matching -e .' \
     'git -c user.name=t -c user.email=t@t commit -m x'; do
     run "HIMMEL-4958 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done

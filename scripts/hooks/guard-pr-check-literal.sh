@@ -866,8 +866,10 @@ git_mentions_only() { # git_mentions_only <command-word index>
         # HIMMEL-4958: an exec/write option is denied whatever the pathspec; a
         # directory or empty pathspec matches guarded scripts without naming them.
         case "$w" in
-            --oneline) ;;
-            --exec* | --upload* | --receive* | ext::* | --o* | --ext* | -O* | -[!-]*O*) PR_GIT_EXEC=1 ;;
+            --oneline | --on*) ;;
+            --exec* | --upload* | --receive* | ext::* | --o* | --ext*) PR_GIT_EXEC=1 ;;
+            # -O runs a pager only for grep; diff/log/show take it as an orderfile.
+            -O* | -[!-]*O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
             -c* | --config*)
                 case "$w ${ST_W[j + 1]:-}" in
                     *'!'* | *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshCommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
