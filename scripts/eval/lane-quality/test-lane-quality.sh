@@ -180,7 +180,7 @@ cp "$(dirname "$RUN")/../../api-lane/strip-env.sh" "$TREE/scripts/api-lane/strip
 RUN_API="$TREE/scripts/eval/lane-quality/run.sh"
 cat >"$TREE/scripts/api-lane/claude-api.sh" <<'FAKE'
 #!/usr/bin/env bash
-{ echo "key=${ANTHROPIC_API_KEY:-}"; echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-}"; echo "job=${HIMMEL_API_JOB_ID:-}"; echo "args=$*"; } >>"$LQ_FAKE_APIENV"
+{ echo "key=${ANTHROPIC_API_KEY:-}"; echo "sel=${HIMMEL_API_LANE:-}/${HIMMEL_API_ACCOUNT:-}/${HIMMEL_API_KEY_ID:-}"; echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-}"; echo "job=${HIMMEL_API_JOB_ID:-}"; echo "args=$*"; } >>"$LQ_FAKE_APIENV"
 if [ -n "${LQ_FAKE_FSMON:-}" ]; then # an agent-written core.fsmonitor: git runs it on the harness's next index refresh
   printf '#!/usr/bin/env bash\nenv >>"%s"\n' "$LQ_FAKE_FSMON" >"$LQ_FAKE_FSMON.sh"; chmod +x "$LQ_FAKE_FSMON.sh"
   git config core.fsmonitor "$LQ_FAKE_FSMON.sh"
@@ -257,7 +257,7 @@ check "the bank preflight runs without the API key and lane selectors on the api
 
 # judge B2: run.sh's own git calls (worktree add, the fixture commit, git add -A) fire hooks in an LQ_REPO-selected
 # repo and an agent-written core.fsmonitor, so the key and lane selectors must not be in run.sh's environment at all.
-rm -f "$TMP/hook.env" "$TMP/fsmon.env"
+rm -f "$TMP/hook.env" "$TMP/fsmon.env" "$APIENV"
 for h in post-checkout reference-transaction post-index-change post-commit; do
   printf '#!/usr/bin/env bash\nenv >>"%s"\n' "$TMP/hook.env" >"$TMP/repo/.git/hooks/$h"; chmod +x "$TMP/repo/.git/hooks/$h"
 done
@@ -266,7 +266,7 @@ for h in post-checkout reference-transaction post-index-change post-commit; do r
 git -C "$TMP/repo" config --unset core.fsmonitor 2>/dev/null
 check "a hook in LQ_REPO sees no API key or lane selector from run.sh's git calls" '[ -s "$TMP/hook.env" ] && ! grep -q "^ANTHROPIC_API_KEY=\|^HIMMEL_API_" "$TMP/hook.env"'
 check "an agent-written core.fsmonitor sees no API key or lane selector" '[ -s "$TMP/fsmon.env" ] && ! grep -q "^ANTHROPIC_API_KEY=\|^HIMMEL_API_" "$TMP/fsmon.env"'
-check "the launcher still receives the key and selectors" '[ -s "$APIENV" ] && grep -q "^key=sk-ant-dummy-0000" "$APIENV"'
+check "the launcher still receives the key and selectors" 'grep -q "^key=sk-ant-dummy-0000$" "$APIENV" && grep -q "^sel=on/B/key-b$" "$APIENV"'
 
 # HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
 printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"
