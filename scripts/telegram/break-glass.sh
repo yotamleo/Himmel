@@ -164,7 +164,7 @@ op_station_status() {
         [ -e "$f" ] || continue
         hb="$(sed -n 's/^hb=\([0-9][0-9]*\) .*/\1/p' "$f" 2>/dev/null | head -n 1)"
         st="$(sed -n 's/.* state=\([a-z]*\).*/\1/p' "$f" 2>/dev/null | head -n 1)"
-        age=$(( now - ${hb:-0} ))
+        age=$(( now - 10#${hb:-0} ))
         case "$st" in
             waiting|sampling)
                 if [ -n "$hb" ] && [ "$age" -ge 0 ] && [ "$age" -lt 600 ]; then
