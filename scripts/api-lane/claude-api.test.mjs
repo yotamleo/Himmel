@@ -94,6 +94,7 @@ test('HIMMEL-5073: the scrub forces default permission mode, so the launcher dec
   assert.equal(f.run().status, 0);
   const seen = readFileSync(f.paths.env, 'utf8');
   assert.match(seen, /--allowedTools Read,Edit,Write,Glob,Grep,Bash/);
+  assert.match(seen, /--tools Read,Edit,Write,Glob,Grep,Bash/);
   assert.match(seen, /--permission-mode plan/);
 });
 
@@ -204,6 +205,7 @@ test('judge: bypass flags in any spelling and caller-supplied tool/settings/mcp 
   const flags = ['--dangerously-skip-permissions=true', '--dangerously-skip-permissions=anything', '--allow-dangerously-skip-permissions=false',
     '--allowedTools', '--allowedTools=Bash', '--allowed-tools', '--allowed-tools=Bash', '--settings', '--settings={}', '--mcp-config', '--mcp-config=x.json',
     '--Dangerously-Skip-Permissions=true', '--dangerously_skip_permissions', '--ALLOWEDTOOLS=Bash', '--allowed_tools', '--MCP_CONFIG',
+    '--tools', '--tools=Bash', '--TOOLS=Bash',
     '--plugin-dir', '--plugin-dir=x', '--plugin_dir', '--add-dir', '--add-dir=x', '@args.txt'];
   for (const flag of flags) {
     const r = f.run([...f.good, flag, ...(flag.includes('=') ? [] : ['x'])]);

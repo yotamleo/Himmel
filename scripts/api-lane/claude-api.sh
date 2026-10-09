@@ -40,7 +40,7 @@ while [ "$#" -gt 0 ]; do
   # A @file argument is an args file, which could carry any of them.
   case "$a" in -*) n="$(printf '%s' "${a%%=*}" | tr 'A-Z_' 'a-z-')" ;; *) n="" ;; esac
   case "$n" in
-    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--allowedtools|--allowed-tools|--settings|--mcp-config|--plugin-dir|--add-dir)
+    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--allowedtools|--allowed-tools|--tools|--settings|--mcp-config|--plugin-dir|--add-dir)
       refuse "flag ${a%%=*} is not allowed on the api lane" ;;
   esac
   case "$a" in @*) refuse "an @argsfile argument is not allowed on the api lane" ;; esac
@@ -97,6 +97,7 @@ BANK_VERDICT="$(env -u CLAUDE_CODE_OAUTH_TOKEN CADENCE_BANK_LANE=api CADENCE_BAN
 # permission mode "default" whatever --permission-mode a caller passes (the eval passes auto), and in -p that
 # denies Edit/Write/Bash unless declared here. The scrub is the bwrap sandbox, so it cannot be dropped; this
 # allowance is the fixture-work tool set, the sandbox bounds Bash, and callers cannot add to or replace it.
+# --allowedTools only preapproves; --tools is what limits the tools claude may use at all.
 ALLOWED_TOOLS="Read,Edit,Write,Glob,Grep,Bash"
 
 OUT="$(mktemp "${TMPDIR:-/tmp}/claude-api-out.XXXXXX")" || refuse "no scratch file"
@@ -113,7 +114,7 @@ env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_PROFILE -u ANTHROPIC_FEDERATION_RULE
   -u ANTHROPIC_ORGANIZATION_ID -u ANTHROPIC_AUTH_TOKEN -u HIMMEL_API_LANE -u HIMMEL_API_KEY_ID \
   ANTHROPIC_BASE_URL=https://api.anthropic.com CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
   "$CLAUDE_BIN" "${ARGS[@]}" --model "$MODEL" --permission-mode "$MODE" \
-  --allowedTools "$ALLOWED_TOOLS" --max-budget-usd "$BUDGET" --output-format json >"$OUT"
+  --tools "$ALLOWED_TOOLS" --allowedTools "$ALLOWED_TOOLS" --max-budget-usd "$BUDGET" --output-format json >"$OUT"
 RC=$?
 
 # --- settle on verified cost, otherwise keep the reservation as unknown ---
