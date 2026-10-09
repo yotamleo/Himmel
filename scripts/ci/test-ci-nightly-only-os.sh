@@ -164,55 +164,60 @@ if grep -Eq '^        timeout-minutes: [0-9]+$' <<< "$step"; then
 else
   bad "shell-unit-shard: at/atd install step has no step-level timeout-minutes"
 fi
-apt_total="$(grep -c 'apt-get ' <<< "$step")"
-apt_locked="$(grep -c 'apt-get .*DPkg::Lock::Timeout=' <<< "$step")"
-if [ "$apt_total" -gt 0 ] && [ "$apt_total" -eq "$apt_locked" ]; then
-  ok "shell-unit-shard: every apt-get call in the install step carries DPkg::Lock::Timeout ($apt_locked/$apt_total)"
+# HIMMEL-2872: the apt calls moved into .github/scripts/apt-install.sh; the step
+# must call it for exactly at + bubblewrap + socat, and the helper carries the
+# HIMMEL-3919 / 4073 / 4077 invariants this block used to pin inline.
+HELPER_SH="$ROOT/.github/scripts/apt-install.sh"
+if grep -Eq '^ +bash \.github/scripts/apt-install\.sh at bubblewrap socat$' <<< "$step" \
+   && ! grep -q 'apt-get ' <<< "$step"; then
+  ok "shell-unit-shard: at/atd install goes through apt-install.sh (at bubblewrap socat)"
 else
-  bad "shell-unit-shard: apt-get calls in the install step lacking DPkg::Lock::Timeout ($apt_locked/$apt_total)"
+  bad "shell-unit-shard: at/atd install does not call apt-install.sh for at bubblewrap socat"
 fi
-# HIMMEL-4073: the plain install runs FIRST; `apt-get update` is only the
-# fallback after it fails, and the step logs which path ran.
-first_apt="$(grep -m1 -o 'apt-get [a-z]*' <<< "$step")"
-else_ln="$(grep -n '^ *else$' <<< "$step" | head -1 | cut -d: -f1)"
-upd_ln="$(grep -n 'apt-get update' <<< "$step" | head -1 | cut -d: -f1)"
-if [ "$first_apt" = "apt-get install" ] && grep -Eq '^ +if sudo timeout [0-9]+ apt-get install ' <<< "$step" \
-   && [ -n "$else_ln" ] && [ -n "$upd_ln" ] && [ "$upd_ln" -gt "$else_ln" ]; then
-  ok "shell-unit-shard: at/atd install tries plain install first, apt-get update only in the else fallback"
+# shellcheck disable=SC2016  # the patterns match helper source text literally
+if [ ! -f "$HELPER_SH" ]; then
+  bad "shell-unit-shard: apt-install.sh helper missing"
 else
-  bad "shell-unit-shard: at/atd install does not try the plain install before an update fallback"
-fi
-# HIMMEL-4077: a swallowed install failure or an update-only fallback leaves
-# `at` absent and lets scheduler tests silently exercise the crontab path.
-if grep -Eq 'apt-get install .*\|\|[[:space:]]*true([[:space:];]|$)' <<< "$step"; then
-  bad "shell-unit-shard: at/atd install swallows an apt-get install failure with || true"
-elif [ "$?" -eq 1 ]; then
-  ok "shell-unit-shard: no apt-get install failure is swallowed with || true"
-else
-  bad "shell-unit-shard: cannot check at/atd install for swallowed failures"
-fi
-fallback="$(awk '/^ *else$/ {f=1; next} f && /^ *fi$/ {f=0} f' <<< "$step")"
-fallback_upd_ln="$(grep -n 'apt-get update' <<< "$fallback" | head -1 | cut -d: -f1)"
-fallback_install_ln="$(grep -nE 'apt-get install .* at([[:space:];]|$)' <<< "$fallback" | head -1 | cut -d: -f1)"
-if [ -n "$fallback_upd_ln" ] && [ -n "$fallback_install_ln" ] \
-   && [ "$fallback_install_ln" -gt "$fallback_upd_ln" ]; then
-  ok "shell-unit-shard: at/atd else fallback installs at after apt-get update"
-else
-  bad "shell-unit-shard: at/atd else fallback must install at after apt-get update"
-fi
-# The fallback path runs every apt call once, so the sum of their `timeout N`
-# values must fit inside the step cap (CR round 1: 300+300+300 > 600).
-apt_sum="$(grep -o 'sudo timeout [0-9]* apt-get' <<< "$step" | awk '{s+=$3} END {print s+0}')"
-cap_min="$(grep -Eo '^        timeout-minutes: [0-9]+$' <<< "$step" | grep -Eo '[0-9]+$')"
-if [ -n "$cap_min" ] && [ "$apt_sum" -gt 0 ] && [ "$apt_sum" -le $((cap_min * 60)) ]; then
-  ok "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) fits the step cap (${cap_min}m)"
-else
-  bad "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) exceeds the step cap (${cap_min:-none}m)"
-fi
-if grep -q 'echo .*skipped' <<< "$step" && grep -q 'echo .*falling back' <<< "$step"; then
-  ok "shell-unit-shard: at/atd install logs which path ran"
-else
-  bad "shell-unit-shard: at/atd install does not log which path ran"
+  # every apt call runs under `timeout`, with a dpkg-lock wait
+  if grep -Fq 'apt() { $SUDO timeout "$1" "$APT_GET"' "$HELPER_SH" \
+     && [ "$(grep -c '"\$APT_GET"' "$HELPER_SH")" -eq 1 ] \
+     && [ "$(grep -c 'DPkg::Lock::Timeout=' "$HELPER_SH")" -ge 2 ]; then
+    ok "shell-unit-shard: every helper apt call is timeout-bounded and carries DPkg::Lock::Timeout"
+  else
+    bad "shell-unit-shard: helper has an unbounded apt call or lacks DPkg::Lock::Timeout"
+  fi
+  # HIMMEL-4073: plain install first, index refresh only after it fails
+  plain_ln="$(grep -n 'apt "\$T_PLAIN" install' "$HELPER_SH" | head -1 | cut -d: -f1)"
+  upd_ln="$(grep -n 'apt "\$T_ALT" update' "$HELPER_SH" | head -1 | cut -d: -f1)"
+  alt_ln="$(grep -n 'apt "\$T_ALT" install' "$HELPER_SH" | head -1 | cut -d: -f1)"
+  if [ -n "$plain_ln" ] && [ -n "$upd_ln" ] && [ -n "$alt_ln" ] \
+     && [ "$plain_ln" -lt "$upd_ln" ] && [ "$upd_ln" -lt "$alt_ln" ]; then
+    ok "shell-unit-shard: helper tries plain install first, then update, then the retry install"
+  else
+    bad "shell-unit-shard: helper order is not plain install, update, retry install"
+  fi
+  # HIMMEL-4077: a swallowed install failure would let `at` stay absent
+  if grep -Eq 'install .*\|\|[[:space:]]*true([[:space:];]|$)' "$HELPER_SH"; then
+    bad "shell-unit-shard: helper swallows an apt-get install failure with || true"
+  else
+    ok "shell-unit-shard: no apt-get install failure is swallowed with || true"
+  fi
+  # worst case (cached + plain + update + retry install) fits the step cap
+  t_c="$(sed -n 's/^T_CACHED="${APT_T_CACHED:-\([0-9]*\)}"$/\1/p' "$HELPER_SH")"
+  t_p="$(sed -n 's/^T_PLAIN="${APT_T_PLAIN:-\([0-9]*\)}"$/\1/p' "$HELPER_SH")"
+  t_a="$(sed -n 's/^T_ALT="${APT_T_ALT:-\([0-9]*\)}"$/\1/p' "$HELPER_SH")"
+  apt_sum=$(( ${t_c:-0} + ${t_p:-0} + 2 * ${t_a:-0} ))
+  cap_min="$(grep -Eo '^        timeout-minutes: [0-9]+$' <<< "$step" | grep -Eo '[0-9]+$')"
+  if [ -n "$cap_min" ] && [ "$apt_sum" -gt 0 ] && [ "$apt_sum" -le $((cap_min * 60)) ]; then
+    ok "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) fits the step cap (${cap_min}m)"
+  else
+    bad "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) exceeds the step cap (${cap_min:-none}m)"
+  fi
+  if grep -q 'echo "apt-install: installed from' "$HELPER_SH" && grep -q 'echo "apt-install: .*switching to' "$HELPER_SH"; then
+    ok "shell-unit-shard: helper logs which path ran"
+  else
+    bad "shell-unit-shard: helper does not log which path ran"
+  fi
 fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
