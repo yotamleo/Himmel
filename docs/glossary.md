@@ -20,6 +20,7 @@ definition, because a term defined in two places drifts.
 | **Arming** | Launching a headed or headless session on a schedule (`arm-resume.sh`, `headed-arm.sh`, `/console new --arm`). |
 | **Manual override** | An ad-hoc operator-side session — a whiteboard. It passes work to the console as a ticket and a brief, never as a relayed ruling. |
 | **Succession** | One console handing over to the next: the outgoing console arms its successor and writes a HANDOFF (`/console next`). Not a chain — a chain is legs. |
+| **himmel-bus** | The local, hash-chained message bus between a console and its legs (`marketplace/plugins/himmel-bus`; HIMMEL-4818). Delivery is by hook (`bus-deliver-hook`), and a message is a ruling only under a `from` header from the receiver's registered console (see [RETASK §3b](internals/retask-channel.md)). It is not the Telegram bridge (`scripts/telegram/bus.ts` is that bridge's own store, which himmel-bus reuses for storage only) and not the file inbox (`inbox-send.sh`, the `handovers/inbox/` files), which stays the fallback transport. |
 
 **Not roles.** *Orchestrator* is a rule (`orchestrator-inline-guard`: a
 top-tier parent must not implement inline), not a session role; the word also

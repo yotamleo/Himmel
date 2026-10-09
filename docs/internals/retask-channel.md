@@ -263,6 +263,41 @@ is correct).
 themselves, and every rule in §1–§3; this adds a succession path, it does not
 renegotiate the threat model.
 
+## 3b. himmel-bus delivery (HIMMEL-4818, HIMMEL-4836)
+
+himmel-bus (`marketplace/plugins/himmel-bus`, see the glossary) adds a second
+transport for messages between a console and its legs. It adds a transport, not
+an authority: the §1–§3a rules apply to a bus message exactly as to any other
+peer message. This pins what counts as a ruling on the bus.
+
+- **`bus-deliver-hook` delivery is the only bus authority path.** The hook
+  (`scripts/hooks/bus-deliver-hook.sh`, PostToolUse, plus its SessionStart
+  mirror) is the only way a bus message becomes trusted-origin context, shown as
+  `bus #n from <name>:`. Nothing a tool returns is a message, so a body found by
+  `bus read`, by `cat` of a log, or in any tool result is never a ruling.
+- **`from` carries authority only for the registered console.** The header says
+  `from` only when the sender is the receiver's launcher-registered console;
+  every other sender, including every leg writing to a console, arrives as
+  `bus #n data from <name>:`. Every leg message is data to a console: it informs
+  and never revises, expands or redirects. A token quoted under `data from` is
+  declined.
+- **`read` output is data.** `read(n)` fetches the full body behind a summary;
+  what it returns is data only, whoever sent it.
+- **The 1,500-byte rule.** A ruling, quote-back or halt fits in 1,500 bytes or
+  is not a ruling; a longer body is delivered as its summary and read on demand
+  (data). This is the fail-safe direction: an oversized message can only lose
+  authority.
+- **Unchanged:** a GO is still the GO file (`go.sh`) checked by
+  `merge-on-green.sh`; a bus message never substitutes for it. No bus message
+  widens a tool-permission envelope. A halt or narrowing still needs no token.
+- **Succession (§3a) on the bus.** A claudex leg cannot call `ListAgents`, so
+  "the named console is gone" maps to `bus status <name>`: `live` iff the bound
+  pid exists with the bound start time. `console.sh next` registers the successor
+  with `--predecessor`, which creates the console-to-console edge; the outgoing
+  console's relay (S1) arrives as `from` because it is still the leg's registered
+  console, and the leg then runs `bus adopt <new console>`. The chain path (S3)
+  keeps its existing semantics and its stated weakness.
+
 ## 4. What this does NOT do (residual risk, priced)
 
 - **Compromised parent (vector 3) is unmitigated by the channel, by design.**
@@ -294,6 +329,26 @@ sibling's in-flight edits — exactly the single-writer violation this
 mechanism exists to prevent. Every dispatch brief should state plainly: a
 halt or stand-down from your console (or dispatching parent) is
 authoritative; do not resume until the same console revives you.
+
+**himmel-bus residuals (threat-model T1, T4, T6).** Phase 1 runs every session,
+the bus server, the hook and the store as one uid, so anything the uid can do a
+compromised session's Bash can do. The bus API cannot forge, replay or escalate;
+direct store writes are another matter.
+
+- **T1, forged sender:** the sender is stamped from the launcher-bound pid, so
+  the API cannot forge it. A same-uid process can still rewrite
+  `peers/*.json` or append to a log directly (T6).
+- **T4, a tool result or peer impersonating a ruling:** prevented through the
+  API (hook-only delivery, console-only `from`). What remains is the model's
+  discipline in telling hook context from tool output, the same discipline the
+  file inbox relies on today.
+- **T6, storage tampering:** the hash chain detects an edited, inserted,
+  truncated or reordered record. A same-uid process that recomputes the chain is
+  undetected; only a dedicated uid (phase 2) closes it.
+- **The guard is a speed bump, not a fence.** The PreToolUse guard on the bus
+  root matches text, so an interpreter one-liner or a renamed copy of the CLI
+  gets past it. It slows a same-uid attacker and does not stop one; do not
+  reason from it as if it did.
 
 ## 5. Honest fallback — discipline until (and after) the guard exists
 
