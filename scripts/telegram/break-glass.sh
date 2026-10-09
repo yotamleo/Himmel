@@ -167,7 +167,7 @@ op_station_status() {
         age=$(( now - ${hb:-0} ))
         case "$st" in
             waiting|sampling)
-                if [ -n "$hb" ] && [ "$age" -lt 600 ]; then
+                if [ -n "$hb" ] && [ "$age" -ge 0 ] && [ "$age" -lt 600 ]; then
                     live=$((live + 1))
                     [ "$live" -le 8 ] && lines="$lines""waiter $(basename "$f" .md.wait): ${age}s ago
 "
