@@ -5452,6 +5452,9 @@ fi
 rm -rf "$t"
 
 # --- C46 (HIMMEL-4037): enabledPlugins true for a plugin that is not installed -
+# HIMMEL-5084: project/local settings come from a fixture dir, never the host checkout's .claude/
+c46_proj="$(mktemp -d "${TMPDIR:-/tmp}/c46-proj.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }
+export HIMMEL_DOCTOR_PROJECT_CLAUDE_DIR="$c46_proj"
 echo "== C46: enabled-but-not-installed plugin -> WARN naming the file =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/c46-missing.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }; mkdir -p "$t/claude" "$t/home" || { echo "FATAL: C46 setup mkdir failed" >&2; exit 1; }
 cat > "$t/claude/settings.json" <<'EOF'
@@ -5572,6 +5575,31 @@ else
     fail "C46 no claude -> $(printf '%s' "$out" | grep -A1 C46)"
 fi
 rm -rf "$t"
+
+echo "== C46: project-local settings are read from the seam dir only (HIMMEL-5084) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c46-seam.XXXXXX")" || { echo "FATAL: C46 setup mktemp failed" >&2; exit 1; }; mkdir -p "$t/claude" "$t/home" || { echo "FATAL: C46 setup mkdir failed" >&2; exit 1; }
+echo '{ "enabledPlugins": { "kept@himmel": true } }' > "$t/claude/settings.json"
+cat > "$t/claude-stub" <<'EOF'
+#!/usr/bin/env bash
+echo '[{"id":"kept@himmel","scope":"user","enabled":true}]'
+EOF
+chmod +x "$t/claude-stub"
+echo '{ "enabledPlugins": { "ghost@host": true } }' > "$c46_proj/settings.local.json"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F "$c46_proj/settings.local.json"; then
+    pass "C46 control: a missing plugin in the seam dir's settings.local.json is reported"
+else
+    fail "C46 seam control -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+rm -f "$c46_proj/settings.local.json"
+out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-stub" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C46-plugin-enabled-missing'; then
+    pass "C46 seam dir empty -> OK, host checkout settings.local.json not read"
+else
+    fail "C46 seam empty -> $(printf '%s' "$out" | grep -A1 C46)"
+fi
+rm -rf "$t" "$c46_proj"
+unset HIMMEL_DOCTOR_PROJECT_CLAUDE_DIR c46_proj
 
 echo "== C44: skills collection missing -> FAIL =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/c44-missing.XXXXXX")"

@@ -3596,7 +3596,11 @@ check_c44_skill_index() {
 # bites.
 # HIMMEL_DOCTOR_CLAUDE_BIN (test seam, mirrors C44's): the claude executable
 # that answers `plugin list --json`; a missing one is an INFO skip.
+# HIMMEL_DOCTOR_PROJECT_CLAUDE_DIR (test seam, HIMMEL-5084): the directory read
+# for the project/local settings files instead of "$REPO_ROOT/.claude", so a test
+# never sees the host checkout's own settings.local.json.
 check_c46_plugin_enabled_missing() {
+    local proj_dir="${HIMMEL_DOCTOR_PROJECT_CLAUDE_DIR:-$REPO_ROOT/.claude}"
     local bin="${HIMMEL_DOCTOR_CLAUDE_BIN:-claude}"
     if [ "$bin" = claude ]; then bin="$(command -v claude 2>/dev/null || true)"; fi
     if [ -z "$bin" ] || [ ! -x "$bin" ]; then
@@ -3615,7 +3619,7 @@ check_c46_plugin_enabled_missing() {
         return
     fi
     local f id ids n=0 detail="" bad=""
-    for f in "$SETTINGS" "$CLAUDE_DIR_R/settings.local.json" "$REPO_ROOT/.claude/settings.json" "$REPO_ROOT/.claude/settings.local.json"; do
+    for f in "$SETTINGS" "$CLAUDE_DIR_R/settings.local.json" "$proj_dir/settings.json" "$proj_dir/settings.local.json"; do
         [ -f "$f" ] || continue
         if ! ids="$(jq -r '(.enabledPlugins // {}) | to_entries[] | select(.value == true) | .key' "$f" 2>/dev/null)"; then
             bad="$bad $f;"; continue
