@@ -1892,7 +1892,7 @@ ql_unquoted_sep=0
 case "$SCAN_MASK" in *';'*|*'|'*|*'&'*|*$'\n'*) ql_unquoted_sep=1 ;; esac
 ql_segs=0; ql_only=""
 while IFS= read -r seg; do
-    seg="${seg#"${seg%%[![:space:]]*}"}"   # ltrim
+    seg="${seg#"${seg%%[! $'\t']*}"}"   # ltrim space/tab only, same as the root-walk loop (HIMMEL-5034)
     [ -z "$seg" ] && continue
     ql_segs=$((ql_segs + 1)); ql_only="$seg"
 done <<EOF
@@ -1904,7 +1904,7 @@ fi
 
 all_safe=1
 while IFS= read -r seg; do
-    seg="${seg#"${seg%%[![:space:]]*}"}"   # ltrim
+    seg="${seg#"${seg%%[! $'\t']*}"}"   # ltrim space/tab only, same as the root-walk loop (HIMMEL-5034)
     [ -z "$seg" ] && continue
     if ! segment_is_safe "$seg"; then all_safe=0; break; fi
 done <<EOF
