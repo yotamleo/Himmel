@@ -298,7 +298,7 @@ launch_from_launcher() {
     scrub_env
     [ "$bypass" = "bypass" ] && export HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1
     have_detach || return 23
-    setsid nohup bash "$launcher" >/dev/null 2>&1 &
+    setsid nohup bash "$launcher" >/dev/null 2>&1 &  # t13b-ok: one operator-confirmed leg launch, detached once, not a service
     echo "launching $label from $launcher ($bypass, pid $!)"
     return 0
 }
