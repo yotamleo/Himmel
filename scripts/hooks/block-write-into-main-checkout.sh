@@ -2779,10 +2779,12 @@ _bwimc_ambig_check() {
 # false-negative only on this extra reading; upgrade = a nested quote stack in
 # _bwimc_scan_step (HIMMEL-4921 follow-up).
 _bwimc_flatten_pe() {
-    local t="$1" o="" k=0 n=${#1} c d j
+    local t="$1" o="" k=0 n=${#1} c d j q=0
     _BWIMC_PE="$t"
     # shellcheck disable=SC2016  # literal `${` is the glob pattern
     case "$t" in *'${'*) ;; *) return 0 ;; esac
+    # No quote anywhere: the scanner cannot mis-pair one, so no extra reading.
+    case "$t" in *[\"\']*) ;; *) return 0 ;; esac
     while [ "$k" -lt "$n" ]; do
         c="${t:$k:1}"
         if [ "$c" = "\\" ]; then o="$o${t:$k:2}"; k=$((k+2)); continue; fi
@@ -2791,17 +2793,20 @@ _bwimc_flatten_pe() {
             while [ "$j" -lt "$n" ] && [ "$d" -gt 0 ]; do
                 case "${t:$j:1}" in
                     "\\") j=$((j+1)) ;;
+                    '"'|"'") q=1 ;;
                     '{') d=$((d+1)) ;;
                     '}') d=$((d-1)) ;;
                 esac
                 j=$((j+1))
             done
             if [ "$d" -eq 0 ]; then o="$o\${p}"; k=$j; continue; fi
-            o="$o${t:$k}"; _BWIMC_PE="$o"; return 0
+            o="$o${t:$k}"; [ "$q" = 1 ] && _BWIMC_PE="$o"; return 0
         fi
         o="$o$c"; k=$((k+1))
     done
-    _BWIMC_PE="$o"
+    # A quote-free `${...}` body is read correctly already (HIMMEL-4921 perf).
+    [ "$q" = 1 ] && _BWIMC_PE="$o"
+    return 0
 }
 # a comment starts after start, blank, newline, `;&|()<>`, a `$(` or a
 # backtick, never mid-word, never inside `${…}`, `$((…))`, quotes, or right

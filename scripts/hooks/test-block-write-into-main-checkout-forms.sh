@@ -593,6 +593,25 @@ check_both "4921 A echo \"\${x:-\"it's\"}\" > primary/f (cwd=wt) denies" block \
     "$(_j4921 "echo \"\${x:-\"it's\"}\" > $FIX/primary/f4921" "$FIX/wt")"
 check_both "4921 A mirror: same redirect into the worktree allows" allow \
     "$(_j4921 "echo \"\${x:-\"it's\"}\" > $FIX/wt/f4921" "$FIX/wt")"
+check_both "4921 A quote-free \${x:-d} redirect into primary still denies" block \
+    "$(_j4921 "echo \"\${x:-d}\" > $FIX/primary/f4921" "$FIX/wt")"
+# A (perf): a quote-free ${...} adds NO extra reading (scanned once); a quoted
+# body does. Timing: the flatten pass is skipped, halving the scan of dense
+# benign one-liners that merely use ${var} (judge j2209a, 15 s must-run window).
+_PE_FN="$(sed -n '/^_bwimc_flatten_pe() {/,/^}/p' "$DIRECT" 2>/dev/null)"
+# shellcheck disable=SC2016  # the eval'd snippets carry literal `${…}` text
+if [ -n "$_PE_FN" ]; then
+    _pe_out="$(eval "$_PE_FN"; t='echo "${x:-d}" ${y} > f'; _bwimc_flatten_pe "$t"
+        [ "$_BWIMC_PE" = "$t" ] && echo same || echo changed)"
+    if [ "$_pe_out" = same ]; then ok "4921 A perf: quote-free \${} body is not flattened (scanned once)"
+    else bad "4921 A perf: quote-free \${} body was flattened ($_pe_out)"; fi
+    _pe_out="$(eval "$_PE_FN"; t='echo "${x:-"it'"'"'s"}" > f'; _bwimc_flatten_pe "$t"
+        [ "$_BWIMC_PE" = "$t" ] && echo same || echo changed)"
+    if [ "$_pe_out" = changed ]; then ok "4921 A perf: quoted \${} body still gets the extra reading"
+    else bad "4921 A perf: quoted \${} body not flattened ($_pe_out)"; fi
+else
+    bad "4921 A perf: could not extract _bwimc_flatten_pe"
+fi
 # B. truncate has no arm.
 check_both "4921 B truncate -s0 primary/README.md (cwd=wt) denies" block \
     "$(_j4921 "truncate -s0 $FIX/primary/README.md" "$FIX/wt")"
