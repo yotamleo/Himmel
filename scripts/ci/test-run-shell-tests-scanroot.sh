@@ -20,6 +20,11 @@
 #   26h  an exported GIT_DIR cannot redirect the scanning line or the head
 #   26i  an exported GIT_COMMON_DIR cannot either
 #   26j  a git that names no toplevel (a test's fake git) is no mismatch
+#   26k  caller_top: a git printing nothing is "no tree known" (HIMMEL-5111)
+#   26l  CDPATH cannot steer the guard's cd or the scanned root
+#   26m  GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY do not reach the suites
+#   26n  a runner outside any work tree + a scan root inside one -> rc 6 (fail-closed)
+#   26o  the scripts default is applied before the guard
 #
 # Platform guard: bash-only, like every suite in this family, and no .ps1
 # twin — it runs under Git Bash on Windows as well as Linux.
@@ -187,5 +192,88 @@ else
   fail "26j: rc=$rc output: $out"
 fi
 rm -f "$GH_STUB" "$GH_BODY"
+
+# --- 26k. caller_top: a git that prints nothing is "no tree known" (HIMMEL-5111) -
+# `rev-parse --show-toplevel` printing nothing at rc 0 used to be cd'd into in
+# place, so the caller's own cwd became its "work tree" and was refused against
+# the script's repo. From a cwd outside every tree that must be no mismatch.
+cat > "$FAKEBIN/git" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FAKEBIN/git"
+out=$(cd "$PLAIN" && env -u SUITE_TIER_MODE PATH="$FAKEBIN:$PATH" bash "$RUNNER" "$SCANDIR" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && ! grepq "$out" 'REFUSED'; then
+  pass "26k: a git printing nothing for the caller's toplevel is no mismatch"
+else
+  fail "26k: rc=$rc output: $out"
+fi
+
+# --- 26m. GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY do not reach the suites ---------
+ENVPROBE="$(fixture_mktemp_dir)" || exit 1
+ENVOUT="$ENVPROBE/seen.txt"
+cat > "$ENVPROBE/test-envprobe.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'index=%s objdir=%s\n' "${GIT_INDEX_FILE-unset}" "${GIT_OBJECT_DIRECTORY-unset}" > "$ENVPROBE_OUT"
+exit 0
+EOF
+out=$(cd "$SRC_ROOT" && env -u SUITE_TIER_MODE ENVPROBE_OUT="$ENVOUT" GIT_INDEX_FILE=/nonexistent/index GIT_OBJECT_DIRECTORY=/nonexistent/objects bash "$RUNNER" "$ENVPROBE" 2>&1); rc=$?
+seen=$(cat "$ENVOUT" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$seen" = "index=unset objdir=unset" ]; then
+  pass "26m: GIT_INDEX_FILE and GIT_OBJECT_DIRECTORY are cleared with the other GIT_* vars"
+else
+  fail "26m: rc=$rc seen='$seen' output: $out"
+fi
+rm -rf "$ENVPROBE"
+
+# --- 26n. a runner outside any work tree, scan root inside one (HIMMEL-5111) -----
+# A tarball install has no tree; a scan root that DOES name one is a mismatch
+# (fail-closed). A scan root outside every tree stays allowed.
+TARBALL="$PLAIN/tarball"
+mkdir -p "$TARBALL/scripts/ci" "$TARBALL/scripts/lib"
+cp "$SRC_ROOT/scripts/ci/run-shell-tests.sh" "$TARBALL/scripts/ci/"
+cp -R "$SRC_ROOT/scripts/lib/." "$TARBALL/scripts/lib/"
+out=$(cd "$PLAIN" && env -u SUITE_TIER_MODE bash "$TARBALL/scripts/ci/run-shell-tests.sh" "$FOREIGN/suites" 2>&1); rc=$?
+if [ "$rc" -eq 6 ] && ! grepq "$out" '\[PASS\]'; then
+  pass "26n: tarball runner + scan root in a work tree -> rc 6, ran nothing"
+else
+  fail "26n: rc=$rc output: $out"
+fi
+out=$(cd "$PLAIN" && env -u SUITE_TIER_MODE bash "$TARBALL/scripts/ci/run-shell-tests.sh" "$SCANDIR" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" 'test-trivial\.sh'; then
+  pass "26n: tarball runner + scan root outside every tree -> runs (rc 0)"
+else
+  fail "26n: outside-tree rc=$rc output: $out"
+fi
+
+# --- 26l. CDPATH cannot steer the guard's or the resolution's cd (HIMMEL-5111) ---
+# The same runner copy, now inside its own work tree. CDPATH=<foreign tree> and a
+# relative root named like a dir under it: the cd used to land in the foreign
+# tree, so the guard refused (or the scan ran there).
+git -C "$TARBALL" init -q
+mkdir -p "$TARBALL/cdp-probe" "$FOREIGN/cdp-probe"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$TARBALL/cdp-probe/test-trivial.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$FOREIGN/cdp-probe/test-trivial.sh"
+out=$(cd "$TARBALL" && env -u SUITE_TIER_MODE CDPATH="$FOREIGN" bash "$TARBALL/scripts/ci/run-shell-tests.sh" cdp-probe 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && ! grepq "$out" 'REFUSED' && grepq "$out" 'cdp-probe/test-trivial\.sh' && ! grepq "$out" "$FOREIGN"; then
+  pass "26l: CDPATH=<foreign tree> changes neither the guard's verdict nor the scanned root"
+else
+  fail "26l: rc=$rc output: $out"
+fi
+rm -rf "$TARBALL"
+
+# (4) the default scan root is applied before the guard: `cd ""` succeeds in
+# place, so a guard run on an empty root checked the cwd, not `scripts`. In the
+# runner's own tree the two coincide, so no behavioural row can tell them apart;
+# the ordering is a source fact, pinned here.
+# shellcheck disable=SC2016  # the patterns are literal source text, not expansions
+rootline=$(grep -n '^scan="${scan:-scripts}"' "$RUNNER" | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016
+guardline=$(grep -n '^_scan_dir=\$(cd "\$scan"' "$RUNNER" | head -1 | cut -d: -f1)
+if [ -n "$rootline" ] && [ -n "$guardline" ] && [ "$rootline" -lt "$guardline" ]; then
+  pass "26o: the scripts default is applied before the scan-root guard"
+else
+  fail "26o: default at line '$rootline', guard at line '$guardline'"
+fi
 
 rst_tally
