@@ -88,5 +88,16 @@ check "overlap repeat count" "$(q repeat.vs_earlier_prs.count)" "1"
 : > "$tmp/empty.jsonl"
 CR_LEDGER="$tmp/empty.jsonl" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" > "$tmp/e.out" 2>&1
 check "empty ledger exits 0" "$?" "0"
+json="$(grep -m1 '^{' "$tmp/e.out")"
+check "empty ledger is JSON with zero branches" "$(q branches)" "0"
+CR_LEDGER="$tmp/missing.jsonl" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" > "$tmp/m.out" 2>&1
+check "missing ledger exits 0" "$?" "0"
+
+# an amend after --now is not applied: the disproved verdict lands at 10-01T00:05
+json="$(CR_LEDGER="$L" bash "$CM" --now 2026-10-01T00:03:00Z --known "$K" | grep -m1 '^{')"
+check "amend after --now ignored" "$(q findings.by_verdict.disproved)" "undef"
+
+CR_LEDGER="$L" bash "$CM" --now not-a-date --known "$K" > "$tmp/bad.out" 2>&1
+check "invalid --now exits 2" "$?" "2"
 
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

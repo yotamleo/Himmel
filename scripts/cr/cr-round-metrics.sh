@@ -39,20 +39,20 @@ done
 case "$DAYS" in ''|*[!0-9]*) echo "cr-round-metrics.sh: --days must be a number" >&2; exit 2;; esac
 
 ledger="${CR_LEDGER:-$(git rev-parse --git-common-dir 2>/dev/null)/cr-critic-scores.jsonl}"
-if [ ! -s "$ledger" ]; then
-  echo "cr-round-metrics: no ledger rows (ledger: $ledger)"
-  exit 0
-fi
 
 # shellcheck disable=SC2016  # $-refs below are inside the single-quoted node script (JS), not shell
 LEDGER="$ledger" DAYS="$DAYS" NOW="$NOW" KNOWN="$KNOWN" GROUPS_FILE="$GROUPS_FILE" node -e '
 const fs = require("fs");
 const e = process.env;
 const now = e.NOW ? Date.parse(e.NOW) : Date.now();
+if (!Number.isFinite(now)) { console.error("cr-round-metrics.sh: --now is not a valid timestamp"); process.exit(2); }
 const since = now - Number(e.DAYS) * 86400000;
 
+// A missing or empty ledger is a valid zero-result report (same JSON shape).
+let raw = "";
+try { raw = fs.readFileSync(e.LEDGER, "utf8"); } catch (_) { /* absent ledger = no rows */ }
 const records = [];
-for (const l of fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean)) {
+for (const l of raw.split("\n").filter(Boolean)) {
   try { records.push(JSON.parse(l)); } catch (_) { /* skip malformed */ }
 }
 
@@ -87,6 +87,8 @@ const SEP = String.fromCharCode(31);
 const amends = new Map();
 for (const r of records) {
   if (r.kind !== "amend" || !r.set || typeof r.set !== "object") continue;
+  const at = Date.parse(r.ts);
+  if (Number.isFinite(at) && at > now) continue;   // an amend after --now is not yet known
   const k = [r.target_head, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
   amends.set(k, Object.assign({}, amends.get(k) || {}, r.set));
 }
