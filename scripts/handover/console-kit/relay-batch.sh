@@ -67,7 +67,11 @@ entries="$(awk '
     b && (/^[[:space:]]*$/ || /^[0-9]+\. / || /^[A-Za-z][A-Za-z ]*:/ || /^[-*+>#]/) { b = 0 }
     b { print }
 ' "$doc" | grep -oE '`[A-Za-z0-9_.-]+:[^`:[:space:]]+:[^`:[:space:]]+:[^`:[:space:]]+`' | tr -d '`')"
-[ -n "$entries" ] || { echo "relay-batch: no leg entries in $doc ## Live state" >&2; exit 0; }
+if [ -z "$entries" ]; then
+    echo "relay-batch: no leg entries in $doc ## Live state" >&2
+    # HIMMEL-5074: a console watching only lockless rows still reports them below.
+    if [ -f "$manifest" ] && jq -e '[.legs[] | select(.lockless == true)] | length > 0' "$manifest" >/dev/null 2>&1; then :; else exit 0; fi
+fi
 
 # HIMMEL-5074: the claudex set comes from the manifest's per-leg lane. --claudex, when
 # given, must name exactly the Live-state legs the manifest marks claudex (lockless
@@ -100,7 +104,7 @@ EOR
     # A lockless row has no token to quote: the LOCKLESS section below carries it.
     [ "$lockless" != true ] || continue
     if [ "$lane" = unknown ]; then
-        echo "UNRESOLVED-LANE $label (manifest lane unknown, nothing sent) — set it (fleet-manifest.sh add --lane) or relay by hand"
+        echo "UNRESOLVED-LANE $label (manifest lane unknown, nothing sent) — fleet-manifest.sh remove it, then add it with --lane, or relay by hand"
         continue
     fi
     # The session name is read from the live census, never guessed: a leg launches under

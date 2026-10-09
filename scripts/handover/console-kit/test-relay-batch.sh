@@ -148,5 +148,12 @@ check "a refused --claudex mismatch sends nothing" "0" "$(printf '%s\n' "$out6" 
 out7="$(bash "$RB" "$DOC4" --successor S4 --claudex N99 2>&1)"; rc7=$?
 check "--claudex omitting the manifest's claudex leg is refused (rc 1)" "1" "$rc7"
 check "the refusal names the disagreement" "1" "$(printf '%s\n' "$out7" | grep -c 'disagrees with the fleet manifest')"
+# a console whose Live state lists no legs but whose manifest has a lockless row still reports it
+DOC5="$WORK/DEMO-nextleg-2026-10-09B-console.md"
+printf '# console\n\n## Live state\n\nlegs: none\nqueue: none\n\n## Results\n' > "$DOC5"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"P01","lane":"deepseek","lockless":true}]}\n' "$LEGP" > "${DOC5%.md}.fleet.json"
+out8="$(bash "$RB" "$DOC5" --successor S5 2>&1)"; rc8=$?
+check "lockless-only console still lists the lockless row" "1" "$(printf '%s\n' "$out8" | grep -c '^LOCKLESS P01 lane=deepseek')"
+check "lockless-only console exits 0" "0" "$rc8"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi
