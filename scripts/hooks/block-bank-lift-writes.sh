@@ -1355,14 +1355,16 @@ check_extract() {
 # --symbolic, cp -s / --symbolic-link, combined short flags too) so a
 # same-command extraction can be denied (HIMMEL-4530). An operand starting
 # with a dash and holding an s over-matches by design: it only adds a deny.
+# Every word is scanned, `--` included: GNU accepts unique long-option prefixes
+# (--sym, --sy) and a `--` can be the value of -S/--suffix/-t, so stopping at
+# one would hide a later -s.
 _symlink_mode() {
     local c="$1" a
     shift
     case "$c" in ln|cp) ;; *) return 0 ;; esac
     for a in "$@"; do
         case "$a" in
-            --) return 0 ;;
-            --symbolic*) SYMLINK_SEEN=1 ;;
+            --sy*) SYMLINK_SEEN=1 ;;
             --*) ;;
             -*s*) SYMLINK_SEEN=1 ;;
         esac
