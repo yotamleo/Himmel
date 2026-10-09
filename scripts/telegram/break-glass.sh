@@ -475,7 +475,7 @@ op_allow_rule() {
         return 26
     fi
     tgt="${BREAK_GLASS_ALLOW_TARGET:-$PRIMARY/.claude/settings.local.json}"
-    if [ -e "$tgt" ] && ! jq -e 'type == "object" and ((.permissions // {}) | type == "object") and ((.permissions // {}) | (if has("allow") then .allow else [] end) | type == "array")' "$tgt" >/dev/null 2>&1; then
+    if [ -e "$tgt" ] && ! jq -s -e 'length == 1 and (.[0] | type == "object" and ((.permissions // {}) | type == "object") and ((.permissions // {}) | (if has("allow") then .allow else [] end) | type == "array"))' "$tgt" >/dev/null 2>&1; then
         echo "ERR break-glass: $tgt is not a settings object with an allow list; left alone" >&2
         return 27
     fi
