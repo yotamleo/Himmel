@@ -514,6 +514,16 @@ def _clean_dotenv_value(raw: str) -> str:
     return re.sub(r"\s+#.*", "", value)
 
 
+DOTENV_KEYS = frozenset({
+    "BITBUCKET_EMAIL", "BITBUCKET_API_TOKEN", "FIRECRAWL_API_KEY", "FIRECRAWL_BASE_URL",
+    "TWITTER_AUTH_TOKEN", "TWITTER_CT0", "REDDIT_COOKIE_FILE", "HIMMEL_MEDIA_COOKIES",
+    "HIMMEL_FETCH_HEALTH_STATE", "HIMMEL_FIRECRAWL_LEDGER", "HIMMEL_IG_PROBE_CACHE", "HIMMEL_IG_PROBE_TTL_S",
+    "FETCH_HEALTH_REDDIT_URL", "FETCH_HEALTH_FXTWITTER_URL", "FETCH_HEALTH_INSTAGRAM_EMBED_URL",
+    "FETCH_HEALTH_INSTAGRAM_MEDIA_URL", "FETCH_HEALTH_X_MEDIA_URL", "FETCH_HEALTH_TWITTER_TWEET_ID",
+    "FETCH_HEALTH_YOUTUBE_URL", "FETCH_HEALTH_JINA_URL", "IG_SCRAPLING_PYTHON", "X_SCRAPLING_PYTHON", "YT_SCRAPLING_PYTHON",
+})
+
+
 def load_repo_env(env: dict[str, str], repo_root: Path) -> dict[str, str]:
     loaded = dict(env)
     env_file = repo_root / ".env"
@@ -550,7 +560,7 @@ def load_repo_env(env: dict[str, str], repo_root: Path) -> dict[str, str]:
                 continue
             key, value = stripped.split("=", 1)
             key = key.strip()
-            if key in seen or loaded.get(key, ""):
+            if key not in DOTENV_KEYS or key in seen or loaded.get(key, ""):
                 continue
             seen.add(key)
             loaded[key] = _clean_dotenv_value(value)

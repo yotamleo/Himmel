@@ -15,7 +15,7 @@ Prints one JSON object:
 
   {"status": "ok", "title", "channel", "duration", "views", "published",
    "description", "transcript": [{"ts", "tx"}], "transcript_source": "yt-dlp",
-   "transcript_error": null | str}
+   "transcript_lang": null | str, "transcript_error": null | str}
   {"status": "login_wall"|"removed"|"skipped"|"error", "detail": str}
 
 A video with metadata but no transcript is still "ok", with transcript_error
@@ -46,8 +46,10 @@ VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,20}$")
 PLAYER_KEY = "ytInitialPlayerResponse = "
 LOGIN_HOSTS = ("consent.youtube.com", "accounts.google.com")
 # Sub tracks in preference order: English as authored (or YouTube's own "en"
-# auto track), then the original-language auto track.
+# auto track), then the original-language auto track; any other English track
+# next, and a non-English original-language auto track last (HIMMEL-4688).
 SUB_PREFERENCE = (".en.json3", ".en-orig.json3")
+SUB_LANGS = "en.*,en,.*-orig"
 
 
 def _batch_module():
@@ -170,30 +172,40 @@ def _pick_subs(folder, video_id):
         p = folder / f"{video_id}{suffix}"
         if p.is_file():
             return p
-    rest = sorted(folder.glob(f"{video_id}.en*.json3"))
+    rest = (sorted(folder.glob(f"{video_id}.en*.json3"))
+            or sorted(folder.glob(f"{video_id}.*-orig.json3")))
     return rest[0] if rest else None
 
 
+def _sub_lang(path, video_id):
+    """The track language from yt-dlp's <id>.<lang>.json3 name, "-orig" dropped."""
+    head, tail = f"{video_id}.", ".json3"
+    if not (path.name.startswith(head) and path.name.endswith(tail)):
+        return None
+    lang = path.name[len(head):-len(tail)]
+    return lang[:-len("-orig")] if lang.endswith("-orig") else lang
+
+
 def fetch_transcript(video_id):
-    """(segments, None) or (None, error) via yt-dlp, cookieless."""
+    """(segments, None, lang) or (None, error, lang) via yt-dlp, cookieless."""
     ytdlp = shutil.which("yt-dlp")
     if not ytdlp:
-        return None, "yt_dlp_missing"
+        return None, "yt_dlp_missing", None
     with tempfile.TemporaryDirectory(prefix="yt-subs-") as d:
         cmd = [ytdlp, "--no-config", "--skip-download", "--no-playlist",
-               "--write-subs", "--write-auto-subs", "--sub-langs", "en.*,en",
+               "--write-subs", "--write-auto-subs", "--sub-langs", SUB_LANGS,
                "--sub-format", "json3", "-o", str(Path(d) / "%(id)s.%(ext)s"),
                "--", f"https://www.youtube.com/watch?v={video_id}"]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=YTDLP_TIMEOUT)
         except subprocess.TimeoutExpired:
-            return None, "yt_dlp_timeout"
+            return None, "yt_dlp_timeout", None
         except OSError:
-            return None, "yt_dlp_missing"
+            return None, "yt_dlp_missing", None
         subs = _pick_subs(Path(d), video_id)
         if subs is None:
-            return None, "transcript_empty" if proc.returncode == 0 else "yt_dlp_error"
-        return _segments(subs.read_text(encoding="utf-8"))
+            return None, "transcript_empty" if proc.returncode == 0 else "yt_dlp_error", None
+        return (*_segments(subs.read_text(encoding="utf-8")), _sub_lang(subs, video_id))
 
 
 def _segments(body):
@@ -265,9 +277,11 @@ def main(argv=None):
     if out["status"] == "ok":
         if args.subs_file:
             segs, err = _segments(args.subs_file.read_text(encoding="utf-8"))
+            lang = _sub_lang(args.subs_file, args.video_id)
         else:
-            segs, err = fetch_transcript(args.video_id)
-        out.update(transcript=segs or [], transcript_source="yt-dlp", transcript_error=err)
+            segs, err, lang = fetch_transcript(args.video_id)
+        out.update(transcript=segs or [], transcript_source="yt-dlp",
+                   transcript_lang=lang if segs else None, transcript_error=err)
     print(json.dumps(out, ensure_ascii=False))
     return EXIT[out["status"]]
 

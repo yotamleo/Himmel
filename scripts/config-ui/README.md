@@ -67,6 +67,25 @@ unknown. Lane comes only from launch metadata, never from a model name;
 a document fallback reads the assigned leg's title, not sibling mentions. Ledger overrides:
 `HIMMEL_EVAL_RUNS_LEDGER`, `HIMMEL_LEG_FAILURES_LEDGER`.
 
+## Roadmap page (HIMMEL-4943, `#/roadmap`)
+
+The Roadmap page sits next to Fleet. `GET /api/roadmap` (token-gated, GET only) reads its sources live on every
+request: no static render, no republish. The page draws release panels, a kanban by version and theme, the drift
+counts and trend, the leg to Jira sync plan and the librarian's lists.
+
+- **Sources.** The Jira mirror (`HIMMEL_JIRA_MIRROR`, else `~/.himmel/state/jira-mirror/<JIRA_PROJECT_KEY or HIMMEL>`)
+  plus its `<mirror>.versions.tsv` snapshot; the plan dir (`HIMMEL_ROADMAP_PLAN_DIR`: `stage1/C??.tsv`,
+  `stage1/themes-overlay.tsv`, `stage3/placement.tsv`; without it the board still renders and drift is 0); the drift
+  log (`HIMMEL_ROADMAP_DRIFT_LOG`, else `$TRACKER_HANDOVERS_DIR/roadmap-drift.tsv`; read only, `tracker.py` is its
+  writer); the legs from `legs.sh`. No mirror: the page says so and names `node scripts/jira/dist/index.js mirror`.
+- **tracker.py** stays the CLI/offline renderer until the page reaches parity; the semantics here are a port of it.
+- **Sync plan.** `legSync` lists the Jira CLI commands that mirror each leg marker onto its ticket (flag and comment
+  a stuck leg, clear the flag on resume, note READY/WRAPPED once). The console kit is the one writer; legs never
+  write Jira and this page never does. It never moves a status.
+- **Librarian.** Stale In Progress, version drift, unthemed, released-but-open and duplicate titles, as proposals
+  only. A fixVersion move or a close needs operator approval or a recorded standing rule. Lane: Opus judgement,
+  bulk passes on Haiku. Cadence: event-driven on MERGED/WRAPPED plus a daily sweep.
+
 ## Agent run view (AG-UI, HIMMEL-4480)
 
 `agui-web/` is a React page that renders an agent run streamed as AG-UI events:
@@ -145,7 +164,7 @@ the foreground (Ctrl-C to stop); an open stream keeps it from idling out.
 live Claude session (console, leg, judge or interactive) with its ticket and PR,
 state (running, idle, waiting for GO, wrapped), latest tool call and its age,
 subagent counts and failure count. Wrapped legs sit in a closed section, never
-in the live list. Clicking a row opens that session's run page. The page polls
+in the live list. Clicking a row's name opens that session's run page. The page polls
 `GET /api/agui/fleet` (token-gated, GET only, read-only, `agui/fleet.ts`),
 whose census is `fleet.sh`: `claude_sessions` plus each leg doc's last marker
 (`leg_tail_status`). A session whose journal has been quiet for an hour is left
@@ -162,6 +181,34 @@ GitHub is read in one batched GraphQL query per minute at most
 (`agui/fleet-cloud.ts`, shared and cached); a failed or throttled read, or one
 still running after 2 seconds, shows the nodes as "GitHub status unknown" for
 that poll and never holds up the page longer.
+
+**Sections, orphans and filters (HIMMEL-4925).** The page has four sections:
+
+- **Needs attention** lists sessions that want a console action, by severity:
+  - a `BLOCKED` or `FINDING` marker;
+  - context at 85 % or more of the session's real window (the launch's declared
+    `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, then `--autocompact`, then the model's);
+  - a `CLOUD-DONE` PR awaiting its shepherd.
+- **Orphans** lists live sessions no live console watches, with the reason and
+  "adopt via relay / close". It also lists the shell-tool wrappers the console
+  tick reports, read from the console kit's `orphan-loops.sh --list`, with pid,
+  owner, age and how to close each. The page never signals a process.
+- **Running** groups sessions per live console.
+- **Finished** is closed by default.
+
+Cloud is a lane like native and claudex. A cloud session is never an orphan for
+want of a shepherd.
+
+Each card is one line: its name links to the run page (a cloud session's to its
+cloud session) and its chevron expands the status and lineage detail. A leg's
+hops (`N1494`, `N1494b`, `-RESUME`) and a console's succession chain each fold
+into one entry, with every hop linked.
+
+The rail's filters (lane, state, text, finished inline) narrow every section.
+They are kept per viewer in the browser.
+
+A finished row links its PR to this checkout's GitHub origin
+(`CONFIG_UI_GITHUB_REPO=<owner>/<name>` overrides it).
 
 **One app (HIMMEL-4711).** The console and the AG-UI pages share one rail and one
 theme (`public/nav.js`, `public/theme.css`): Config, Health and Fleet, plus Run
@@ -219,10 +266,10 @@ imports, so its suite runs in CI without an install.
   `lanes.local.json`, while the feed reads the primary checkout's (its station
   anchor).
 - Browser e2e (HIMMEL-4400): `scripts/config-ui/tests/e2e/`, Playwright pinned
-  to 1.63.0 (Chromium build 1243). **Opt-in, not in CI**: a runner has no
+  to 1.64.0. **Opt-in, not in CI**: a runner has no
   cached Chromium, and fetching one on every PR would make a download outage
-  red-flake the fleet. Run it where `~/.cache/ms-playwright` already holds
-  build 1243:
+  red-flake the fleet. Provision the matching browser in a VM first (operator
+  step), then run it where `~/.cache/ms-playwright` already holds that build:
 
   ```bash
   cd scripts/config-ui/tests/e2e

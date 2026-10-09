@@ -69,6 +69,17 @@ test("the ceiling: a numeric --autocompact; else the model's window (1m for a [1
   expect(usageOf(lines, { autocompact: "", model: "sonnet" })).toMatchObject({ ceiling: 200000, ceilingFrom: "window", fill: 50 });
 });
 
+// HIMMEL-4925: a claudex leg declares its window in its launch env (claude-codex's CLAUDE_CODE_MAX_CONTEXT_TOKENS),
+// which wins over the --autocompact it ignores; a window nobody declared for a non-Claude model, or a fill past
+// 100 % (the ceiling is wrong), reads as not measured rather than a bogus percentage.
+test("the ceiling: a declared window wins; an unknown model or a fill past 100 % is not a percentage", () => {
+  const at = (n: number) => [turn("m1", { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: n - 1, cache_creation_input_tokens: 0 })];
+  expect(usageOf(at(238000), { autocompact: "200000", model: "gpt-6.1-sol", window: "272000" })).toMatchObject({ ceiling: 272000, ceilingFrom: "window", fill: 87.5 });
+  expect(usageOf(at(100000), { autocompact: "", model: "gpt-6.1-sol" })).toMatchObject({ resident: 100000, fill: null });
+  expect(usageOf(at(238000), { autocompact: "200000", model: "opus" })).toMatchObject({ resident: 238000, fill: null });
+  expect(usageOf(at(50000), { autocompact: "200000", model: "opus", window: "" })).toMatchObject({ ceiling: 200000, ceilingFrom: "autocompact", fill: 25 });
+});
+
 test("a journal with no usage records is not measured, never zero", () => {
   expect(usageOf([rec({ type: "user", message: { role: "user", content: "hi" } })], { autocompact: "", model: "" })).toBeNull();
 });

@@ -60,6 +60,22 @@ pid_of() {
     cat "$1"
 }
 
+# HIMMEL-4812: missing qmd is an error, never an empty search result.
+mkdir -p "$TMP/no-qmd" "$TMP/empty-home"
+ln -s "$(command -v dirname)" "$TMP/no-qmd/dirname"
+missing_out=$(env -i PATH="$TMP/no-qmd" HOME="$TMP/empty-home" /bin/bash "$LIB_DIR/qmd-bounded.sh" collection list 2>&1); missing_rc=$?
+assert_eq "missing qmd retains distinct rc" "127" "$missing_rc"
+assert_eq "missing qmd prints one diagnostic" "qmd-bounded: qmd not found on PATH" "$missing_out"
+
+# Installed bun-global JS is usable even when qmd itself is off PATH (4814).
+mkdir -p "$TMP/empty-home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli"
+printf '%s\n' '#!/bin/sh' 'exec /bin/sh "$@"' > "$TMP/no-qmd/bun"
+chmod +x "$TMP/no-qmd/bun"
+printf '%s\n' 'echo "installed:$*"' > "$TMP/empty-home/.bun/install/global/node_modules/@tobilu/qmd/dist/cli/qmd.js"
+for tool in sleep mktemp rm; do ln -s "$(command -v "$tool")" "$TMP/no-qmd/$tool"; done
+installed_out=$(env -i PATH="$TMP/no-qmd" HOME="$TMP/empty-home" /bin/bash "$LIB_DIR/qmd-bounded.sh" search cloud -c himmel 2>&1); installed_rc=$?
+assert_eq "installed bun-global qmd works off PATH" "installed:search cloud -c himmel|0" "$installed_out|$installed_rc"
+
 export QMD_KILL_GRACE_SECS=1
 
 # HIMMEL-4011: an outer deadline for every case that exercises a hang. If

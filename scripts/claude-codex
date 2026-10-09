@@ -607,4 +607,12 @@ export ENABLE_TOOL_SEARCH=false
 # codex juice is undocumented. Keep in sync with the .ps1 twin.
 export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-medium}"
 export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+# HIMMEL-4817 launch record: the AG-UI fleet reads the lane and backend model from this process's environ rather than
+# guessing from the model string, and prices a claudex leg from the codex weekly used% delta between this launch
+# reading and the current probe cache (codex-bank-probe.ts). LEG_LANE is deliberately NOT exported: headed-arm-leg.sh
+# reads it as the default lane for legs a claudex session arms, and bank-preflight.sh reads it too.
+# ponytail: no launch-time codex-bank reading yet (a bash-only node block breaks the .ps1 twin parity pin), so fleet prices a claudex leg only when HIMMEL_CODEX_BANK_START is in its launch env; upgrade path: the HIMMEL-4817 follow-up adds it to both twins.
+export HIMMEL_SESSION_LANE=claudex
+HIMMEL_SESSION_MODEL="$(codex_stanza_model)"
+export HIMMEL_SESSION_MODEL
 exec claude "$@"

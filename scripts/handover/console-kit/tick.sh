@@ -14,6 +14,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# HIMMEL-4449: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+# shellcheck disable=SC1091
+if . "$HERE/../../lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
 # shellcheck source=../../lib/handover-path.sh
 . "$HERE/../../lib/handover-path.sh"
 # shellcheck source=../../lib/leg-identity.sh
@@ -138,6 +141,15 @@ which every Results bullet bumps. STALE:<age> = the board shows an older state
 embeds -- one derivation, so the generator and this field cannot disagree.
 ponytail: board=ok says the LOCAL file matches the state; tick cannot see
 whether the artifact was republished from it -- that stays the console's step.
+
+vault=<ok|STALL:<age>,<n>|PUSH-LAG:<age>|skip|unknown> (HIMMEL-4911) is the luna
+vault's commit health, from vault-status.sh (git plumbing only, fail-soft): STALL =
+<n> staged/modified files, the oldest <age> old (the vault's auto-commit is stuck;
+reproduce with the vault's pre-commit hook run, see console-wait.sh), PUSH-LAG = local commits
+unpushed for <age>. skip = no vault configured (TICK_VAULT_DIR, else the handover
+root's parent). Thresholds: TICK_VAULT_STALL_MIN (20), TICK_VAULT_PUSHLAG_MIN (60).
+Sits between tracker= and denials=; console-wait.sh wakes on a class change to
+STALL/PUSH-LAG only.
 
 denials=<leg>:<n>[:SHIP-STEP|REPEAT|PAUSE-RISK] (HIMMEL-3724) is classifier
 denials seen by scripts/hooks/log-classifier-denial.sh in a trailing window
@@ -1004,6 +1016,11 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     esac
 fi
 
+# HIMMEL-4911: the luna vault's commit health. vault-status.sh owns the derivation
+# (and is fail-soft); a missing or failing helper reads unknown, never a failed tick.
+vault_summary="$(HANDOVER_DIR="${HANDOVER_DIR:-$root}" bash "$HERE/vault-status.sh" 2>/dev/null)" || vault_summary=unknown
+[ -n "$vault_summary" ] || vault_summary=unknown
+
 # HIMMEL-4051: keep the roadmap-plan qmd index (HIMMEL-4000) fresh WITHOUT ever waiting
 # on it: the tick runs under the waiter's 120 s timeout and a refresh runs qmd embed. Only
 # `plan-index.sh --check` (a fingerprint) runs inline; stale + due launches --refresh
@@ -1462,6 +1479,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'plan-index: %s\n' "$plan_index_summary"
     printf 'OpenRouter: %s\n' "$openrouter"
     printf 'leg failures: %s\n' "$fails_summary"
+    printf 'vault: %s\n' "$vault_summary"
     [ -z "$spare_tail" ] || printf 'spare: %s\n' "${spare_tail# spare=}"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
@@ -1473,12 +1491,13 @@ else
     # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
     # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) and `or=`
     # follow, and `fails=` (HIMMEL-4670) closes the line, before the optional `spare=`.
+    # `vault=` (HIMMEL-4911) sits between `tracker=` and `denials=`.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then

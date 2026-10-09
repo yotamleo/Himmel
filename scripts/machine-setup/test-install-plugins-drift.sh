@@ -19,6 +19,9 @@ mkdir -p "$CLAUDE_CONFIG_DIR"
 
 fail() { echo "FAIL: $1"; exit 1; }
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+# HIMMEL-4279: a negated grep reads a grep error (rc 2) as "no match"; only
+# rc 1 is a genuine no-match.
+nogrep() { local _rc=0; grep -q "$@" || _rc=$?; [ "$_rc" -eq 1 ]; }
 
 # The station case: obsidian-skills / openai-codex registered under another source.
 cat > "$TMP/template.json" <<'JSON'
@@ -66,10 +69,25 @@ grepq "$out" "claude plugin marketplace remove obsidian-skills --scope user" || 
 grepq "$out" -F 'marketplace add /new\ checkout/marketplace --scope user' || fail "reconcile command must shell-quote a path with a space: $out"
 grepq "$out" "keeping the settings source" || fail "third-party must recommend the settings side: $out"
 grepq "$out" "himmel's own manifest is right" || fail "himmel-owned marketplace must say the manifest wins: $out"
-! grepq "$out" "marketplace registration failed" || fail "still reports a registration failure: $out"
+nogrep "marketplace registration failed" <<< "$out" || fail "still reports a registration failure: $out"
 [ -f "$STUB_LOG" ] || fail "stub log missing: the no-add check would be vacuous"
-! grep -q "marketplace add" "$STUB_LOG" || fail "must not call marketplace add for a drifted entry"
+nogrep "marketplace add" "$STUB_LOG" || fail "must not call marketplace add for a drifted entry"
 echo "ok: source mismatch reports DRIFT with both sources + remedy and exits 0"
+
+# HIMMEL-4279: the same string under a different source type is still drift.
+cat > "$CLAUDE_CONFIG_DIR/settings.json" <<'JSON'
+{ "extraKnownMarketplaces": { "obsidian-skills": { "source": { "source": "directory", "path": "kepano/obsidian-skills" } } } }
+JSON
+cat > "$TMP/template2.json" <<'JSON'
+{ "extraKnownMarketplaces": { "obsidian-skills": { "source": { "source": "github", "repo": "kepano/obsidian-skills" } } }, "enabledPlugins": {} }
+JSON
+: > "$STUB_LOG"
+rc=0
+out=$(PATH="$STUB_DIR:$PATH" bash "$SUT" --scope user --template "$TMP/template2.json" 2>&1) || rc=$?
+[ "$rc" -eq 0 ] || fail "a source-type mismatch must not abort the adopt (rc=$rc): $out"
+grepq "$out" "DRIFT: marketplace 'obsidian-skills'" || fail "same string, different source type must read as drift: $out"
+nogrep "marketplace add" "$STUB_LOG" || fail "must not call marketplace add for a type-drifted entry"
+echo "ok: same source string under a different source type reports DRIFT"
 
 # A matching entry still goes through `marketplace add` (idempotent path).
 cat > "$CLAUDE_CONFIG_DIR/settings.json" <<'JSON'

@@ -52,6 +52,23 @@ test("3 live sessions and 1 wrapped: roles, tickets, PR, state, activity, subage
   expect(by[FLEET.wrapped.name]).toMatchObject({ role: "leg", state: "wrapped", ticket: "HIMMEL-903" });
 });
 
+// HIMMEL-4925: a row carries its doc's last marker, the doc's last write and its PR's URL; the fleet carries the
+// shell-tool wrappers tick reports as orphans (orphan-loops.sh --list), and null when that inventory failed.
+test("marker, lastSeenAt and prUrl per row; process orphans for the fleet", async () => {
+  const { port, dir } = boot();
+  writeFileSync(join(dir, "orphan-loops.sh"), `#!/bin/sh\n[ "$1" = --list ] || exit 2\nprintf 'pid=4242 owner=orphan age=95m\\nnot a row\\npid=4243 owner=${FLEET.leg.name} age=31m\\n'\n`);
+  const b = await (await fleet(port)).json();
+  expect(b.processOrphans).toEqual([{ pid: 4242, owner: "orphan", ageMin: 95 }, { pid: 4243, owner: FLEET.leg.name, ageMin: 31 }]);
+  const by = Object.fromEntries(b.sessions.map((s: any) => [s.name, s]));
+  expect(by[FLEET.leg.name]).toMatchObject({ marker: "LIVE", prUrl: "https://github.com/acme/widgets/pull/1901" });
+  expect(typeof by[FLEET.leg.name].lastSeenAt).toBe("number");
+  expect(by[FLEET.wrapped.name]).toMatchObject({ marker: "WRAPPED", prUrl: "https://github.com/acme/widgets/pull/1903" });
+  expect(by[FLEET.idle.name]).toMatchObject({ marker: null, lastSeenAt: null, prUrl: null });
+
+  writeFileSync(join(dir, "orphan-loops.sh"), "#!/bin/sh\nexit 1\n");
+  expect((await (await fleet(port)).json()).processOrphans).toBeNull();
+});
+
 test("a session whose journal went quiet past the window is not listed; one with no journal is listed bare", async () => {
   const s = boot();
   const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
@@ -264,4 +281,20 @@ test("cloud: no routed cloud ticket, no GitHub read", async () => {
   const b = await (await fleet(s.port)).json();
   expect(b.sessions.some((x: any) => x.role === "cloud")).toBe(false);
   expect(existsSync(s.gh.calls)).toBe(false);
+});
+
+test("HIMMEL-4817: a claudex leg renders lane, backend model, codex-bank cost row and eval row", async () => {
+  const now = Date.now();
+  const bankDir = mkdtempSync(join(tmpdir(), "agui-bank-")), bank = join(bankDir, "codex-bank.json");
+  cleanups.push(() => rmSync(bankDir, { recursive: true, force: true }));
+  const s = boot({ CODEX_BANK_CACHE: bank });
+  writeFileSync(bank, JSON.stringify({ capturedAt: new Date(now).toISOString(), limits: [{ limitId: "codex/primary", usedPercent: 46, windowDurationMins: 10080, resetsAt: now / 1000 + 86400 }] }));
+  writeFileSync(join(s.dir, "proc", String(FLEET.leg.pid), "environ"), `LEG_LANE=claudex\0HIMMEL_SESSION_MODEL=gpt-6.1-sol\0HIMMEL_CODEX_BANK_START=40@${now - 3600_000}\0`);
+  const b = await (await fleet(s.port)).json();
+  const leg = b.sessions.find((r: any) => r.pid === FLEET.leg.pid);
+  expect(leg).toMatchObject({ lane: "claudex", laneFrom: "LEG_LANE", backendModel: "gpt-6.1-sol", usage: { costEq: null, calls: 3 } });
+  expect(leg.cost).toMatchObject({ lane: "claudex", bank: "codex", priced_by: "codex-bank", cost_eq: null, calls: 3, codex_used_pct_delta: 6 });
+  expect(leg.eval).toMatchObject({ lane: "claudex", denials: 1, denials_recovered: 0 });
+  expect(b.banks.codex).toMatchObject({ weeklyPct: 46 });
+  expect(b.sessions.find((r: any) => r.pid === FLEET.console.pid)).toMatchObject({ lane: "native", laneFrom: "default", cost: { priced_by: "claude-weights" } });
 });

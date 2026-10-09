@@ -55,7 +55,7 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
   - `luna-personal × zai-glm × inference` stayed **deny** — extraction only,
     and it still denies by *default* (HIMMEL-2224 added explicit deny rows only
     for the four cells that were open, it did not invent new rows).
-  - `salus × * × *` stays **deny, hard** — untouched, and no override can flip it.
+  - `salus × * × *` stays **deny, hard** — no override can flip it. The one carve-out is the explicit `salus × openai-codex × inference` allow row ahead of it (HIMMEL-5002, operator ruling 2026-10-08).
   - **Not a default.** `refresh-graph-map.sh` keeps `BACKEND=claude-cli`
     (HIMMEL-1049, the claude-only adopter story). GLM is a per-run opt-in for an
     operator who has a Coding Plan; an adopter without one is never expected to
@@ -252,11 +252,15 @@ verdicts — `scripts/guardrails/egress-matrix.json` is authoritative.
 | `marketplace/plugins/himmel-ops/hooks/block-agent-native-egress.sh` (HIMMEL-4328) | the `salus` × `builder-io` row (hard deny): refuses an `mcp__*agent-native*` call (the hosted Builder.io MCP that `builder-visual@himmel` registers) when the session cwd, its git toplevel or remotes, a `.salus` marker or a phi-roots/egress-denylist root marks salus, or the tool payload names salus. Plugin-shipped so it also fires in a salus session; it does not read the matrix at runtime, and `test-egress-matrix.mjs` pins the row |
 | HIMMEL-765 embedding/rerank pilot client | the `alibaba` × `embedding`/`rerank`/`vision-embedding` cells — all now explicit `deny` (Alibaba de-listed, HIMMEL-1257; the pilot is not being pursued) |
 | `scripts/eval/leg-digest/failure_router.py` (HIMMEL-4670 P5) | the `leg-failure-metadata` × `jira` × `ticketing` row (conditional): the router files and comments only a summary and body its own closed-alphabet check (`check-body`) passes, through the Jira CLI by absolute path, and logs one decision line per send. It does not read the matrix at runtime; `test-egress-matrix.mjs` 5d pins the conditional row |
+| HIMMEL-4938 Atlassian MCP catalog capture (a one-off station script, not a shipped consumer) | the `mcp-tool-catalog` × `atlassian-mcp` × `catalog-fetch` row (allow, operator ruling 2026-10-08): an auth-only `initialize` + `tools/list` call to `https://mcp.atlassian.com/v1/mcp`, no ticket, vault or corpus content. Every `tools/call`, other purpose and other corpus stays default-deny; `test-egress-matrix.mjs` 6 pins the scope |
 
 ## Invariants (enforced by the test)
 
 - `default` is `deny`; salus × any-cloud × anything is a **hard** deny with
-  no recordable override; google-gemini is denied everywhere (keys stay
+  no recordable override, except `salus × openai-codex × inference` (an
+  explicit allow row ahead of the wildcard, HIMMEL-5002 operator ruling
+  2026-10-08, which also allows `luna-personal` and `luna-clippings` for
+  codex inference only); google-gemini is denied everywhere (keys stay
   unset); there are now **zero `pending-operator` cells** (the five HIMMEL-765
   Alibaba cells were demoted to explicit `deny` by HIMMEL-1257); **DeepSeek +
   Alibaba are de-listed** for vault/handover egress (explicit `deny`), and stay

@@ -58,6 +58,17 @@ print(",".join(r["slug"] for r in json.load(open(sys.argv[1]))["panel"] if r.get
         "$HERE/../../cr/critics.json" "$tiers")" || critics=""
 fi
 
+if [ -n "$only" ] && ! python3 -c 'import json,sys
+cases=json.load(open(sys.argv[1]))["cases"]
+bad=sorted({c for c in sys.argv[2].split(",") if c} - set(cases))
+if bad: sys.exit("run.sh: --only names cases the key lacks: %s - no panel call made" % ",".join(bad))' "$key" "$only"; then
+    exit 2
+fi
+if [ -z "$critics" ]; then
+    echo "run.sh: no critic roster (--critics, or critics.json rows in --tiers) - no panel call made" >&2
+    exit 2
+fi
+
 mkdir -p "$out" || exit 2
 out="$(cd "$out" && pwd)"
 scratch="${REVIEW_PANEL_SCRATCH:-}"

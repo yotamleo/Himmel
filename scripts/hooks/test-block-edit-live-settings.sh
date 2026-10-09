@@ -509,6 +509,15 @@ assert_rc "71 accepted false deny: cat >> other file with settings.json in hered
     "$(bash_rc_of "$PRIMARY" "cat >> /tmp/doc.md <<'EOF'
 - avoided .claude/settings.json
 EOF")"
+# 71m (HIMMEL-4934): the accepted false deny at least names the Write-tool retry.
+MSG71=$(jq -n --arg cmd "cat >> /tmp/doc.md <<'EOF'
+- avoided .claude/settings.json
+EOF" --arg cwd "$PRIMARY" '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+    | bash "$HOOK" 2>&1 >/dev/null)
+case "$MSG71" in
+    *"Write tool"*) assert_rc "71m heredoc-mention deny names the Write-tool retry" 0 0 ;;
+    *) assert_rc "71m heredoc-mention deny names the Write-tool retry" 0 1 ;;
+esac
 assert_rc "72 piped grep naming settings.json from primary allows (HIMMEL-3546; was an accepted false deny)" 0 \
     "$(bash_rc_of "$PRIMARY" "grep -rl x scripts .claude/settings.json docs | head")"
 
@@ -1422,6 +1431,37 @@ if [ "$LEX_OUT" = "/x/a/*" ]; then
     echo "PASS 217 lex_resolve leaves a glob-metacharacter segment untouched regardless of files in the hook process's real cwd (got $LEX_OUT)"
 else
     echo "FAIL 217 lex_resolve leaves a glob-metacharacter segment untouched regardless of files in the hook process's real cwd — expected /x/a/*, got $LEX_OUT"
+    FAILED=$((FAILED + 1))
+fi
+
+# 217b: HIMMEL-4752 — _dc_split_words (the linear space split, HIMMEL-4678) has
+# a RED control: it must give every space-separated word (a multibyte word
+# kept whole, an empty field between double spaces kept) and a deliberately
+# broken split must fail the same check, so the check can fail. Output is
+# "<count>|w1|w2|…" for the text 'a  é b' (two spaces, then a UTF-8 word).
+DCSW_SRC="$SANDBOX/dc_split_words_extract.sh"
+sed -n '/^_dc_split_words() {/,/^}/p' "$HOOK" > "$DCSW_SRC"
+DCSW_BAD="$SANDBOX/dc_split_words_broken.sh"
+# broken: drops the space-to-separator rewrite, so every word merges into one
+sed 's|\${1// /\$s}|${1}|' "$DCSW_SRC" > "$DCSW_BAD"
+dcsw_run() {
+    bash -c '
+        source "$1"
+        f=()
+        _dc_split_words "a  é b"
+        out=${#f[@]}
+        for w in "${f[@]}"; do out="$out|$w"; done
+        printf "%s" "$out"
+    ' _ "$1" 2>/dev/null
+}
+DCSW_WANT=$'4|a||é|b\n'
+DCSW_WANT=${DCSW_WANT%$'\n'}
+DCSW_GOT=$(dcsw_run "$DCSW_SRC")
+DCSW_BROKE=$(dcsw_run "$DCSW_BAD")
+if [ -s "$DCSW_BAD" ] && ! cmp -s "$DCSW_SRC" "$DCSW_BAD" && [ "$DCSW_GOT" = "$DCSW_WANT" ] && [ -n "$DCSW_BROKE" ] && [ "$DCSW_BROKE" != "$DCSW_WANT" ]; then
+    echo "PASS 217b _dc_split_words splits every space and a broken split fails the control (got $DCSW_GOT; broken $DCSW_BROKE)"
+else
+    echo "FAIL 217b _dc_split_words — want $DCSW_WANT, got $DCSW_GOT; broken variant gave $DCSW_BROKE"
     FAILED=$((FAILED + 1))
 fi
 
@@ -3191,6 +3231,15 @@ if command -v node >/dev/null 2>&1; then
         timed_rc "683/$sz quote-heavy heredoc into live settings denies" 2 \
             "$(pad_to "cat <<'EOF' > ~/.claude/settings.json"$'\n' "$QU" 'EOF' "$sz")"
     done
+    # 4192a (HIMMEL-4192): _uj_tok_dests rescanned every word once per segment, so
+    # a paren-heavy line (one segment per `(…)`) was quadratic: 4 KB took 9.7 s
+    # alone against the 15 s hook budget. Each must finish well inside 3 s.
+    ob=$TIMING_BUDGET_MS TIMING_BUDGET_MS=3000
+    for sz in 1300 4000; do
+        timed_rc "4192a/$sz paren-heavy line (one segment per paren)" 0 \
+            "echo $(rep "$((sz / 19))" '(a) ((b)) {c} [d] ')"
+    done
+    TIMING_BUDGET_MS=$ob
     # 831-832 (HIMMEL-4353, J1818a): each eval re-judged every later eval in
     # its segment, so the cost doubled per eval word (8 words 2.7 s, 10 words
     # 22 s). An eval word that is not the command is not a body, and nesting

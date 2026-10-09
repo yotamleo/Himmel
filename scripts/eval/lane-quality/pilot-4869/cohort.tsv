@@ -1,0 +1,30 @@
+# HIMMEL-4869 phase B pilot cohort: frozen. Run in row order, one headed
+# session and one worktree per row. Lane order rotates per task and repeat.
+# row	lane	model	effort	task	rep
+p01	deepseek	sonnet	max	shell-red-green	1
+p02	native	claude-sonnet-5-5	medium	shell-red-green	1
+p03	claudex	gpt-6.1-sol	medium	shell-red-green	1
+p04	native	claude-sonnet-5-5	medium	doc-plus-code	1
+p05	claudex	gpt-6.1-sol	medium	doc-plus-code	1
+p06	deepseek	sonnet	max	doc-plus-code	1
+p07	claudex	gpt-6.1-sol	medium	bench-t4	1
+p08	deepseek	sonnet	max	bench-t4	1
+p09	native	claude-sonnet-5-5	medium	bench-t4	1
+p10	native	claude-sonnet-5-5	medium	shell-red-green	2
+p11	claudex	gpt-6.1-sol	medium	shell-red-green	2
+p12	deepseek	sonnet	max	shell-red-green	2
+p13	claudex	gpt-6.1-sol	medium	doc-plus-code	2
+p14	deepseek	sonnet	max	doc-plus-code	2
+p15	native	claude-sonnet-5-5	medium	doc-plus-code	2
+p16	deepseek	sonnet	max	bench-t4	2
+p17	native	claude-sonnet-5-5	medium	bench-t4	2
+p18	claudex	gpt-6.1-sol	medium	bench-t4	2
+p19	claudex	gpt-6.1-sol	medium	shell-red-green	3
+p20	deepseek	sonnet	max	shell-red-green	3
+p21	native	claude-sonnet-5-5	medium	shell-red-green	3
+p22	deepseek	sonnet	max	doc-plus-code	3
+p23	native	claude-sonnet-5-5	medium	doc-plus-code	3
+p24	claudex	gpt-6.1-sol	medium	doc-plus-code	3
+p25	native	claude-sonnet-5-5	medium	bench-t4	3
+p26	claudex	gpt-6.1-sol	medium	bench-t4	3
+p27	deepseek	sonnet	max	bench-t4	3

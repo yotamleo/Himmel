@@ -92,6 +92,43 @@ check "the per-denial identical counts sum to identical_denied_retries on every 
 check "without --denials the output keeps exactly the four fields (run.sh merges it into runs.jsonl)" 'python3 "$TR" score "$FX/denial-repeated.jsonl" | jq -e "keys == [\"denial_recovery\",\"identical_denied_retries\",\"red_before_green\",\"verify_before_claim\"]" >/dev/null'
 check "a missing transcript lists no denials" 'python3 "$TR" score "$TMP/nope.jsonl" --denials | jq -e ".denials == []" >/dev/null'
 check "--denials names the schema version the fields were scored under" 'python3 "$TR" score "$FX/red-green.jsonl" --denials | jq -e ".trajectory_v == 1" >/dev/null'
+# den <out> <n>: n denied Bash calls over 50 distinct commands, results batched
+# out of order in pairs, so every denial is retried and recovery varies.
+den() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+p, n = sys.argv[1], int(sys.argv[2])
+def a(i): return {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t%d" % i, "name": "Bash", "input": {"command": "x %d" % (i * 7 % 50)}}]}}
+def u(i): return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t%d" % i, "content": "Permission to use Bash has been denied.", "is_error": True}]}}
+recs = []
+for i in range(0, n, 2):
+    recs += [a(i), a(i + 1), u(i + 1), u(i)]
+with open(p, "w") as fh:
+    fh.write("".join(json.dumps(r) + "\n" for r in recs))
+PY
+}
+# ref <transcript>: the per-denial list by the original all-pairs scan (HIMMEL-4682 oracle).
+ref() {
+  python3 -c '
+import json, sys; sys.path.insert(0, sys.argv[1]); import trajectory as t
+calls, _ = t.parse(sys.argv[2]); den = [c for c in calls if t.denied(c)]
+out = {d["id"]: {"tool_call_id": d["id"], "recovered": True, "identical": 0} for d in den}
+for d in den:
+    nxt = next((c for c in calls if c["pos"] > d["result"]["pos"]), None)
+    out[d["id"]]["recovered"] = nxt is None or t._canon(nxt) != t._canon(d)
+for c in calls:
+    prior = [d for d in den if d["result"]["pos"] < c["pos"] and t._canon(d) == t._canon(c)]
+    if prior: out[prior[-1]["id"]]["identical"] += 1
+print(json.dumps([out[d["id"]] for d in den]))' "$HERE" "$1"
+}
+den "$TMP/den-small.jsonl" 200
+check "the indexed denial list equals the all-pairs scan on every fixture and a reordered synthetic journal (HIMMEL-4682)" '(for f in "$FX"/*.jsonl "$TMP/den-small.jsonl"; do [ "$(python3 "$TR" score "$f" --denials | jq -c .denials)" = "$(ref "$f" | jq -c .)" ] || exit 1; done)'
+den "$TMP/den-5k.jsonl" 5000
+# shellcheck source=../../lib/timeout-bin.sh
+. "$HERE/../../lib/timeout-bin.sh" 2>/dev/null
+if [ -n "$_TIMEOUT_BIN" ]; then
+check "score --denials on a 5k-denial journal finishes well inside 20s (near-linear, not all-pairs)" '"$_TIMEOUT_BIN" 20 python3 "$TR" score "$TMP/den-5k.jsonl" --denials >"$TMP/den-5k.json" && jq -e "(.denials | length) == 5000 and ([.denials[].identical] | add) == .identical_denied_retries" "$TMP/den-5k.json" >/dev/null'
+else ok "5k-denial timing row skipped: no GNU timeout on PATH"; fi
 
 
 echo "6. quiet-run-wrapped suites and wrap-report phrasing (HIMMEL-4698)"
@@ -102,6 +139,7 @@ check "quiet-run suite -- bash test-x.sh is a run of test-x.sh, its OK/ERR line 
 check "an env-var prefix and a trailing ; grep still read the quiet-run line" '[ "$(tt "SUITE_LOCK_WAIT=300 $QR bash test-x.sh; grep -c FAIL /tmp/q.log")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
 check "a direct ./scripts/quiet-run.sh call under a pipe is recognized" '[ "$(tt "./scripts/quiet-run.sh suite -- bash test-x.sh 2>&1 | tail -3")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
 check "two quiet-run suites in one command are one run of both test files" '[ "$(tt "$QR bash test-a.sh; $QR bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"quiet-run:suite x2\"]" ]'
+check "env VAR= and wrappers inside the quiet-run inner command are dropped (HIMMEL-4740)" '[ "$(tt "$QR env FOO=bar bash test-x.sh")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ] && [ "$(tt "$QR FOO=bar time bash test-x.sh")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
 check "quiet-run wrapping a non-test is not a test run" '[ "$(tt "bash scripts/quiet-run.sh npm-install -- npm install")" = "null" ]'
 check "node --test names its test files" '[ "$(tt "node --test scripts/a/foo.test.mjs")" = "[[\"foo.test.mjs\"], \"pass+fail\"]" ]'
 check "node --test with no test file runs the default set" '[ "$(tt "node --test")" = "[[\"*\"], \"pass+fail\"]" ]'
@@ -135,5 +173,13 @@ check "one OK line for two wrapped suites credits neither as a pass" 'python3 "$
 cl() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import trajectory as t; print(len(t.claims(sys.argv[2])))' "$HERE" "$1"; }
 check "wrap-report phrasing is not a test claim" '[ "$(cl "the subtree check passed: CLOSABLE.")" = 0 ]'
 check "a test or suite claim is still a claim" '[ "$(cl "All 12 tests passed and the suite is green.")" = 1 ]'
+echo "7. a passing && chain backs every test it runs (HIMMEL-4673)"
+check "test-a && test-b is one run of both, its pass the only outcome it speaks for" '[ "$(tt "bash test-a.sh && bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"pass\"]" ]'
+check "cd-style setup before the chain keeps the union" '[ "$(tt "cd d && bash test-a.sh && bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"pass\"]" ]'
+leg chain-union "bash test-a.sh" "ok" "bash test-a.sh && bash test-x.sh" "ok"
+check "a passing test-a && test-x backs a claim that test-x.sh passes" 'python3 "$TR" score "$TMP/chain-union.jsonl" | jq -e ".verify_before_claim == true" >/dev/null'
+leg chain-union-red "bash test-x.sh && bash test-a.sh" "Exit code 1
+FAIL" "bash test-x.sh && bash test-a.sh" "ok"
+check "a failing test-x && test-a chain proves no RED" 'python3 "$TR" score "$TMP/chain-union-red.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == true" >/dev/null'
 echo "test-trajectory: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

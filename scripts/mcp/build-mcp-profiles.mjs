@@ -22,8 +22,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const outDir = path.join(repoRoot, ".claude", "mcp-profiles");
-const manifestPath = path.join(outDir, "profiles.json");
+const manifestDir = path.join(repoRoot, ".claude", "mcp-profiles");
+const manifestPath = path.join(manifestDir, "profiles.json");
+// Test seam: generated profiles land here (default: beside the manifest).
+const outDir = process.env.HIMMEL_MCP_PROFILES_OUT || manifestDir;
 const claudeJson = path.join(os.homedir(), ".claude.json");
 
 // Portable plugin-server specs (npx-based, no absolute path). Kept here rather
@@ -35,6 +37,46 @@ const PLUGIN_SERVERS = {
   "chrome-devtools": { type: "stdio", command: "npx", args: ["chrome-devtools-mcp@latest"] },
   "context7-remote": { type: "http", url: "https://mcp.context7.com/mcp" },
 };
+
+// HIMMEL-5002: secret env values (API keys, tokens) never land in the repo-tree
+// profile. They are written to 0600 files under ~/.config/himmel/mcp-secrets/
+// <server>/<VAR>, and the profile launches the server through secret-launch.mjs,
+// which reads them back into the server's environment.
+const SECRET_VAR = /(API_?KEY|TOKEN|SECRET|PASSWORD)$/i;
+const secretsRoot = process.env.HIMMEL_MCP_SECRETS_DIR || path.join(os.homedir(), ".config", "himmel", "mcp-secrets");
+const launcher = path.join(repoRoot, "scripts", "mcp", "secret-launch.mjs");
+
+function externalizeSecrets(key, spec) {
+  const env = spec.env || {};
+  const secretNames = Object.keys(env).filter((n) => SECRET_VAR.test(n));
+  if (spec.type === "http" || spec.type === "sse") return spec;
+  const dir = path.join(secretsRoot, key);
+  if (secretNames.length === 0) {
+    // The last secret was removed from the source config: drop its stale files too.
+    if (fs.existsSync(dir)) for (const old of fs.readdirSync(dir)) fs.rmSync(path.join(dir, old), { force: true });
+    return spec;
+  }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(secretsRoot, 0o700);
+  fs.chmodSync(dir, 0o700);
+  // Drop files for secrets no longer in the source config, so a removed or
+  // renamed key is not injected (and cannot override a non-secret env value).
+  for (const old of fs.readdirSync(dir)) if (!secretNames.includes(old)) fs.rmSync(path.join(dir, old), { force: true });
+  const rest = {};
+  for (const [n, v] of Object.entries(env)) {
+    if (secretNames.includes(n)) {
+      const f = path.join(dir, n);
+      fs.rmSync(f, { force: true }); // mode applies at creation: never write into a loosened file
+      fs.writeFileSync(f, String(v), { mode: 0o600 });
+      fs.chmodSync(f, 0o600);
+    } else rest[n] = v;
+  }
+  const out = { ...spec, command: "node", args: [launcher, key, spec.command, ...(spec.args || [])] };
+  // A non-default secrets root must reach the launcher, or it reads the default dir.
+  if (process.env.HIMMEL_MCP_SECRETS_DIR) rest.HIMMEL_MCP_SECRETS_DIR = process.env.HIMMEL_MCP_SECRETS_DIR;
+  if (Object.keys(rest).length) out.env = rest; else delete out.env;
+  return out;
+}
 
 function die(msg) {
   console.error(`build-mcp-profiles: ${msg}`);
@@ -68,7 +110,7 @@ for (const [name, keys] of Object.entries(manifest.profiles)) {
     const spec = globalServers[key] ?? PLUGIN_SERVERS[key];
     if (!spec) { problems.push(`${name}: unresolved server "${key}"`); continue; }
     // context7-remote is written under the plain "context7" name so tools resolve normally.
-    mcpServers[key === "context7-remote" ? "context7" : key] = spec;
+    mcpServers[key === "context7-remote" ? "context7" : key] = externalizeSecrets(key, spec);
   }
   if (Object.keys(mcpServers).length === 0) {
     problems.push(`${name}: no servers resolved — profile not written`);

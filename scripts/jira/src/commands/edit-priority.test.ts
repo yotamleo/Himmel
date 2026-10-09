@@ -56,10 +56,15 @@ describe('edit --priority (HIMMEL-4640)', () => {
     expect(console.log).not.toHaveBeenCalledWith('HIMMEL-1 edited');
   });
 
-  it('control: an edit without --priority does no read-back', async () => {
-    mockRequest.mockResolvedValue({});
+  it('control: a --title edit reads back summary only, never priority (HIMMEL-4644)', async () => {
+    mockRequest.mockImplementation(async (method: string) =>
+      method === 'GET' ? { fields: { summary: 't' } } : {},
+    );
     const { registerEdit } = await import('./edit.js');
     await freshProgram(registerEdit).parseAsync(['node', 'jira', 'edit', 'HIMMEL-1', '--title', 't']);
-    expect(mockRequest.mock.calls.some((c) => c[0] === 'GET')).toBe(false);
+    const gets = mockRequest.mock.calls.filter((c) => c[0] === 'GET');
+    expect(gets).toHaveLength(1);
+    expect(gets[0][1]).toBe('/issue/HIMMEL-1?fields=summary');
+    expect(String(gets[0][1])).not.toContain('priority');
   });
 });

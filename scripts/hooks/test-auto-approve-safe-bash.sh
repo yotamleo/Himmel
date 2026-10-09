@@ -1547,6 +1547,34 @@ assert "rg -i --hidden pat ALLOW"             ALLOW "$(decide "$(j_bash 'rg -i -
 assert "grep -r x . ALLOW"                    ALLOW "$(decide "$(j_bash 'grep -r x .')")"
 assert "ag pat ALLOW"                         ALLOW "$(decide "$(j_bash 'ag pat')")"
 
+# HIMMEL-4752 (judge j2011 on HIMMEL-4678): U+2028 (LINE SEPARATOR) is not
+# whitespace to bash, so a command holding it gets NO opinion, never an allow.
+# A bare U+2028 was allowed on base and head (harmless: bash reports command
+# not found), but an auto-approver abstains when it cannot read the words the
+# way the shell does.
+# CORPUS NOTE (HIMMEL-4678, PR 2011 claimed "0 auto-approve changes"): that
+# holds for the station corpus, not for adversarial Unicode-whitespace input.
+# There the rewritten tokenizer differs from the old one on Unicode spaces
+# only, and the new reading is closer to bash's (bash splits words on space,
+# tab and newline alone). Acceptable: no such command widens an allow; U+2028
+# is abstained (below) and the rest are classified by their literal bytes.
+LS=$'\xe2\x80\xa8'
+assert "bare U+2028 never ALLOW"              PASS  "$(decide "$(j_bash "$LS")")"
+assert "ls with U+2028 argument never ALLOW"  PASS  "$(decide "$(j_bash "ls${LS}-l")")"
+assert "plain ls -l still ALLOW"              ALLOW "$(decide "$(j_bash 'ls -l')")"
+
+# HIMMEL-4967 (judge j2148 on HIMMEL-4752): the abstain cases (U+2028, FF, VT)
+# used to exit before the HIMMEL-2121 root-walk DENY, downgrading a deny to no
+# opinion. The deny runs first now; the abstain still holds for everything else.
+FF=$'\f'
+VT=$'\v'
+assert "find / U+2028 DENY"                   DENY  "$(decide "$(j_bash "find / -name x${LS}")")"
+assert "find / FF DENY"                       DENY  "$(decide "$(j_bash "find / -name x${FF}")")"
+assert "find / VT DENY"                       DENY  "$(decide "$(j_bash "find / -name x${VT}")")"
+assert "find / U+2028 bypass still PASS"      PASS  "$(FIND_ROOTWALK_OK=1 decide "$(j_bash "find / -name x${LS}")")"
+assert "find / maxdepth U+2028 PASS"          PASS  "$(decide "$(j_bash "find / -maxdepth 2 -name x${LS}")")"
+assert "impacted-suites literal FF never ALLOW" PASS "$(decide "$(j_bash "bash scripts/cr/impacted-suites.sh${FF}")")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

@@ -85,8 +85,8 @@ check "each permitted gated dispatch wrote one ledger line" 4 "$(wc -l < "$HIMME
 check_contains "ledger line carries corpus+verdict" '"corpus":"handover-state"' "$(cat "$HIMMEL_HERMES_EGRESS_LEDGER")"
 
 # ── vault corpora: only anthropic / local stay open ─────────────────────────
-gate "$TMP/luna/journal/n.md" openai-codex
-check "luna-personal x openai-codex refused (no cell -> default deny)" 4 "$rc"
+gate "$TMP/luna/journal/n.md" deepseek
+check "luna-personal x deepseek refused (no cell -> default deny)" 4 "$rc"
 check_contains "luna-personal named" "luna-personal" "$err"
 gate "$TMP/luna/journal/n.md" anthropic
 check "luna-personal x anthropic allowed" 0 "$rc"
@@ -95,8 +95,13 @@ check "luna-clippings x alibaba refused" 4 "$rc"
 check_contains "luna-clippings named" "luna-clippings" "$err"
 
 # ── salus: deny; the local-ollama cell is conditional and unverifiable here ─
+gate "$TMP/salusproj/p.md" deepseek
+check "salus x deepseek refused" 4 "$rc"
+# HIMMEL-5002 operator ruling 2026-10-08: codex inference is allowed on luna and salus.
 gate "$TMP/salusproj/p.md" openai-codex
-check "salus x openai-codex refused" 4 "$rc"
+check "salus x openai-codex allowed (HIMMEL-5002 ruling)" 0 "$rc"
+gate "$TMP/luna/journal/n.md" openai-codex
+check "luna-personal x openai-codex allowed (HIMMEL-5002 ruling)" 0 "$rc"
 gate "$TMP/salusproj/p.md" ollama
 check "salus x ollama (conditional opt-in) refused — gate cannot verify the opt-in" 4 "$rc"
 
@@ -113,8 +118,8 @@ gate "$TMP/code/diff.txt"
 check "non-vault prompt file with no --provider passes" 0 "$rc"
 
 # ── handover root == vault root: the stricter vault corpus wins ─────────────
-err="$(HANDOVER_DIR="$TMP/luna" bash "$GATE" --prompt-file "$TMP/luna/journal/n.md" --provider openai-codex 2>&1)"; rc=$?
-check "handover root == vault root keeps luna-personal (codex refused)" 4 "$rc"
+err="$(HANDOVER_DIR="$TMP/luna" bash "$GATE" --prompt-file "$TMP/luna/journal/n.md" --provider deepseek 2>&1)"; rc=$?
+check "handover root == vault root keeps luna-personal (deepseek refused)" 4 "$rc"
 
 # handover root CONTAINS the vault: a handover file OUTSIDE the vault is still
 # handover-state (round 3) — only files inside the vault keep the stricter corpus
@@ -124,8 +129,8 @@ printf 'b\n' > "$TMP/hp/other/b.md"
 err="$(HANDOVER_DIR="$TMP/hp" LUNA_VAULT_PATH="$TMP/hp/luna" bash "$GATE" --prompt-file "$TMP/hp/other/b.md" --provider deepseek 2>&1)"; rc=$?
 check "handover root containing the vault: handover file OUTSIDE the vault x deepseek refused" 4 "$rc"
 check_contains "…and classified handover-state, not un-gated" "handover-state" "$err"
-err="$(HANDOVER_DIR="$TMP/hp" LUNA_VAULT_PATH="$TMP/hp/luna" bash "$GATE" --prompt-file "$TMP/hp/luna/journal/n.md" --provider openai-codex 2>&1)"; rc=$?
-check "handover root containing the vault: file INSIDE the vault keeps luna-personal (codex refused)" 4 "$rc"
+err="$(HANDOVER_DIR="$TMP/hp" LUNA_VAULT_PATH="$TMP/hp/luna" bash "$GATE" --prompt-file "$TMP/hp/luna/journal/n.md" --provider deepseek 2>&1)"; rc=$?
+check "handover root containing the vault: file INSIDE the vault keeps luna-personal (deepseek refused)" 4 "$rc"
 check_contains "…and is classified luna-personal" "luna-personal" "$err"
 
 # ── fail closed when the evaluator cannot be reached ────────────────────────

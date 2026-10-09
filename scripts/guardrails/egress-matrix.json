@@ -21,7 +21,8 @@
     "handover-state": "the handover state repo root (HANDOVER_DIR; work artifacts, specs, session notes). Kept for Mode-B EXTERNAL state repos after the HIMMEL-343 fold: a HANDOVER_DIR nested INSIDE a vault classifies as that vault's corpus instead (fence precedence checks vault roots first — more restrictive; pinned by test, HIMMEL-817)",
     "himmel-code": "himmel checkout(s), worktrees, and the public mirror (code + docs; public-propagated)",
     "voice-audio": "CAPTURED AUDIO: microphone recordings and any audio file derived from them (reference clips, TTS output). UNLIKE every other corpus this one is NOT path-keyed — speech has no file location, so it cannot be scoped by directory and the path-keyed salus deny cannot reach it (HIMMEL-1522). SCOPE NOTE: an utterance the operator DELIBERATELY addressed to the assistant (wake-word gated, or an explicit push-to-talk take) becomes an ordinary prompt once transcribed, governed by the same rules as typed input — it is not held here. The hazard this corpus exists for is AMBIENT audio: sound captured without the speaker addressing the system, which no path-keyed rule can protect. An earlier draft held transcripts here too, which forbade the product itself — a rule that outlaws its own use case is one that gets ignored, so the boundary is drawn at capture instead. Residual risk (unclosed, ticketed): a wake-gated utterance can still contain PHI, and nothing classifies it before it is sent",
-    "leg-failure-metadata": "DERIVED leg-failure metadata (HIMMEL-4670 P5): class keys from closed vocabularies, counts, leg labels, ticket keys, PR numbers, hook or suite basenames and the fixed routing-table text that scripts/eval/leg-digest/failure_router.py builds from the leg-failures ledger. Never transcript content: no command, path, message or prompt (the ledger schema refuses those keys and the router's body alphabet check refuses anything else). NOT path-keyed: it exists only as the router-built Jira summary and body"
+    "leg-failure-metadata": "DERIVED leg-failure metadata (HIMMEL-4670 P5): class keys from closed vocabularies, counts, leg labels, ticket keys, PR numbers, hook or suite basenames and the fixed routing-table text that scripts/eval/leg-digest/failure_router.py builds from the leg-failures ledger. Never transcript content: no command, path, message or prompt (the ledger schema refuses those keys and the router's body alphabet check refuses anything else). NOT path-keyed: it exists only as the router-built Jira summary and body",
+    "mcp-tool-catalog": "PUBLISHED MCP tool-catalog metadata (HIMMEL-4938): the tool names, descriptions and JSON schemas an MCP server returns for tools/list. Vendor-published text, identical for every caller; no ticket, vault, handover or corpus content is part of it. The request carries only the operator's own Atlassian credential for auth"
   },
   "providers": {
     "local-ollama": { "region": "local", "note": "zero egress; includes qmd local GGUF embeddings" },
@@ -37,9 +38,10 @@
     "firecrawl": { "region": "US", "note": "HIMMEL-4335: web scrape/search API (api.firecrawl.dev, or a self-hosted FIRECRAWL_BASE_URL). Receives the URL (scrape) or the search query. Metered free plan; every call is ledgered in ~/.himmel/state/firecrawl-ledger.jsonl" },
     "jina-reader": { "region": "US", "note": "HIMMEL-4335: keyless Jina Reader scrape (r.jina.ai/<url>). Receives the URL being fetched; no key, no metering" },
     "builder-io": { "region": "US", "note": "HIMMEL-4328: the hosted OAuth MCP `agent-native-dispatch` (https://dispatch.agent-native.com/mcp) that builder-visual@himmel registers for the design profile (HIMMEL-4326). Every tool argument (prompts, file paths, pasted content) goes to Builder.io servers. Enforced at the MCP call by marketplace/plugins/himmel-ops/hooks/block-agent-native-egress.sh" },
-    "jira": { "region": "US", "note": "HIMMEL-4670 P5: the Atlassian Jira Cloud project the himmel Jira CLI (scripts/jira/dist/index.js, by absolute path) writes; the failure router is its only automated caller" }
+    "jira": { "region": "US", "note": "HIMMEL-4670 P5: the Atlassian Jira Cloud project the himmel Jira CLI (scripts/jira/dist/index.js, by absolute path) writes; the failure router is its only automated caller" },
+    "atlassian-mcp": { "region": "US", "note": "HIMMEL-4938: the hosted Atlassian remote MCP server (https://mcp.atlassian.com/v1/mcp). Only the initialize handshake and tools/list are permitted; every tools/call stays denied" }
   },
-  "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment", "stt", "tts", "ticketing"],
+  "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment", "stt", "tts", "ticketing", "catalog-fetch"],
   "rules": [
     {
       "corpus": "salus", "provider": "local-ollama", "purpose": "*",
@@ -62,6 +64,11 @@
       "verdict": "conditional",
       "condition": "persistent user opt-in: graphify.salus_ollama_cloud_ok is the JSON literal true in $HOME/.himmel/config.json (absent, unreadable or malformed = deny). Read by graphify-fence.sh; no env override",
       "why": "HIMMEL-4185 operator ruling 2026-10-05: salus x ollama-cloud is DENY unless the user has persistently opted in. Not hard (the opt-in is the operator's decision). Placed BEFORE the salus wildcard hard deny so the opt-in can reach it; every other purpose stays on that hard deny"
+    },
+    {
+      "corpus": "salus", "provider": "openai-codex", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-5002 operator ruling 2026-10-08 (interactive): codex (claudex lane, provider openai-codex) is supported for luna and salus, inference only. Every other provider and purpose keeps its existing deny (the hard salus wildcard below still governs them)"
     },
     {
       "corpus": "salus", "provider": "*", "purpose": "*",
@@ -116,6 +123,11 @@
       "why": "HIMMEL-4084 operator ruling 2026-10-02: substrate-shaped DeepSeek sessions may read/write work artifacts only under the explicit station process-environment flag. This inference cell does not reopen extraction or enrichment; nested vault handovers still classify as vaults."
     },
     {
+      "corpus": "himmel-code", "provider": "atlassian-mcp", "purpose": "*",
+      "verdict": "deny",
+      "why": "HIMMEL-4938: the Atlassian MCP server is reachable only for the tool-catalog fetch (the mcp-tool-catalog allow row at the end). Placed before the himmel-code wildcard allow below so that wildcard cannot open tools/call or any other use of this provider"
+    },
+    {
       "corpus": "himmel-code", "provider": "*", "purpose": "*",
       "verdict": "allow",
       "why": "public-propagated code/docs; impl lanes (codex/GLM/alibaba) are ratified consumers. Caveat rides the lane guards: debrand content-not-name; secrets are excluded by block-read-secrets, not by this matrix"
@@ -168,6 +180,11 @@
       "verdict": "allow", "why": "operating substrate"
     },
     {
+      "corpus": "luna-clippings", "provider": "openai-codex", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-5002 operator ruling 2026-10-08 (interactive): codex (claudex lane, provider openai-codex) is supported for luna and salus, inference only. Every other provider and purpose keeps its existing deny"
+    },
+    {
       "corpus": "luna-clippings", "provider": "firecrawl", "purpose": "enrichment",
       "verdict": "allow+log",
       "why": "HIMMEL-4335: the thin-body clip escalation sends a clip's own public source URL to Firecrawl. Only URLs that pass the tool's own checks are sent: http(s) scheme, no basic-auth, not on the skip-host list, not a private host. The vault's .harvest-deny and .harvest-allow lists are NOT enforced by the tool (follow-up). The ledger obligation is met by ~/.himmel/state/firecrawl-ledger.jsonl (tool = call_site; corpus and purpose are fixed per call site). Extraction, embedding and every other purpose stay default-deny."
@@ -216,6 +233,11 @@
       "verdict": "allow", "why": "operating substrate (Claude sessions read the vault natively every day)"
     },
     {
+      "corpus": "luna-personal", "provider": "openai-codex", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-5002 operator ruling 2026-10-08 (interactive): codex (claudex lane, provider openai-codex) is supported for luna and salus, inference only. Every other provider and purpose keeps its existing deny"
+    },
+    {
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "extraction",
       "verdict": "deny",
       "why": "REVERSED 2026-07-22 (HIMMEL-1257): the 2026-07-05 operator speed override (luna non-Clippings extraction on DeepSeek) is dropped — bad results. GLM (zai-glm) is the sanctioned CN extraction lane (see the zai-glm cell below). Explicit deny keeps the reversal legible; not hard."
@@ -250,6 +272,11 @@
       "verdict": "conditional",
       "condition": "only the closed-alphabet summary and body failure_router.py builds and validates (check-body), through the himmel Jira CLI by absolute path; one decision-log line per send",
       "why": "HIMMEL-4670 P5 (spec 6.1): the failure loop's only off-host write. Recurring failure classes become Jira tickets so the second drift escalates to a structural fix. The metadata is derived and closed-vocabulary, never transcript content; the condition is what keeps it so"
+    },
+    {
+      "corpus": "mcp-tool-catalog", "provider": "atlassian-mcp", "purpose": "catalog-fetch",
+      "verdict": "allow",
+      "why": "HIMMEL-4938 (operator ruling 2026-10-08): an auth-only initialize + tools/list call to mcp.atlassian.com, capturing the real tool schemas for the Headroom token-reduction measurement. Metadata only: the request carries no ticket, vault or corpus content. Every tools/call, and every other corpus or purpose against this provider, stays default-deny."
     }
   ],
   "default": "deny"

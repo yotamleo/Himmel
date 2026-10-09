@@ -205,11 +205,20 @@ if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__.*") | .hooks[].command 
 else
     bad ".codex/hooks.json lacks the mcp__.* chain (mcp-policy.sh+block-backend-tier.sh)"
 fi
-if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__plugin_atlassian_atlassian__.*") | .hooks[].command | select(test("block-backend-tier\\.sh"))] | length == 1' "$REPO_ROOT/.claude/settings.json" >/dev/null; then
-    ok ".claude/settings.json keeps the Atlassian redirect"
-else
-    bad ".claude/settings.json lost the Atlassian redirect"
-fi
+for name in mcp__plugin_atlassian_atlassian__lookupJiraAccountId \
+            mcp__claude_ai_Atlassian_MCP__lookupJiraAccountId mcp__qmd__query; do
+    expected=1
+    case "$name" in mcp__qmd__*) expected=0 ;; esac
+    if jq -e --arg name "$name" --argjson expected "$expected" '
+        [.hooks.PreToolUse[] | .matcher as $matcher | .hooks[].command |
+         select(test("block-backend-tier\\.sh")) |
+         select($name | test($matcher))] | length == $expected
+    ' "$REPO_ROOT/.claude/settings.json" >/dev/null; then
+        ok ".claude/settings.json backend redirect count $expected for $name"
+    else
+        bad ".claude/settings.json backend redirect count differs from $expected for $name"
+    fi
+done
 
 # --- 8b. the real Codex chain allows well-formed non-Atlassian MCP calls -----
 # Runs .codex/run-hook.sh exactly as .codex/hooks.json wires it, so the

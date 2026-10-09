@@ -577,6 +577,22 @@ REPORT-ONLY Windows evidence collector for the agent-runtime RAM + MCP lifecycle
 
 ---
 
+## fetch-url (`scripts/web/fetch-url.sh`, HIMMEL-4908)
+
+`bash scripts/web/fetch-url.sh '<url>'` fetches a pasted link as text. Hosts in
+`scripts/web/walled-hosts.conf` (x.com, twitter.com, mobile.twitter.com,
+instagram.com — the file's one line) go through Scrapling's stealth fetcher
+(`~/.himmel/scrapling-venv`, no cookies, never a Chrome profile): X prints
+author, handle, date, each post's text in order and media URLs; Instagram prints
+the `og:` tags. Any other host is a plain GET rendered to text. Exit: 0 ok, 2
+usage, 3 scrapling missing (install hint on stderr), 4 fetch failed (status on
+stderr). Companion PreToolUse hook `scripts/hooks/redirect-webfetch-walled-hosts.sh`
+(matcher `WebFetch`) denies WebFetch on a walled host and prints that exact
+command; fail-open, bypass `HIMMEL_WEBFETCH_WALLED_OK=1` in the launching shell.
+Suites: `scripts/web/test-fetch-url.sh`,
+`scripts/hooks/test-redirect-webfetch-walled-hosts.sh`. Codex has no WebFetch
+tool, so `.codex/hooks.json` carries no twin.
+
 ## leg-pr-open (`scripts/lanes/leg-pr-open.sh`, HIMMEL-3031)
 
 Fixed-literal PR-publish utility: `leg-pr-open.sh <title-file> <body-file>
@@ -1671,6 +1687,15 @@ signalled it. Same runner/scheduler split as the graphify pair above.
   StartWhenAvailable + IgnoreNew XML) / crontab (POSIX); dedup-guarded; hermetic
   test `test-qmd-cadence.sh`. Arming is an operator flip, never auto-armed:
   `bash scripts/luna/qmd-cadence.sh arm` (`--time` / `--force` / `--dry-run`).
+  **Migration after HIMMEL-4896:** an already-armed receiver cadence keeps its
+  persisted runner; a plain `arm` refuses the existing task rather than replacing
+  it. After upgrading, the operator must run
+  `bash scripts/luna/qmd-cadence.sh disarm`, then
+  `bash scripts/luna/qmd-cadence.sh arm` (or replace it directly with
+  `bash scripts/luna/qmd-cadence.sh arm --force`). Supply the previous `--time`,
+  `--hourly`, and `--qmd-bin` settings if needed; do not pass the retired
+  `--ship-to` option. This replaces the old ship runner with local reindexing;
+  upgrading the checkout alone does not migrate scheduled tasks.
 - `scripts/eval/qmd-quality/qmd-quality-cadence.sh run|arm|status|disarm`
   (HIMMEL-4184) — the weekly retrieval-quality drift check. `run` scores the
   private golden set with `qmd-quality.sh --scope golden` (read-only snapshot of
@@ -1682,66 +1707,6 @@ signalled it. Same runner/scheduler split as the graphify pair above.
   arm --golden <golden.jsonl>` (default Sunday 06:00, after the 05:00 reindex;
   `--day` / `--time` / `--index` / `--force` / `--dry-run`). Cron only; not in
   the wizard registry. Test: `test-qmd-quality-cadence.sh`.
-
----
-
-## qmd index ship transport (`scripts/luna/ship-index*`, HIMMEL-1275)
-
-Build the search index LOCALLY, ship the artifact to a machine that cannot build
-its own. Measured 2026-07-25: the receiver station embeds at ~5 docs/min vs
-~256 docs/min locally (50x), so an in-place reindex there was projected at
-**~17 hours** and was killed mid-run. It RECEIVES, never builds. Consumes
-HIMMEL-568's runner — ship AFTER a successful local reindex, not on a blind
-clock.
-
-- `scripts/luna/prepare-ship-index.mjs` — builds the shippable artifact.
-  Consistent copy via SQLite's **backup API** (not a file copy, so it is safe
-  while the local daemon is live), collection reconcile, **vec0 orphan GC**,
-  VACUUM, then a self-check. Node rather than Python because the index carries a
-  vec0 virtual table and Python's stdlib `sqlite3` cannot load vec0 on these
-  boxes. Two facts it depends on, both verified against the live index:
-  `vectors_vec.hash_seq == hash || '_' || seq` (underscore), and a vec0
-  `TEXT PRIMARY KEY` **replaces rowid** so deletes must key on `hash_seq`.
-  FTS needs no separate step — the `documents_ad` trigger cascades the
-  `documents` delete into `documents_fts` (hand-deleting from that contentless
-  fts5 table would corrupt it). Content is SHARED across collections
-  (`luna-curated` indexes a subset of the luna vault), so orphan cleanup is
-  "referenced by NO surviving document", never "belonged to a dropped
-  collection". The source index is opened READONLY and never modified.
-- `scripts/luna/ship-index-remote.ps1` — the RECEIVER half, copied over and run
-  there. Daemon fence (the daemon is **bun**, not node — a node-only filter both
-  misses it and matches dozens of unrelated processes), swap via a `.preship`
-  copy that is **reaped on success and failure**, **WMI-parented restart**
-  (`Invoke-CimMethod Win32_Process Create` — a child of the ssh session dies with
-  the connection), then verify. It is a FILE rather than an inline command
-  because a nested `\"` inside `ssh host 'powershell -Command "…"'` breaks cmd
-  parsing.
-- `scripts/luna/ship-index.sh` — the orchestrator: reindex → resolve the
-  receiver's collection set → prepare → upload → run the receiver script →
-  ship the graph. Distinct exit codes per stage (3 reindex / 4 prepare /
-  5 upload / 6 receiver / 7 graph) so a failure says which half broke and
-  whether anything reached the receiver.
-
-**Reconcile policy: ship-only-what-the-RECEIVER-configures.** Its own
-`qmd collection list` is the authority, so the ship can never create an orphan
-collection there; and it REFUSES outright if the receiver expects a collection
-the source lacks, rather than silently shipping an index missing it.
-**Verify fails LOUD** if vectors lag lex after the swap — that is the exact
-state a receiver station was found in (lex-current at 14,803 docs while
-thousands of vectors were missing, answering semantic queries off the gap in
-silence).
-
-The graphify graph rides the same transport; **HIMMEL-1129 owns publishing** —
-this moves the machine-to-machine leg only and never generates a graph.
-
-Hermetic tests: `test-prepare-ship-index.sh` (33 assertions against REAL fixture
-databases with real vec0 tables — reconcile, shared-content retention, orphan
-GC including pre-existing ghost rows, FTS trigger cascade; skips cleanly when
-better-sqlite3/vec0 are absent) and `test-ship-index.sh` (37 assertions —
-argument handling, preflight, dry-run, per-stage failure attribution, and the
-"a failed local build ships NOTHING" ordering guarantee, all against stubbed
-ssh/scp/node). Neither needs a second machine; the actual swap is deliberately
-never a CI test.
 
 ---
 

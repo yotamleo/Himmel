@@ -648,7 +648,23 @@ _wr_add() { wr="$wr ${1#./} "; }
 # _ran_written WORD — succeed when WORD, a shell's or interpreter's
 # operand, is a file the command wrote and the command names a verb.
 _ran_written() {
-    case "$wr" in *" ${1#./} "*) names_verb "$w" ;; *) return 1 ;; esac
+    case "$wr" in
+        *" ${1#./} "*) names_verb "$w" || names_verb "$allw" ;;
+        *) return 1 ;;
+    esac
+}
+# _envfile_written W — succeed when W assigns ENV or BASH_ENV (`ENV=f sh`,
+# `env BASH_ENV=f bash`, `export ENV=f`) a file the command wrote and the
+# command names a verb: an interactive sh and a bash read that file at start.
+_envfile_written() {
+    local rest=$1 f
+    [ -n "$wr" ] || return 1
+    while [[ $rest =~ (^|[^[:alnum:]_])(bash_env|env)=([^[:space:];\&\|\<\>\(\)]+) ]]; do
+        f=${BASH_REMATCH[3]}
+        rest=${rest#*"${BASH_REMATCH[0]}"}
+        case "$wr" in *" ${f#./} "*) names_verb "$1" && return 0 ;; esac
+    done
+    return 1
 }
 # _screen_dec TEXT — set sd to TEXT with screen's \ooo, \n, \r decoded and
 # its ^X dropped (a control byte never spells the verb).
@@ -695,8 +711,15 @@ qmd_nested() {
     # bash copies $w on every index below, so the scan is quadratic in its
     # length: a long command holding a shell or eval word is refused, not
     # scanned against the chain's budget.
+    # HIMMEL-4526: it also refuses one naming qmd and a verb (a reader with no
+    # NESTWORD, `| awk '{system($0)}'`, `| sed e`, `| $x`), unless every
+    # command it runs is a plain reader.
     if [ "$n" -gt 8192 ]; then
-        if [[ $w =~ $NESTWORD ]]; then deny=1; fi
+        if [[ $w =~ $NESTWORD ]]; then
+            deny=1
+        elif names_verb "$dec" && ! readers_only "$w"; then
+            deny=1
+        fi
         return 0
     fi
     # lb is the last command boundary seen; pipe, while set, is the offset of
@@ -720,7 +743,7 @@ qmd_nested() {
     # ri is set while the next word is a `<` target; sw is lb when the
     # current stage reads a written file on stdin (`< f sh`).
     local lb=-1 pipe='' pfrom=-1 fs='' fb='' fr pc=0 pp=1 ro=0 te=0 tw ws ri=0 sw='' so sr
-    local sk='' se=0 sf=0 nk='' nr=0 pk=-1 e0 nw enc fo ia ct sj tk hx hs tx sd x
+    local sk='' se=0 sf=0 nk='' nr=0 pk=-1 e0 nw enc fo ia ct sj tk hx hs tx sd x oa sx atw
     while [ "$i" -lt "$n" ]; do
         c=${w:i:1}
         case "$NESTSEP" in
@@ -840,6 +863,12 @@ qmd_nested() {
         # so: the program comes from an operand, code string or hand-back;
         # sr: stdin is a written file or a here-string; ss: sh -s seen.
         so=0 sr=0 ss=0
+        # HIMMEL-4505: oa: the next word is an option's argument (`-o
+        # errexit`), no program operand; sx: the -c string reads stdin
+        # (`. /dev/stdin`, a nested shell); atw: at and batch, which read
+        # their job from stdin unless given -f.
+        oa=0 sx=0 atw=0
+        case "$nw" in at|batch) atw=1 ;; esac
         [ "$sw" != "$lb" ] || sr=1
         # screen and rem only peek at their words (the walk below resumes
         # after the launcher word itself); one inside a span an earlier one
@@ -1056,7 +1085,23 @@ qmd_nested() {
                     # /proc/self/fd/0) is no program source: both keep the
                     # stdin check below on.
                     if [ "$mode" = sh ] && [ "$so" = 0 ] && [[ $t =~ ^-[[:alpha:]]*s[[:alpha:]]*$ ]]; then ss=1; fi
-                    if [ "$mode" != env ] && [[ $t != -* ]]; then
+                    if [ "$oa" != 0 ]; then
+                        # A shell option's argument is no program operand;
+                        # an rc file (oa=2) is still run, so a written one
+                        # denies.
+                        if [ "$oa" = 2 ] && _ran_written "$t"; then deny=1; return 0; fi
+                        oa=0
+                    elif [ "$mode" = sh ] && [[ $nw =~ ^(sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish)$ ]] &&
+                        [[ $t =~ ^[-+][[:alpha:]]*[oO]$ || $t =~ ^--(rcfile|init-file)$ ]]; then
+                        oa=1
+                        [[ $t == --* ]] && oa=2
+                    elif [ "$atw" = 1 ]; then
+                        # at and batch take a time spec, not a program; only
+                        # a bare -f names the job file that replaces stdin;
+                        # a cluster such as -qf is a queue letter, not a file.
+                        if [[ $t = -f || $t = --file ]]; then so=1; fi
+                        if _ran_written "$t"; then deny=1; return 0; fi
+                    elif [ "$mode" != env ] && [[ $t != -* ]]; then
                         if [ "$ss" = 0 ]; then
                             case "$v" in */dev/*|dev/*|*/proc/*|proc/*) ;; *) so=1 ;; esac
                         fi
@@ -1079,10 +1124,14 @@ qmd_nested() {
                     fi
                 fi
             else
-                so=1
+                # A string that reads stdin (`. /dev/stdin`, a nested shell)
+                # is not the program source: stdin is, so keep the check on.
+                if [[ $v =~ /dev/stdin|/dev/fd/0|/proc/[^[:space:]]*/fd/0 || $v =~ $NESTWORD ]]; then sx=1; fi
+                [ "$sx" = 1 ] || so=1
                 # A word with no q, `$` or backtick cannot spell qmd.
                 case "$v" in
                     *[qQ]*|*'$'*|*'`'*) qmd_check "$v" $((depth + 1)) ;;
+                    *) if [ -n "$wr" ]; then qmd_check "$v" $((depth + 1)); fi ;;
                 esac
                 if [ "$deny" = 1 ]; then return 0; fi
             fi
@@ -1151,6 +1200,7 @@ qmd_nested() {
         esac
         if [ "$tx" = 1 ] && names_verb "$w"; then deny=1; return 0; fi
     done
+    if _envfile_written "$w"; then deny=1; fi
     return 0
 }
 
@@ -1179,6 +1229,291 @@ readers_only() {
     return 0
 }
 
+# HIMMEL-4989: a command word the guard cannot read (a glob, a variable bound
+# by read/for/a substitution, a command substitution), or an alias or function
+# defined in the command, can be tmux, screen or pwsh, which type or run a
+# string the guard cannot decode. dyn_check fails closed on such a word in
+# program position. A variable assigned a plain literal in the command is
+# instead substituted into the command and the result read again (_resolve_vars).
+DYNCAND=' tmux screen pwsh powershell '
+DYNBODY='(^|[^[:alnum:]_.-])(tmux|screen|pwsh|powershell)(\.exe)?([^[:alnum:]_.-]|$)'
+DYNRUN='^[^;|&(){}<>$`]+'
+VARASSIGN='(^|[;&|[:space:](){])([A-Za-z_][A-Za-z0-9_]*)=("[^"$`\\]*"|'\''[^'\'']*'\''|[^[:space:];&|$`()"'\''\\<>]*)'
+DYNWRAP=' sudo doas nice ionice chrt taskset stdbuf setsid nohup command builtin exec time timeout env xargs if then else elif do while until ! eval watch unbuffer '
+# _dyn_cand WORD — succeed when WORD, path and .exe removed, is one of them.
+_dyn_cand() {
+    local b=${1##*/}
+    b=${b%.exe}
+    case "$DYNCAND" in *" $b "*) return 0 ;; esac
+    return 1
+}
+# _dyn_glob WORD — succeed when WORD's last path component holds a glob
+# character and matches the name of one of them.
+_dyn_glob() {
+    local b=${1##*/} p
+    case "$b" in *[\*\?\[]*) ;; *) return 1 ;; esac
+    for p in tmux screen pwsh powershell tmux.exe screen.exe pwsh.exe powershell.exe; do
+        # shellcheck disable=SC2053 # $b is the glob under test
+        [[ $p == $b ]] && return 0
+    done
+    return 1
+}
+# _dyn_tail_ok TAIL — succeed when TAIL, the text after a word's last dynamic
+# part, is a literal path (`/scripts/x.sh`) that is not one of them.
+_dyn_tail_ok() {
+    local b
+    case "$1" in
+        /*) b=${1##*/} ;;
+        *) return 1 ;;
+    esac
+    case "$b" in *'$'*|*'`'*|*[\*\?\[]*) return 1 ;; esac
+    _dyn_cand "$b" && return 1
+    return 0
+}
+# _dyn_body I — set bd to the words between the `{` after offset I and its
+# match, or '' when there is none (reads dyn_check's t and n).
+_dyn_body() {
+    local k=$1 d=0 s=-1 c
+    bd=''
+    while [ "$k" -lt "$n" ]; do
+        c=${t:k:1}
+        if [ "$c" = '{' ]; then
+            [ "$s" -ge 0 ] || s=$((k + 1))
+            d=$((d + 1))
+        elif [ "$c" = '}' ] && [ "$d" -gt 0 ]; then
+            d=$((d - 1))
+            if [ "$d" -eq 0 ]; then bd=${t:s:k-s}; return 0; fi
+        elif [ "$s" -lt 0 ] && [ "$c" != ' ' ] && [ "$c" != '(' ] && [ "$c" != ')' ] && [ "$c" != $'\t' ]; then
+            return 0
+        fi
+        k=$((k + 1))
+    done
+    [ "$s" -lt 0 ] || bd=${t:s}
+}
+# dyn_check WORDS DEPTH — set deny=1 when a command in WORDS (qmd_words' first
+# line, lower-cased) has, in program position, a glob matching tmux, screen or
+# pwsh, a command substitution, a variable bound by read, for, printf -v or a
+# substitution, or the name of an alias or function defined earlier in WORDS
+# that runs one of them. A substitution anywhere is read as a command too.
+# ponytail: brace expansion (`/usr/bin/{tmux,x}`) and a value bound some other
+# way (declare -n, mapfile into an array) are unread; a heredoc makes
+# qmd_words decline and skips this reading entirely (HIMMEL-4989).
+dyn_check() {
+    local LC_ALL=C t=$1 dp=$2 ar=${3:-0} n i=0 j c pd bq pp=1 w nx k s inner subs sp lastd tail nm r
+    local adang=' ' fdang=' ' vdyn=' ' wopt=0 wx=0 aln='' wo=0 al=0 vm=0 fn=0 bd
+    n=${#t}
+    if [ "$dp" -gt 4 ]; then deny=1; return 0; fi
+    while [ "$i" -lt "$n" ]; do
+        c=${t:i:1}
+        case "$c" in
+            ' '|$'\t') i=$((i + 1)); continue ;;
+            ';'|'|'|'&'|'{'|'}'|'('|')') pp=1 wo=0 wopt=0 al=0 aln='' vm=0; i=$((i + 1)); continue ;;
+            '<'|'>')
+                while [ "$i" -lt "$n" ]; do
+                    case "${t:i:1}" in '<'|'>'|'&'|'|') i=$((i + 1)) ;; *) break ;; esac
+                done
+                # `<(…)` / `>(…)` is a command of its own: read from its `(`.
+                [ "${t:i:1}" = '(' ] && continue
+                while [ "$i" -lt "$n" ] && { [ "${t:i:1}" = ' ' ] || [ "${t:i:1}" = $'\t' ]; }; do i=$((i + 1)); done
+                while [ "$i" -lt "$n" ]; do
+                    case "${t:i:1}" in ' '|$'\t'|';'|'&'|'|'|'('|')'|'<'|'>') break ;; esac
+                    i=$((i + 1))
+                done
+                continue
+                ;;
+        esac
+        # The rest of a plain argument run is no program and holds nothing to
+        # read: take it whole, so padding words cost one match, not a loop each.
+        if [ "$pp" = 0 ] && [ "$al" = 0 ] && [ "$vm" = 0 ] && [[ ${t:i} =~ $DYNRUN ]]; then
+            s=${BASH_REMATCH[0]}
+            case "$s" in
+                *-v*) ;;
+                *) i=$((i + ${#s})); continue ;;
+            esac
+        fi
+        j=$i pd=0 bq=0 subs='' s=0 lastd=-1
+        while [ "$j" -lt "$n" ]; do
+            c=${t:j:1}
+            if [ "$bq" = 1 ]; then
+                if [ "$c" = '`' ]; then bq=0; subs="$subs $s:$j"; lastd=$j; fi
+            elif [ "$pd" -gt 0 ]; then
+                case "$c" in
+                    '(') pd=$((pd + 1)) ;;
+                    ')') pd=$((pd - 1)); if [ "$pd" -eq 0 ]; then subs="$subs $s:$j"; lastd=$j; fi ;;
+                esac
+            elif [ "$c" = '$' ] && [ "${t:j+1:1}" = '(' ]; then
+                pd=1 s=$((j + 2)); j=$((j + 1))
+            elif [ "$c" = '$' ] && [ "${t:j+1:1}" = '{' ]; then
+                k=$j
+                while [ "$k" -lt "$n" ] && [ "${t:k:1}" != '}' ]; do k=$((k + 1)); done
+                inner=${t:j+2:k-j-2}
+                inner=${inner%%[!a-z0-9_]*}
+                case "$vdyn" in *" $inner "*) lastd=$k ;; esac
+                j=$k
+            elif [ "$c" = '$' ]; then
+                k=$((j + 1))
+                while [ "$k" -lt "$n" ]; do
+                    case "${t:k:1}" in [a-z0-9_]) k=$((k + 1)) ;; *) break ;; esac
+                done
+                inner=${t:j+1:k-j-1}
+                case "$vdyn" in *" $inner "*) lastd=$((k - 1)) ;; esac
+            elif [ "$c" = '`' ]; then
+                bq=1 s=$((j + 1))
+            else
+                case "$c" in ' '|$'\t'|';'|'&'|'|'|'('|')'|'<'|'>'|'{'|'}') break ;; esac
+            fi
+            j=$((j + 1))
+        done
+        w=${t:i:j-i}
+        nx=${t:j:1}
+        # Every substitution in the word is a command of its own.
+        for sp in $subs; do
+            inner=${t:${sp%%:*}:${sp#*:}-${sp%%:*}}
+            # `$(( … ))` is arithmetic: its words are no program.
+            r=0
+            # shellcheck disable=SC2016 # a literal $(
+            if [ "${t:${sp%%:*}-2:2}" = '$(' ] && [ "${inner:0:1}" = '(' ]; then r=1; fi
+            dyn_check "$inner" $((dp + 1)) "$r"
+            if [ "$deny" = 1 ]; then return 0; fi
+        done
+        if [ "$pp" = 1 ] && [ "$ar" = 0 ]; then
+            # A case arm's pattern (`*)`) is no program.
+            if [ "$nx" = ')' ] && [ -z "$subs" ]; then i=$j; continue; fi
+            if [ "$wo" = 1 ] && { [[ $w == -* ]] || [[ $w =~ ^[0-9.]+[smhd]?$ ]]; }; then
+                wopt=1; i=$j; continue
+            fi
+            # A wrapper option may take an operand (`env -u HOME`), so the word
+            # after one is read as a program and the next is read as one too.
+            wx=$wopt wopt=0 wo=0
+            if [[ $w =~ ^[a-z_][a-z0-9_]*= ]]; then
+                nm=${w%%=*}
+                case "${w#*=}" in *'$'*|*'`'*) vdyn="$vdyn$nm " ;; esac
+                i=$j; continue
+            fi
+            if [ "$fn" = 1 ]; then
+                fn=0
+                _dyn_body "$j"
+                # shellcheck disable=SC2016 # a literal $(
+                if [[ $bd =~ $DYNBODY ]] || [[ $bd == *'$('* || $bd == *'`'* ]]; then fdang="$fdang$w "; fi
+                i=$j; pp=0; continue
+            fi
+            case "$DYNWRAP" in *" $w "*) wo=1; i=$j; continue ;; esac
+            case "$w" in
+                function) fn=1; i=$j; continue ;;
+                read|mapfile|readarray) vm=1 ;;
+                for) vm=2 ;;
+                alias) al=1 ;;
+            esac
+            # `name () { … }` defines a function.
+            k=$j
+            while [ "$k" -lt "$n" ] && [ "${t:k:1}" = ' ' ]; do k=$((k + 1)); done
+            if [ "${t:k:2}" = '()' ] && [ -z "$subs" ]; then
+                _dyn_body "$((k + 2))"
+                # shellcheck disable=SC2016 # a literal $(
+                if [[ $bd =~ $DYNBODY ]] || [[ $bd == *'$('* || $bd == *'`'* ]]; then fdang="$fdang$w "; fi
+                i=$j; pp=0; continue
+            fi
+            case "$adang$fdang" in *" ${w##*/} "*) deny=1; return 0 ;; esac
+            if [ -n "$subs" ] || [[ $w == *'$'* ]]; then
+                # The part after the last dynamic piece must be a literal path.
+                if [ "$lastd" -ge 0 ]; then
+                    tail=${w:lastd+1-i}
+                    _dyn_tail_ok "$tail" || { deny=1; return 0; }
+                fi
+            fi
+            if _dyn_glob "$w"; then deny=1; return 0; fi
+            if [ "$wx" = 1 ]; then wo=1; else pp=0; fi
+        else
+            if [ "$al" = 1 ] && [[ $w == *=* ]]; then
+                nm=${w%%=*} r=${w#*=}
+                # qmd_words joins a quoted value's words with `_`: read each.
+                if [[ $r =~ $DYNBODY ]] || [[ $r == *'$'* || $r == *'`'* ]]; then
+                    adang="$adang${nm##*/} "
+                fi
+                while :; do
+                    if _dyn_cand "${r%%_*}" || _dyn_glob "${r%%_*}"; then
+                        adang="$adang${nm##*/} "
+                        break
+                    fi
+                    [[ $r == *_* ]] || break
+                    r=${r#*_}
+                done
+                aln=${nm##*/}
+            elif [ "$al" = 1 ] && [ -n "$aln" ] && { _dyn_cand "$w" || _dyn_glob "$w"; }; then
+                # the rest of a quoted alias value arrives as separate words
+                adang="$adang$aln "
+            fi
+            case "$vm" in
+                1) [[ $w == -* ]] || vdyn="$vdyn$w " ;;
+                2) vdyn="$vdyn$w "; vm=0 ;;
+            esac
+            if [ "$w" = '-v' ]; then vm=2; fi
+        fi
+        i=$j
+    done
+    return 0
+}
+# dyn_early CMD — the dynamic-word reading for a command that names no qmd,
+# tmux, screen or pwsh at all, so nothing else reads it.
+dyn_early() {
+    local res
+    [[ $1 == *['*?[$`']* ]] || return 0
+    [ "${#1}" -le 16384 ] || return 0
+    res=$(qmd_words "$1") || return 0
+    res=$(printf '%s' "${res%%$'\n'*}" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    dyn_check "$res" 0
+}
+# _resolve_vars CMD — set rcmd to CMD with every `$name` / `${name}` of a
+# variable the command assigns a plain literal replaced by that value, so
+# `a=tm; ${a}ux …` reads as `tmux …`. Succeed when anything was replaced.
+_resolve_vars() {
+    local LC_ALL=C r=$1 rest=$1 nm val out pre post m head tail base=0 k=0 n pos
+    local -a ends=() nms=() vals=()
+    rcmd=$1
+    [[ $r == *=* && $r == *'$'* ]] || return 1
+    [ "${#r}" -le 16384 ] || return 1
+    while [[ $rest =~ $VARASSIGN ]]; do
+        m=${BASH_REMATCH[0]} nm=${BASH_REMATCH[2]} val=${BASH_REMATCH[3]}
+        pre=${rest%%"$m"*}
+        base=$((base + ${#pre} + ${#m}))
+        rest=${rest#*"$m"}
+        case "$val" in
+            \"*\") val=${val#\"} val=${val%\"} ;;
+            \'*\') val=${val#\'} val=${val%\'} ;;
+        esac
+        ends[k]=$base nms[k]=$nm vals[k]=$val
+        k=$((k + 1))
+    done
+    # Last assignment first, each only into the text after it, so a variable
+    # assigned twice reads as the value in force at each use.
+    # A control-character placeholder stands in for the value until every
+    # assignment is done, so a later value never counts as a name character.
+    n=$k
+    while [ "$k" -gt 0 ]; do
+        k=$((k - 1))
+        pos=${ends[k]} nm=${nms[k]} val=$'\001'$k$'\002'
+        head=${r:0:pos} tail=${r:pos}
+        tail=${tail//"\${$nm}"/$val}
+        out=''
+        while [[ $tail == *"\$$nm"* ]]; do
+            pre=${tail%%"\$$nm"*}
+            post=${tail#*"\$$nm"}
+            case "${post:0:1}" in
+                [A-Za-z0-9_]) out="$out$pre\$$nm" ;;
+                *) out=$out$pre$val ;;
+            esac
+            tail=$post
+        done
+        r=$head$out$tail
+    done
+    while [ "$k" -lt "$n" ]; do
+        r=${r//$'\001'$k$'\002'/${vals[k]}}
+        k=$((k + 1))
+    done
+    rcmd=$r
+    [ "$rcmd" != "$1" ]
+}
+
 # qmd_check CMD DEPTH — set deny=1 when CMD runs a bare search verb. DEPTH is
 # 0 for the tool call's command and counts nested strings. It always returns
 # 0 and is called bare, so set -e still stops the hook (and the EXIT trap
@@ -1189,6 +1524,13 @@ qmd_check() {
     # budget, so a slow scan must deny rather than run out the clock.
     checks=$((checks + 1))
     if [ "$depth" -gt 4 ] || [ "$checks" -gt 64 ]; then deny=1; return 0; fi
+    # HIMMEL-4989: a variable the command assigns a literal reads as that
+    # literal (`a=tm; ${a}ux …`): read the command again with it substituted.
+    if _resolve_vars "$cmd"; then
+        res=$rcmd
+        qmd_check "$res" "$depth"
+        if [ "$deny" = 1 ]; then return 0; fi
+    fi
     # Lower-case and fold newlines to ';' so the anchors below see one line.
     cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
     # The same text with every quote and backslash deleted: `q"md"`, `\qmd` and
@@ -1207,7 +1549,7 @@ qmd_check() {
     # with no `qmd` in the text.
     case "$cmd_lc$crude" in
         *qmd*|*\$\'*|*\$\"*|*tmux*|*screen*|*pwsh*|*powershell*) ;;
-        *) return 0 ;;
+        *) [ -n "$wr" ] || { dyn_early "$cmd"; return 0; } ;;
     esac
     # Whether a filter can clear a piped stage (pipe_filter) is read from the
     # raw text of every level, and once refused stays refused. qmd_words
@@ -1232,7 +1574,11 @@ qmd_check() {
         words_lc=$(printf '%s' "$words" | LC_ALL=C tr '[:upper:]' '[:lower:]')
         raw=1
         readers_only "$words_lc" && raw=0
-        if [[ $words_lc =~ $BARE$BOUND ]]; then
+        [ "$depth" -gt 0 ] || allw=$words_lc
+        dyn_check "$words_lc" 0
+        if [ "$deny" = 1 ]; then
+            :
+        elif [[ $words_lc =~ $BARE$BOUND ]]; then
             deny=1
         elif [ "$raw" = 1 ] && [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
             deny=1
@@ -1253,6 +1599,19 @@ qmd_check() {
     elif [[ $cmd == *"\\c'"* ]] && [[ $crude == *qmd* ]]; then
         # qmd_words declines an ANSI-C `\c'`: bash and zsh split it apart.
         deny=1
+    elif [ "$(printf '%s' "$cmd" | LC_ALL=C wc -c)" -gt 16384 ] &&
+        { { [[ $crude == *qmd* ]] &&
+            { [[ $crude == *query* || $crude == *search* ]] || [[ $cmd == *"\$'"* || $cmd == *'$"'* ]]; }; } ||
+            [[ $cmd_lc$crude == *tmux* || $cmd_lc$crude == *screen* ||
+                $cmd_lc$crude == *pwsh* || $cmd_lc$crude == *powershell* ]] ||
+            [[ $cmd == *"\$'"* ]]; }; then
+        # HIMMEL-4526: qmd_words declines past 16 KiB, which leaves only the
+        # bare readings; every pipe, redirect, launcher and stdin reading
+        # would be skipped. An oversized command naming qmd and a verb (or an
+        # ANSI-C string that could spell one) is no legitimate allow case.
+        # tmux, screen and pwsh spell qmd with keys, escapes or base64 and
+        # cannot be decoded here, so naming one at all fails closed.
+        deny=1
     elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
         deny=1
     else
@@ -1264,7 +1623,7 @@ qmd_check() {
     return 0
 }
 
-deny=0 checks=0 nested=0 nofilt=0 wr=""
+deny=0 checks=0 nested=0 nofilt=0 wr="" allw="" rcmd=""
 qmd_check "$cmd" 0
 
 if [ "$deny" = 1 ]; then

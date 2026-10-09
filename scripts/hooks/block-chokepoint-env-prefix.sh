@@ -357,28 +357,37 @@ split_bytes() {
 # documented determined-bypass residual, same posture as the header's
 # string-reconstruction note). Reads segment_cmd's byte array SC (its only
 # caller), so <index> is a byte offset into <text>.
+# HIMMEL-4529: the body ends at the first `)` that is unmatched since
+# <index>, which is exactly the stack match of the `(` just before it. One
+# stack pass over SC (first call per segment_cmd text) records every `(`'s
+# match in segment_cmd's AMATCH, so each call is an O(1) lookup: it used to
+# rescan to EOF per unclosed `((` (1500 openers = 40 s, past the hook budget).
 arith_body() {
-    local s="$1" i="$2" n start="$2" d=0 c
+    local i="$2" j k=0 c
+    local -a stk=()
     ARITH_BODY=''
-    n=${#s}
-    while [ "$i" -lt "$n" ]; do
-        c=${SC[i]-}
-        case "$c" in
-        '(') d=$((d + 1)) ;;
-        ')')
-            if [ "$d" -gt 0 ]; then
-                d=$((d - 1))
-            elif [ "${SC[i + 1]-}" = ")" ]; then
-                ARITH_BODY=${s:start:$((i - start))}
-                return 0
-            else
-                return 1
-            fi
-            ;;
-        esac
-        i=$((i + 1))
-    done
-    return 1
+    if [ "$AMATCH_BUILT" = "0" ]; then
+        AMATCH_BUILT=1
+        AMATCH=()
+        while [ "$k" -lt "${#SC[@]}" ]; do
+            c=${SC[k]-}
+            case "$c" in
+            '(') stk[${#stk[@]}]=$k ;;
+            ')')
+                if [ "${#stk[@]}" -gt 0 ]; then
+                    AMATCH[${stk[${#stk[@]} - 1]}]=$k
+                    unset "stk[${#stk[@]} - 1]"
+                fi
+                ;;
+            esac
+            k=$((k + 1))
+        done
+    fi
+    j=${AMATCH[i - 1]-}
+    [ -n "$j" ] || return 1
+    [ "${SC[j + 1]-}" = ")" ] || return 1
+    ARITH_BODY=${1:i:$((j - i))}
+    return 0
 }
 
 # arith_fold <arithmetic body> -- fold every registered seam name the body
@@ -501,8 +510,8 @@ arith_fold() {
 segment_cmd() {
     local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}" bdepth=0
     local cmdpos=1 kind='' lb='' nx='' ro=0
-    local -a pkind SC
-    local ptop=0 LC_ALL=C
+    local -a pkind SC AMATCH
+    local ptop=0 LC_ALL=C AMATCH_BUILT=0
     n=${#s}
     split_bytes "$s" "$n"
     i=0
@@ -1567,7 +1576,7 @@ pobf_relief() {
 # -i) beside an anchor-less path, and zsh <-> numeric ranges (the tr splits
 # at <); close them with the structural guard once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d u kw ov tw='' cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 so=0 SQ="'"
+    local t="$1" w rest v wv vcmd clr d u kw ov tw='' cw='/.claude/worktrees/' xg=0 write=0 obf=0 hard=0 vdata=0 wonly=1 pobf=0 so=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
     wv='(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)'
     wv="(^|[^[:alnum:]_/-])$wv([^[:alnum:]_]|$)|[/-]$wv([^[:alnum:]_./-]|$)"
@@ -1579,11 +1588,11 @@ raw_obfuscated() {
             # names a path or carries a hex/unicode/octal escape is obfuscation.
             *'$'"$SQ"*)
                 case "$w" in
-                    */*|*.sh*) obf=1 ;;
+                    */*|*.sh*) obf=1; hard=1 ;;
                     # Allowlist: only plain whitespace/quote escapes are benign;
                     # ANY other backslash escape (\x \u \U \c \e octal, future
                     # ones) counts as obfuscation.
-                    *) [[ $w =~ $ansi_esc ]] && obf=1 ;;
+                    *) [[ $w =~ $ansi_esc ]] && { obf=1; hard=1; } ;;
                 esac ;;
             *scripts/*)
                 # Any glob/brace/$var after scripts/ counts, unconditionally: no
@@ -1603,15 +1612,19 @@ raw_obfuscated() {
                 # qualifiers would otherwise look plain (judges J1663, J1663b).
                 # Every other `/.` still counts: /./ /../ a trailing /. or /..,
                 # any other dot directory, and anything quoted or escaped.
-                case "$w" in *//*) obf=1 ;; esac
+                case "$w" in *//*) obf=1; hard=1 ;; esac
                 d=$w
                 if [ "$xg" = 0 ] && [[ $w =~ ^[A-Za-z0-9_./+-]+$ ]]; then
                     d=${w//"$cw"/\/}
                 fi
-                case "$d" in *'/.'*) obf=1 ;; esac
+                case "$d" in *'/.'*) obf=1; hard=1 ;; esac
                 # HIMMEL-4157: zsh extendedglob # ^ ~ count like * ? [ {.
+                # HIMMEL-4933: a glob alone is soft -- the read-only relief at
+                # the deny (pobf_relief) may clear it; a $var, `/.`, `//` or
+                # ANSI-C word is hard and never gets that relief.
                 case "$rest" in
-                    *[\*\?\[\{\$\#^\~]*) obf=1 ;;
+                    *'$'*) obf=1; hard=1 ;;
+                    *[\*\?\[\{\#^\~]*) obf=1 ;;
                 esac ;;
         esac
     done
@@ -1628,7 +1641,7 @@ raw_obfuscated() {
     # leading `~` (home) or `#` (comment) is exempt, and `$(` / `${` are
     # expansions, not groupings (a $var alone stays the ponytail residual).
     for w in $(printf '%s' "$t" | tr ';|&<>' '     '); do
-        case "$w" in *scripts/*) case "${w#*scripts/}" in *'('*) obf=1 ;; esac ;; esac
+        case "$w" in *scripts/*) case "${w#*scripts/}" in *'('*) obf=1; hard=1 ;; esac ;; esac
         case "$w" in */*) ;; *) continue ;; esac
         w=${w//\$\(/}
         w=${w//\$\{/}
@@ -1713,7 +1726,10 @@ raw_obfuscated() {
     # one, - or / on its left AND - . or / on its right (block-chokepoint-
     # env-prefix, scripts/eval/, pr-check-env.sh). One joined side is not
     # enough: -printf and --printf= are printf options that read escapes,
-    # .env is process.env/os.env, /usr/bin/env is env. A heredoc or quoted body is not
+    # .env is process.env/os.env, /usr/bin/env is env. They still count as
+    # triggers, but HIMMEL-4933 relieves them (vdata) in argument position of
+    # read-only stages beside a glob-only path; heading a stage they deny.
+    # A heredoc or quoted body is not
     # skipped: written and run in one call (cat >f <<EOF .. EOF; bash f) it
     # is live code, and its printf can feed a shell a seam name no other arm
     # sees (printf '\101..=1 ..' | sh), so that deny is intended. The refusal
@@ -1723,6 +1739,17 @@ raw_obfuscated() {
         tw=${BASH_REMATCH[2]:-${BASH_REMATCH[4]}}
         case "$tw" in BASH_FUNC_*) tw='BASH_FUNC_*' ;; esac
         tw="the word $tw"
+        # HIMMEL-4933: a verb word that heads a stage (export X; unset X; read
+        # x; printf ..) acts; one in argument position (grep env, find -printf)
+        # is data and may get the read-only relief below.
+        # HIMMEL-4954: a stage also starts after a newline, { or a case-arm ), after a
+        # then/do/else/elif/if/while/until/! keyword, and past command/builtin/
+        # time/nohup (with their options) or a \ escape. A wider match only
+        # fails closed: vdata stays 0 and the relief is withheld.
+        vcmd='(^|[;&|(){`'"$NL"']|\$\(|(^|[[:space:]])(then|do|else|elif|if|while|until|!)[[:space:]])'
+        vcmd+='([[:space:]]*\\?(command|builtin|time|nohup)[[:space:]]+(-[^[:space:]]*[[:space:]]+)*)*'
+        vcmd+='[[:space:]]*\\?(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset)([^[:alnum:]_]|$)'
+        [[ $t =~ $vcmd ]] || vdata=1
     fi
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
     # or verb): standalone -u*/-i*/--unset*/--ignore-environment/bare -, declare/typeset +x,
@@ -1731,13 +1758,24 @@ raw_obfuscated() {
     # (env_clear_opt, HIMMEL-3955); a seam NAME= counts as an assignment, not
     # as a --long-option's value (seam_assigned).
     # shellcheck disable=SC2016 # ${! is the literal trigger text, not an expansion
-    [[ $t =~ $clr ]] && { write=1; tw=${tw:-'declare +x, export -n, exec - or ${!'}; }
-    env_clear_opt "$t" && { write=1; tw=${tw:-'an env-clearing -u, -i, --unset, --ignore-environment or bare -'}; }
+    [[ $t =~ $clr ]] && { wonly=0; write=1; tw=${tw:-'declare +x, export -n, exec - or ${!'}; }
+    env_clear_opt "$t" && { wonly=0; write=1; tw=${tw:-'an env-clearing -u, -i, --unset, --ignore-environment or bare -'}; }
     for v in $ALL_SEAM_VARS; do
         case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
-        seam_assigned "$t" "$v" && { write=1; tw="the seam variable $v"; }
+        seam_assigned "$t" "$v" && { wonly=0; write=1; tw="the seam variable $v"; }
     done
     [ "$write" = 1 ] || return 0
+    # HIMMEL-4933: a soft (glob-only) path word that sits only in read-only
+    # stages (grep -l export scripts/*/x.sh | sort) is data, not a seam write:
+    # the same relief the anchor-less arm above applies. A hard word, a
+    # shell/source glob operand, or a stage pobf_relief cannot prove read-only
+    # keeps the deny; pobf_relief returns 1 on anything it cannot parse
+    # (fail-closed).
+    if [ "$hard" = 0 ] && [ "$so" = 0 ] && [ "$vdata" = 1 ] && [ "$wonly" = 1 ]; then
+        set -f
+        pobf_relief "$t" && { set +f; return 0; }
+        set +f
+    fi
     deny_text_layer "writes a seam variable beside an obfuscated (glob, brace, ANSI-C or \$var) path under scripts/ (it matched $tw)"
 }
 
@@ -1854,16 +1892,23 @@ UNSET_NAMES=''
 # ponytail: 256 distinct names is a fixed ceiling (a longer genuine list
 # over-denies), raise UNSET_CAP if a real payload trips it.
 UNSET_CAP=256
+# HIMMEL-4414: UNSET_COUNT is the number of words in UNSET_NAMES, kept in step
+# by unset_add (and restored with UNSET_NAMES by scan_text's subshell
+# snapshot), so an add is a membership test plus an increment instead of a
+# re-split of the whole list. The cap counts every distinct name in the
+# payload so far, INHERITED ones included (scan_text seeds scan_segment from
+# $inames $UNSET_NAMES): "distinct names seen", not "names cleared".
+UNSET_COUNT=0
 unset_add() {  # unset_add <word>...
     local arg n
-    local -a ws all
+    local -a ws
     for arg in "$@"; do
         IFS=$' \t\n' read -r -d '' -a ws <<<"$arg"
         for n in ${ws[@]+"${ws[@]}"}; do
             case " $UNSET_NAMES " in *" $n "*) continue ;; esac
             UNSET_NAMES="$UNSET_NAMES $n"
-            IFS=$' \t\n' read -r -d '' -a all <<<"$UNSET_NAMES"
-            [ "${#all[@]}" -le "$UNSET_CAP" ] || deny_unset_cap
+            UNSET_COUNT=$((UNSET_COUNT + 1))
+            [ "$UNSET_COUNT" -le "$UNSET_CAP" ] || deny_unset_cap
         done
     done
 }
@@ -1874,8 +1919,10 @@ deny_unset_cap() {  # OUR text only, never raw command text (HIMMEL-4399).
 
     This guard tracks every name a command assigns or clears in the current
     shell so a later segment cannot run a sanctioned chokepoint with a
-    cleared seam variable. Past $UNSET_CAP names it fails closed rather than
-    track an unbounded list. Split the command into smaller ones.
+    cleared seam variable. The count covers every distinct name the command
+    has assigned or cleared so far, inherited ones included. Past $UNSET_CAP
+    names it fails closed rather than track an unbounded list. Split the
+    command into smaller ones.
 
     To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
     shell that launched Claude Code (a per-call prefix does not reach a
@@ -2767,7 +2814,7 @@ scan_segment() {
 # of what that string itself contains (CodeRabbit, PR #643 @ 5ce5bbed).
 scan_text() {
     local text="$1" inames="$2" depth="$3" line pdepth seg cur=0 force=0
-    local -a PSNAP
+    local -a PSNAP PSNAPN
     # HIMMEL-1813: past the depth cap a chokepoint mention denies (fail-closed).
     [ "$depth" -le 5 ] || { raw_mention "$text" 1; return 0; }
     [ "$depth" -gt 0 ] && force=1
@@ -2775,10 +2822,10 @@ scan_text() {
         pdepth=${line%%$'\t'*}
         seg=${line#*$'\t'}
         if [ "$pdepth" -gt "$cur" ]; then
-            PSNAP[pdepth]="$UNSET_NAMES"
+            PSNAP[pdepth]="$UNSET_NAMES"; PSNAPN[pdepth]=$UNSET_COUNT
             cur=$pdepth
         elif [ "$pdepth" -lt "$cur" ]; then
-            UNSET_NAMES="${PSNAP[$((pdepth + 1))]}"
+            UNSET_NAMES="${PSNAP[$((pdepth + 1))]}"; UNSET_COUNT=${PSNAPN[$((pdepth + 1))]}
             cur=$pdepth
         fi
         [[ $seg =~ [^[:space:]] ]] || continue

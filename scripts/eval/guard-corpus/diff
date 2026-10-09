@@ -483,8 +483,17 @@ def _record_run_row(args, rc, results, metrics):
                               args.head[4:].split(":", 1)[0] + "^{commit}"],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         gitsha = out.stdout.decode().strip() or None
+    top = subprocess.run(["git", "-C", args.repo, "rev-parse", "--show-toplevel"],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout.decode().strip()
+    root = top or os.path.abspath(args.repo)
     def hook_name(spec):
-        return os.path.basename(spec.rsplit(":", 1)[-1] if spec.startswith("sha:") else spec)
+        # HIMMEL-4659: repo-relative, so a checkout root does not change the identity
+        # and two hooks sharing a file name do not collide. sha: specs already are.
+        # A hook outside the repo has no repo-relative path: its basename stays.
+        if spec.startswith("sha:"):
+            return spec.rsplit(":", 1)[-1]
+        rel = os.path.relpath(os.path.realpath(spec), os.path.realpath(root))
+        return os.path.basename(spec) if rel.startswith("..") else rel
     try:
         corpus_sha = eval_runs.file_sha256(args.corpus)
     except OSError:

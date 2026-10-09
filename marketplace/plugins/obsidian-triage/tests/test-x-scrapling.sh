@@ -73,6 +73,26 @@ python3 "$HELPER" --from-html "$tmp/trailing.html" --net-log "$FIX/hls-quote.net
 assert "trailing permalink identifies the status" "ok 1" \
   "$(jq_py "$tmp/trailing.json" 'd["status"]+" "+str(len(d.get("items", [])))')"
 
+# HIMMEL-4688 codex-4: focal-post media placed AFTER the quoted post is kept;
+# the quoted post's own media stays out.
+python3 - "$FIX/hls-quote.html" "$tmp/after.html" <<'PY'
+import sys
+s = open(sys.argv[1], encoding="utf-8").read()
+q = s.index("</article>") + len("</article>")
+img = '<img src="https://pbs.twimg.com/media/AFTERQUOTE1?format=jpg&amp;name=small">'
+open(sys.argv[2], "w", encoding="utf-8").write(s[:q] + img + s[q:])
+PY
+grep -q AFTERQUOTE1 "$tmp/after.html"
+assert "after-quote control: the image was planted" 0 "$?"
+python3 "$HELPER" --from-html "$tmp/after.html" --net-log "$FIX/hls-quote.netlog" \
+  --status-id 2106396375269134597 >"$tmp/after.json"
+assert "focal media after the quote kept, quote media excluded" "video https://pbs.twimg.com/media/AFTERQUOTE1?format=jpg&name=large" \
+  "$(jq_py "$tmp/after.json" '" ".join(i["kind"] if i["kind"] == "video" else i["url"] for i in d["items"])')"
+python3 "$HELPER" --from-html "$tmp/after.html" --net-log "$FIX/hls-quote.netlog" \
+  --status-id 2105643919119696297 >"$tmp/after-quoted.json"
+assert "quoted status still yields only its own media" "image" \
+  "$(jq_py "$tmp/after-quoted.json" '" ".join(i["kind"] for i in d["items"])')"
+
 # --- Test 3: streamed video with no captured playlist -> error, never short ok
 echo "Test 3: HLS without a network log"
 python3 "$HELPER" --from-html "$FIX/hls-quote.html" --status-id 2106396375269134597 >"$tmp/nolog.json"

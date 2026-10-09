@@ -18,9 +18,9 @@ const tokenOnlyInFragment = (href: string) => {
 };
 
 test("the rail lists Config, Health and Fleet on every page, plus Run when a run is open", () => {
-  expect(navLinks({ here: "console", token: TOKEN, current: "config" }).map((l) => l.label)).toEqual(["Config", "Health", "Tool health", "Fleet"]);
-  expect(navLinks({ here: "agui", token: TOKEN, current: "fleet" }).map((l) => l.label)).toEqual(["Config", "Health", "Tool health", "Fleet"]);
-  expect(navLinks({ here: "agui", token: TOKEN, current: "run", run: RUN }).map((l) => l.label)).toEqual(["Config", "Health", "Tool health", "Fleet", "Run"]);
+  expect(navLinks({ here: "console", token: TOKEN, current: "config" }).map((l) => l.label)).toEqual(["Config", "Health", "Tool health", "Fleet", "Roadmap"]);
+  expect(navLinks({ here: "agui", token: TOKEN, current: "fleet" }).map((l) => l.label)).toEqual(["Config", "Health", "Tool health", "Fleet", "Roadmap"]);
+  expect(navLinks({ here: "agui", token: TOKEN, current: "run", run: RUN }).map((l) => l.label)).toEqual(["Config", "Health", "Tool health", "Fleet", "Roadmap", "Run"]);
 });
 
 test("exactly the current page is marked current", () => {

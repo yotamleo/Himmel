@@ -232,15 +232,17 @@ fi
 # bash 3.2-safe: no mapfile, no associative arrays.
 
 if [ -n "$registry_json" ]; then
-    # Emit: name|enabled|mcp_prefix|cli_bin|chain (colon-joined)
+    # Emit one row per prefix; retain the singular field for existing registries.
+    # Format: name|enabled|mcp_prefix|cli_bin|chain (colon-joined)
     services_list=$(printf '%s' "$registry_json" | jq -r '
         to_entries[] |
         .key as $name |
         .value |
+        (.mcp_prefixes // [(.mcp_prefix // "")])[] as $prefix |
         [
             $name,
             (if .enabled == false then "false" else "true" end),
-            (.mcp_prefix // ""),
+            $prefix,
             (.cli // ""),
             ((.chain // ["cli","api","mcp"]) | join(":"))
         ] | join("|")

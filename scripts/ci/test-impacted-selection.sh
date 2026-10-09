@@ -154,4 +154,21 @@ if [ "$rc" -eq 2 ] && ! grepq "$out" '^mode '; then
   pass "IS9: an unresolvable head is rc 2 with no verdict"
 else fail "IS9: rc=$rc out: $out"; fi
 
+# --- IS10 -------------------------------------------------------------------
+# HIMMEL-4997: git C-quotes a name holding a double quote, backslash or tab, so
+# the anchored trust match missed it and the PR stayed on the impacted path.
+n=0
+for name in 'scripts/ci/we"ird.sh' 'scripts/ci/back\slash.sh' $'scripts/ci/ta\tb.sh'; do
+  n=$((n + 1))
+  g checkout -q -B "quoted$n" "$BASE"
+  printf '# x\n' > "$SB/$name"
+  g add -A; g commit -q -m "quoted trust name $n"
+  hq=$(g rev-parse HEAD)
+  out=$(sel "$BASE" "$hq"); rc=$?
+  if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode full' && grepq "$out" '^reason trust-path: scripts/ci/'; then
+    pass "IS10.$n: a trust-path name git would C-quote still forces the FULL sweep"
+  else fail "IS10.$n: rc=$rc out: $out"; fi
+done
+g checkout -q "$BASE" 2>/dev/null
+
 rst_tally

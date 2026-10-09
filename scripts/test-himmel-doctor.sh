@@ -2661,10 +2661,10 @@ else
 fi
 rm -rf "$t"
 
-echo "== C29 CONTROL: absent proc root -> clean skip, never a false WARN =="
+echo "== C29 CONTROL: absent proc root and no ps -E -> clean skip, never a false WARN =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-absent: mktemp -d failed"; exit 1; }
 write_settings "$t/claude" "$WRAPPER"
-out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" HIMMEL_DOCTOR_PS="$t/no-such-ps" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
     pass "C29 -> OK (no procfs on this platform, clean skip)"
 else
@@ -2728,6 +2728,122 @@ if grepq "$out" 'WARN C29-child-session' && grepq "$out" 'pid 5006' && grepq "$o
     pass "C29 -> WARN names the genuine session (HIMMEL-real), never the decoy prompt text"
 else
     fail "C29 decoy-name -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29: UNNAMED session and an adopter's ticket key are both flagged (no HIMMEL- gate) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 any-key: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5007 "ACME-7-leg" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+mkdir -p "$t/proc/5008"
+printf '%s\n' claude > "$t/proc/5008/comm"
+printf 'claude\0' > "$t/proc/5008/cmdline"
+printf 'CLAUDE_CODE_CHILD_SESSION=1\0' > "$t/proc/5008/environ"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session: 2 running' && grepq "$out" 'pid 5007 (ACME-7-leg)' && grepq "$out" 'pid 5008 (unnamed)'; then
+    pass "C29 -> WARN names the ACME- session and the unnamed one"
+else
+    fail "C29 any-key -> $(printf '%s' "$out" | grep -A3 C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 CONTROL: a genuine child (a claude ANCESTOR via stat ppid) -> no WARN =="
+# claude 6001 -> bash 6002 -> claude 6003: 6003 is a Bash-tool print-mode claude,
+# meant to be a throwaway, so its marker is correct. stat's comm holds ") "
+# to prove ppid is read after the LAST paren.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-child: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 6001 "parent" claude
+printf '6001 (claude) S 1 6001\n' > "$t/proc/6001/stat"
+mkdir -p "$t/proc/6002"
+printf '%s\n' 'b) S 9 (x' > "$t/proc/6002/comm"
+printf '6002 (b) S 9 (x) S 6001 6002\n' > "$t/proc/6002/stat"
+c29_mkproc "$t/proc" 6003 "child" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf '6003 (claude) S 6002 6003\n' > "$t/proc/6003/stat"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
+    pass "C29 -> OK (a claude under a claude is a real child session)"
+else
+    fail "C29 control-child -> $(printf '%s' "$out" | grep -A3 C29)"
+fi
+rm -rf "$t"
+
+echo "== C29: an orphaned headless claude (-p / --print) or a daemon service with the marker -> no WARN =="
+# Neither is a human-launched interactive session: a stub or print-mode claude
+# started from a session (at/setsid) and `claude daemon run` carry the marker by
+# inheritance and have no transcript to lose.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 headless: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5101 "p-mode" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'claude\0-p\0hello\0' > "$t/proc/5101/cmdline"
+c29_mkproc "$t/proc" 5102 "print-mode" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'claude\0--print\0hello\0' > "$t/proc/5102/cmdline"
+c29_mkproc "$t/proc" 5103 "daemon" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'claude\0daemon\0run\0' > "$t/proc/5103/cmdline"
+c29_mkproc "$t/proc" 5104 "npm-daemon" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'node\0/x/cli.js\0daemon\0run\0' > "$t/proc/5104/cmdline"
+c29_mkproc "$t/proc" 5105 "interactive" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session: 1 running' && grepq "$out" 'pid 5105 (interactive)' \
+    && ! grepq "$out" 'pid 5101' && ! grepq "$out" 'pid 5102' && ! grepq "$out" 'pid 5103' && ! grepq "$out" 'pid 5104'; then
+    pass "C29 -> headless and daemon roots skipped, the interactive one still flagged"
+else
+    fail "C29 headless -> $(printf '%s' "$out" | grep -A6 C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 (macOS route): no procfs -> ps -axo tree + ps -E environ; only the marked ROOT claude is flagged =="
+# Fake ps answering the four shapes check_c29 issues, from $fix. -E prints
+# the command line then the env, space-joined, like the real macOS ps.
+#   200 claude in a terminal tab, marked             -> WARN
+#   300 claude under claude 200 (Bash-tool child)    -> skipped
+#   400 claude whose PROMPT holds the marker text    -> skipped (args stripped)
+#   500 claude by full path, marker, no persistence  -> WARN (comm path stripped)
+# headless-claude-ok: prose naming the argv shape, starts nothing
+#   700 claude -p, 800 claude daemon run, both marked -> skipped
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 ps-route: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+fix="$t/fix"; mkdir -p "$fix"
+cat > "$fix/table" <<'TABLE'
+    1     0 /sbin/launchd
+  100     1 /Applications/iTerm.app/Contents/MacOS/iTerm2
+  150   100 -zsh
+  200   150 claude
+  250   200 /bin/zsh
+  300   250 claude
+  400     1 claude
+  500     1 /Users/x/.local/bin/claude
+  600     1 /Applications/Obsidian.app/Contents/MacOS/Obsidian Helper (GPU)
+  700     1 claude
+  800     1 claude
+TABLE
+printf 'claude' > "$fix/200.args"; printf 'TERM=xterm CLAUDE_PID=89183 CLAUDE_CODE_CHILD_SESSION=1' > "$fix/200.env"
+printf 'claude --model m hi' > "$fix/300.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/300.env"
+printf 'claude say CLAUDE_CODE_CHILD_SESSION=1 here' > "$fix/400.args"; printf 'HOME=/x' > "$fix/400.env"
+printf 'claude' > "$fix/500.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/500.env"
+# headless-claude-ok: stub ps output naming the argv C29 skips, starts nothing
+printf 'claude -p hello' > "$fix/700.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/700.env"
+printf 'claude daemon run' > "$fix/800.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/800.env"
+cat > "$t/ps" <<PS
+#!/usr/bin/env bash
+fix="$fix"
+a="\$*"; p="\${a##* }"
+case "\$*" in
+    "-ww -axo pid=,ppid=,comm=") cat "\$fix/table" ;;
+    "-E -ww -o command= -p "*) [ -f "\$fix/\$p.args" ] || exit 0
+        printf '%s %s\n' "\$(cat "\$fix/\$p.args")" "\$(cat "\$fix/\$p.env")" ;;
+    "-ww -o command= -p "*) [ -f "\$fix/\$p.args" ] || exit 1; cat "\$fix/\$p.args"; echo ;;
+    "-o tty= -p "*) printf 'ttys%03d \n' "\$p" ;;
+    *) exit 1 ;;
+esac
+PS
+chmod +x "$t/ps"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" HIMMEL_DOCTOR_PS="$t/ps" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session: 2 running' && grepq "$out" 'pid 200 (tty ttys200)' && grepq "$out" 'pid 500 (tty ttys500)' \
+    && ! grepq "$out" 'pid 300' && ! grepq "$out" 'pid 400' && ! grepq "$out" 'pid 700' && ! grepq "$out" 'pid 800'; then
+    pass "C29 -> WARN on macOS names only the marked interactive root claudes, by tty"
+else
+    fail "C29 ps-route -> $(printf '%s' "$out" | grep -A6 C29)"
 fi
 rm -rf "$t"
 
@@ -6046,18 +6162,24 @@ printf '#!/bin/sh\necho "$1 $2" >> "%s/probe.log"\nexit 1\n' "$c53_t" > "$c53_t/
 chmod +x "$c53_t/up" "$c53_t/down"
 # A stub ssh (HIMMEL-4599): the operator's real ssh would read their real
 # ~/.ssh/config. It answers only -G, from $c53_t/ssh-g.out when that is set,
-# else as an empty config would; any other call is logged and fails.
+# else as an empty config would; any other call is logged and fails, and -G
+# itself fails while $c53_t/ssh-g.fail exists (HIMMEL-4631).
 mkdir -p "$c53_t/bin"
 cat > "$c53_t/bin/ssh" <<STUB
 #!/bin/sh
 echo "\$*" >> "$c53_t/ssh.log"
 [ "\$1" = -G ] || exit 255
+[ -e "$c53_t/ssh-g.fail" ] && exit 255
 [ -s "$c53_t/ssh-g.out" ] && { cat "$c53_t/ssh-g.out"; exit 0; }
 port=22
 while [ \$# -gt 1 ]; do [ "\$1" = -p ] && { port=\$2; shift; }; shift; done
 printf 'user x\nhostname %s\nport %s\n' "\${1#*@}" "\$port"
 STUB
 chmod +x "$c53_t/bin/ssh"
+# A stub timeout: macOS ships none, and the alias rows must not depend on the
+# host having coreutils (HIMMEL-4981). It drops the duration and runs the rest.
+printf '#!/bin/sh\nshift\nexec "$@"\n' > "$c53_t/bin/timeout"
+chmod +x "$c53_t/bin/timeout"
 c53_run() { # <config json> <probe>
     printf '%s\n' "$1" > "$c53_t/home/.himmel/config.json"; : > "$c53_t/probe.log"; : > "$c53_t/ssh.log"
     HIMMEL_DOCTOR_VM_PROBE="$2" PATH="$c53_t/bin:$FAKEBIN:$PATH" CLAUDE_DIR="$c53_t/claude" HOME="$c53_t/home" bash "$DOC" --no-color 2>&1
@@ -6080,6 +6202,15 @@ printf 'user ops\nhostname vm.internal.example\nport 2201\n' > "$c53_t/ssh-g.out
 out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/up")"
 if grepq "$out" 'OK   C53-vm-mode' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vm.internal.example 2201' && grepq "$(cat "$c53_t/ssh.log")" -Fx -- '-G -p 2201 ops@vmalias' && [ "$(wc -l < "$c53_t/ssh.log")" -eq 1 ]; then pass "C53 alias -> probes the resolved HostName, ssh only ever -G"; else fail "C53 alias -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log") ssh=$(cat "$c53_t/ssh.log")"; fi
 
+echo "== C53-vm-mode: no GNU 'timeout' (macOS) -> falls back to gtimeout, still resolves the alias (HIMMEL-4981) =="
+printf '#!/bin/sh\necho used >> "%s/gtimeout.log"\nshift\nexec "$@"\n' "$c53_t" > "$c53_t/bin/gtimeout"
+chmod +x "$c53_t/bin/gtimeout"
+: > "$c53_t/gtimeout.log"
+export HIMMEL_DOCTOR_TIMEOUT_BINS="no-such-timeout gtimeout"
+out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/up")"
+unset HIMMEL_DOCTOR_TIMEOUT_BINS
+if grepq "$out" 'OK   C53-vm-mode' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vm.internal.example 2201' && [ -s "$c53_t/gtimeout.log" ]; then pass "C53 gtimeout fallback -> alias resolved"; else fail "C53 gtimeout fallback -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log") gt=$(cat "$c53_t/gtimeout.log")"; fi
+
 echo "== C53-vm-mode: ProxyJump / ProxyCommand -> INFO, not an unreachable WARN, no TCP probe (HIMMEL-4599) =="
 for proxy in 'proxyjump bastion' 'proxycommand ssh -W %h:%p bastion'; do
     printf 'user ops\nhostname vm.internal\nport 22\n%s\n' "$proxy" > "$c53_t/ssh-g.out"
@@ -6087,6 +6218,12 @@ for proxy in 'proxyjump bastion' 'proxycommand ssh -W %h:%p bastion'; do
     if grepq "$out" 'INFO C53-vm-mode' && ! grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F "${proxy%% *}" && [ ! -s "$c53_t/probe.log" ]; then pass "C53 ${proxy%% *} -> INFO, no probe"; else fail "C53 ${proxy%% *} -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
 done
 rm -f "$c53_t/ssh-g.out"
+
+echo "== C53-vm-mode: ssh -G fails -> INFO saying so, not an unreachable WARN, probe gets the host as written (HIMMEL-4631) =="
+: > "$c53_t/ssh-g.fail"
+out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/down")"
+if grepq "$out" 'INFO C53-vm-mode' && ! grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F 'ssh -G failed, probed the configured host as written' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vmalias 2201'; then pass "C53 ssh -G fails -> INFO naming the failed lookup"; else fail "C53 ssh -G fails -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+rm -f "$c53_t/ssh-g.fail"
 
 echo "== C53-vm-mode: none -> INFO, holds need an operator ack, no probe =="
 out="$(c53_run '{"vm":{"mode":"none"}}' "$c53_t/up")"
@@ -6124,5 +6261,30 @@ rm -f "$c55_t/repo/scripts/lib/project-mode.sh"
 out="$(c55_run)"
 if ! grepq "$out" -F 'C55-project-mode'; then pass "C55 no resolver -> silent"; else fail "C55 no resolver -> $(printf '%s' "$out" | grep -A1 C55)"; fi
 rm -rf "$c55_t"
+
+# --- C58-mcp-sdk-v1 (HIMMEL-4866): the v1 MCP SDK gate row ---
+c58_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c58.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c58_t/repo/scripts/lint" "$c58_t/home"
+cp "$REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" "$c58_t/repo/scripts/lint/check-mcp-sdk-v1.sh"
+git -C "$c58_t/repo" init -q
+c58_run() { (cd "$c58_t/repo" && env HIMMEL_REPO="$c58_t/repo" HIMMEL_DOCTOR_ROOT="$c58_t/repo" CLAUDE_DIR="$c58_t/home/claude" HOME="$c58_t/home" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null); }
+
+echo "== C58-mcp-sdk-v1: a v1 dependency -> WARN naming the file (RED) =="
+printf '%s\n' '{"dependencies":{"@modelcontextprotocol/sdk":"^1.32.1"}}' > "$c58_t/repo/package.json"
+git -C "$c58_t/repo" add package.json
+out="$(c58_run)"
+if grepq "$out" -F 'WARN C58-mcp-sdk-v1' && grepq "$out" -F 'package.json:1'; then pass "C58 v1 dependency -> WARN"; else fail "C58 v1 dependency -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+
+echo "== C58-mcp-sdk-v1: v2 dependency -> OK =="
+printf '%s\n' '{"dependencies":{"@modelcontextprotocol/server":"2.3.1"}}' > "$c58_t/repo/package.json"
+git -C "$c58_t/repo" add package.json
+out="$(c58_run)"
+if grepq "$out" -F 'OK   C58-mcp-sdk-v1'; then pass "C58 v2 -> OK"; else fail "C58 v2 -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+
+echo "== C58-mcp-sdk-v1: a checkout without the gate -> no row =="
+rm -f "$c58_t/repo/scripts/lint/check-mcp-sdk-v1.sh"
+out="$(c58_run)"
+if ! grepq "$out" -F 'C58-mcp-sdk-v1'; then pass "C58 no gate -> silent"; else fail "C58 no gate -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+rm -rf "$c58_t"
 
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

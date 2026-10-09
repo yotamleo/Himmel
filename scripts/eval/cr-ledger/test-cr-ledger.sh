@@ -78,6 +78,23 @@ eq "coded: an undeclared class is refused" "$rc" "2"
 python3 "$EVAL" --ledger "$FIX" --until "$CUT" --coded "$TMP/bad3.tsv" >/dev/null 2>&1; rc=$?
 eq "coded: a critic that does not match the ledger is refused" "$rc" "2"
 
+{ printf 'id\tcritic\tclass\tnote\n'; printf '%s\tcodex:gpt-x\tintent-blind\tx\n' "$id1" "$id1"; } > "$TMP/bad4.tsv"
+python3 "$EVAL" --ledger "$FIX" --until "$CUT" --coded "$TMP/bad4.tsv" >/dev/null 2>"$TMP/err4"; rc=$?
+eq "coded: a duplicate finding id is refused" "$rc" "2"
+has "coded: the duplicate is named" "$(cat "$TMP/err4")" "duplicate"
+
+python3 "$EVAL" --ledger "$FIX" --until "$CUT" --sample -1 >/dev/null 2>&1; rc=$?
+eq "sample: a negative N is refused" "$rc" "2"
+
+# A fractional-second ts sorts before the whole second as a string, not as a time.
+printf '%s\n' '{"kind":"finding","ts":"2026-10-06T20:00:00.500Z","branch":"feat/c","head":"h5","model":"codex","finding_id":"codex-1","severity":"imp","verdict":"","text":"late"}' > "$TMP/frac.jsonl"
+python3 "$EVAL" --ledger "$TMP/frac.jsonl" --until 2026-10-06T20:00:00Z --json > "$TMP/frac.json" 2>/dev/null
+eq "cutoff: a fractional second after the cut is a time, not a string" "$(jget "$TMP/frac.json" findings)" "0"
+python3 "$EVAL" --ledger "$TMP/frac.jsonl" --until 2026-10-06T20:00:01Z --json > "$TMP/frac.json" 2>/dev/null
+eq "cutoff: the same finding before a later cut counts" "$(jget "$TMP/frac.json" findings)" "1"
+python3 "$EVAL" --ledger "$FIX" --until not-a-time >/dev/null 2>&1; rc=$?
+eq "cutoff: an unparseable --until is refused" "$rc" "2"
+
 python3 "$EVAL" --ledger "$TMP/absent.jsonl" >/dev/null 2>&1; rc=$?
 eq "usage: a missing ledger is an error" "$rc" "2"
 

@@ -298,6 +298,24 @@ row "cp unrelated"                 allow "cp a.txt b.txt"
 row "redirect unrelated"           allow "echo hi > /tmp/out.txt 2>&1"
 row "git config set"               allow "git config set user.name x"
 row "Read-shaped python"           allow "python3 -c 'print(1)'"
+# HIMMEL-4750: a JSON argument's braces are not a glob over the lift name.
+row "eval_runs.py append JSON (4750)" allow "python3 scripts/eval/lib/eval_runs.py append '{\"ticket\":\"HIMMEL-4746\",\"result\":\"pass\"}'"
+row "interp JSON arg, one key (4750)" allow "python3 x.py '{\"a\":1}'"
+row "brace alt naming the lift still denies (interp)" deny "python3 x.py {bank-lift.json,y}"
+row "brace alt naming the lift still denies (cp)"     deny "cp $T/src/other.txt ~/.himmel/state/{bank-lift.json,y}"
+row "nested brace alt naming the lift still denies"   deny "cp $T/src/other.txt ~/.himmel/state/{bank-{lift,other}.json,y}"
+row "brace alt with quote still denies (interp)"      deny "python3 x.py {bank-lift.json,\\\"}"
+# Judge j2143: an alternative holding a char outside [alnum . _ / -] must fall
+# back to `*`, never build a broken extglob that matches nothing.
+row "tee brace alt with [ (j2143)"   deny "tee ~/.himmel/state/bank-lift{.json,[}"
+row "touch brace alt with [ (j2143)" deny "touch ~/.himmel/state/bank-lift{.json,[}"
+row "brace alt with backslash (j2143)" deny "tee ~/.himmel/state/bank-lift{.json,\\\\}"
+row "mid-name brace alt with [ (j2143)" deny "tee ~/.himmel/state/bank{-lift,[}.json"
+row "suffix brace alt with [ (j2143)" deny "tee ~/.himmel/state/bank-lift.{json,[}"
+for _c in '[' ']' "\\" '*' '?' '!' '+' '@' '$' '"' '#' '~' ':'; do
+    row "alt sweep last  [$_c]" deny "tee ~/.himmel/state/bank-lift{.json,$_c}"
+    row "alt sweep first [$_c]" deny "tee ~/.himmel/state/bank-lift{$_c,.json}"
+done
 row "mv the lift away (over-deny r6)" deny "mv ~/.himmel/state/bank-lift.json /tmp/old-lift.json"
 row "redirect to \$OUT"            allow "echo x > \"\$OUT\""
 row "cd + find -exec {}"           allow "cd foo && find . -name '*.tmp' -exec rm {} \\;"
@@ -929,6 +947,142 @@ if [ "$got" = 0 ]; then ok "4458 10k-word echo allows within 15s"; else bad "445
 big=$(awk 'BEGIN { printf "true"; for (i = 0; i < 1500; i++) printf " && echo w%d x", i }')
 got=$(printf '%s' "$(bash_json "$big")" | timeout 15 bash "$HOOK" >/dev/null 2>&1; echo $?)
 if [ "$got" = 0 ]; then ok "4458 1.5k-clause command allows within 15s"; else bad "4458 1.5k-clause command allows within 15s — rc=$got"; fi
+
+echo "== HIMMEL-4972: brace-expand the original word, fail closed =="
+# Each form is a path word that REAL bash expands to the lift file. Every form
+# is run for real in a scratch HOME under each verb that can write it; a form
+# no verb can write is a failure of this test (the row would prove nothing).
+# The hook must deny each form under every verb.
+US=$(printf '\037')
+cat > "$T/x.py" <<'PYEOF'
+import sys
+for a in sys.argv[1:]:
+    try:
+        open(a, 'w').close()
+    except Exception:
+        pass
+PYEOF
+live_writes() {  # command -> 0 when real bash, in a scratch HOME, creates the lift
+    rm -rf "$T/live"; mkdir -p "$T/live/.himmel/state"
+    ( cd "$T/live" && HOME="$T/live" bash -c "$1" >/dev/null 2>&1 )
+    [ -e "$T/live/.himmel/state/bank-lift.json" ]
+}
+forms4972=$(cat <<'EOF'
+quoted } dq|~/.himmel/state/bank-lift{.json,"}"x}
+quoted } sq|~/.himmel/state/bank-lift{.json,'}'x}
+escaped }|~/.himmel/state/bank-lift{.json,\}x}
+ansi-c } |~/.himmel/state/bank-lift{.json,$'\x7d'x}
+quoted } first|~/.himmel/state/bank-lift{'}',.json}
+escaped } first|~/.himmel/state/bank-lift{\},.json}
+slash alt|~/.himmel/state/bank-lift{.json,/}
+slash a/b|~/.himmel/state/bank-lift{.json,a/b}
+slash ./|~/.himmel/state/bank-lift{.json,./}
+slash x/..|~/.himmel/state/bank-lift{x/..,.json}
+quoted slash|~/.himmel/state/bank-lift{'/',.json}
+group spans dir|~/.himmel/{state/bank-lift,x}.json
+nested spans dir|{~/.himmel/state/bank-lift{.json,x},y}
+ansi-c 0x1f|~/.himmel/state/bank-lift{.json,$'\x1f'}
+EOF
+)
+forms4972="$forms4972
+raw 0x1f|~/.himmel/state/bank-lift{.json,${US}}"
+n4972=0
+while IFS='|' read -r flabel fword; do
+    [ -n "$flabel" ] || continue
+    live=0
+    for vt in 'printf x | tee %T%' 'touch %T%' "install $T/src/other.txt %T%" "cp $T/src/other.txt %T%" ': > %T%' "python3 $T/x.py %T%"; do
+        cmd="${vt//%T%/$fword}"
+        row "4972 $flabel: ${vt%% *}" deny "$cmd"
+        if live_writes "$cmd"; then live=1; fi
+    done
+    if [ "$live" = 1 ]; then ok "4972 $flabel: real bash writes the lift"; else bad "4972 $flabel: no verb writes the lift in real bash (form is not live)"; fi
+    n4972=$((n4972+1))
+done <<EOF
+$forms4972
+EOF
+if [ "$n4972" -ge 15 ]; then ok "4972 generated $n4972 forms"; else bad "4972 generated only $n4972 forms"; fi
+# Fail closed on a word the expander cannot handle.
+row "4972 unbalanced { group denies"      deny "tee ~/.himmel/state/bank-lift{.json,x"
+row "4972 deep nesting denies"            deny "tee ~/.himmel/state/bank-lift{a,{b,{c,{d,{e,{f,{g,{h,{i,{j,{k,{l,{m,{n,{o,{p,{q,x}}}}}}}}}}}}}}}}}"
+row "4972 brace blow-up denies"           deny "tee ~/.himmel/state/bank-lift{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}.json"
+# Controls: braces that cannot reach the lift stay allowed.
+row "4972 quoted-brace JSON still allows" allow "python3 x.py '{\"a\":1,\"b\":2}'"
+row "4972 brace alt, no lift, allows"     allow "cp $T/src/other.txt $T/src/{a,b}.txt"
+row "4972 quoted brace is literal"        allow "tee ~/.himmel/state/'{bank-lift,y}.json'"
+row "4972 \${HOME} still expands"         deny  "tee \${HOME}/.himmel/state/bank-lift.json"
+row "4972 {fd}> redirect allows"          allow "exec {fd}>/dev/null"
+row "4972 { group } allows"               allow "{ echo hi; }"
+
+# Probe rows (console ruling, round 2): shapes a brace expander can get wrong.
+# Same method as above: deny under every verb, and real bash must write the lift.
+probe4972() {  # label prefix word
+    local plabel="$1" pre="$2" pword="$3" vt cmd live=0
+    for vt in 'printf x | tee %T%' 'touch %T%' "install $T/src/other.txt %T%" "cp $T/src/other.txt %T%" ': > %T%' "python3 $T/x.py %T%"; do
+        cmd="$pre${vt//%T%/$pword}"
+        row "4972 probe $plabel: ${vt%% *}" deny "$cmd"
+        if live_writes "$cmd"; then live=1; fi
+    done
+    if [ "$live" = 1 ]; then ok "4972 probe $plabel: real bash writes the lift"; else bad "4972 probe $plabel: no verb writes the lift in real bash (form is not live)"; fi
+}
+# The words below are literals handed to the hook, so tilde and $VAR stay unexpanded on purpose.
+# shellcheck disable=SC2088,SC2016
+run_probes4972() {
+NL=$'\n'
+# (a) nesting 3+ deep
+probe4972 "nest3"          '' '~/.himmel/state/bank-lift{.json,{x,{y,z}}}'
+probe4972 "nest4 inner"    '' '~/.himmel/state/bank-lift{x,{y,{z,{.json,w}}}}'
+probe4972 "nest5 outer"    '' '{{{{~/.himmel/state/bank-lift{.json,x},y},z},w},v}'
+# (a) large alternation count: lift is the first / last alternative of 40
+alts40=$(seq -s, -f 'a%g' 1 39)
+probe4972 "40 alts first"  '' "~/.himmel/state/bank-lift{.json,${alts40},z}"
+probe4972 "40 alts last"   '' "~/.himmel/state/bank-lift{${alts40},.json}"
+# over BX_MAX (256) words: must fail closed, never allow
+alts300=$(seq -s, -f 'a%g' 1 299)
+row "4972 probe 300 alts denies"      deny "tee ~/.himmel/state/bank-lift{.json,${alts300},z}"
+row "4972 probe 300 alts last denies" deny "tee ~/.himmel/state/bank-lift{${alts300},.json}"
+# (b) sequence expressions near the lift name
+probe4972 "seq char"       '' '~/.himmel/state/bank-lift.jso{n..n}'
+probe4972 "seq dir"        '' '~/.himmel/stat{e..e}/bank-lift.json'
+probe4972 "seq nested alt" '' '~/.himmel/state/bank-lift{.jso{n..n},x}'
+probe4972 "seq in alt"     '' '~/.himmel/state/bank-lift{.json,{1..3}}'
+# (c) variable and tilde forms mixed with braces in one word
+probe4972 "HOME braced"    '' '${HOME}/.himmel/state/bank-lift{.json,x}'
+probe4972 "HOME bare"      '' '$HOME/.himmel/state/bank-lift{.json,x}'
+probe4972 "HOME in group"  '' '{$HOME,x}/.himmel/state/bank-lift.json'
+probe4972 "tilde in group" '' '{~,x}/.himmel/state/bank-lift.json'
+probe4972 "VAR braced"     'S=.json; ' '~/.himmel/state/bank-lift${S}'
+probe4972 "VAR + group"    'S=.himmel; ' '~/${S}/state/bank-lift{.json,x}'
+probe4972 "VAR in alt"     'S=.json; ' '~/.himmel/state/bank-lift{${S},x}'
+probe4972 "VAR dir braced" 'D=state; ' '${HOME}/.himmel/${D}/bank-lift{.json,x}'
+# (d) quote-split words and ANSI-C escapes inside alternatives
+probe4972 "empty dq"       '' '~/.himmel/state/bank-lift"".json'
+probe4972 "split dq"       '' '~/.himmel/state/bank-"lift".json'
+probe4972 "split NA ME"    '' '~/.himmel/state/bank-lift."js""on"'
+probe4972 "split sq+dq"    '' "~/.himmel/state/bank-'li'\"ft\".json"
+probe4972 "ansi-c name"    '' "~/.himmel/state/\$'bank-lift'.json"
+probe4972 "ansi-c in alt"  '' "~/.himmel/state/bank-lift{\$'.json',x}"
+probe4972 "ansi-c hex alt" '' "~/.himmel/state/bank-lift{.js\$'\\x6f'n,x}"
+probe4972 "ansi-c comma"   '' "~/.himmel/state/bank-lift{\$'\\x2c',.json}"
+probe4972 "ansi-c brace"   '' "~/.himmel/state/bank-lift{\$'\\x7b',.json}"
+probe4972 "split in alt"   '' '~/.himmel/state/bank-lift{.js"on",x}'
+# (e) backslash-newline inside a word
+probe4972 "bs-nl name"     '' "~/.himmel/state/bank-\\${NL}lift.json"
+probe4972 "bs-nl ext"      '' "~/.himmel/state/bank-lift.js\\${NL}on"
+probe4972 "bs-nl in group" '' "~/.himmel/state/bank-lift{.js\\${NL}on,x}"
+probe4972 "bs-nl dir"      '' "~/.himmel/sta\\${NL}te/bank-lift.json"
+# (f) the hook has no timer of its own: a harness kill reads as rc!=2, so the
+# only defence is that the expander is bounded. Worst-case inputs must DENY
+# (rc 2) fast, well inside the hook budget.
+t0=$SECONDS
+worst='tee ~/.himmel/state/bank-lift{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}{a,b,c,d}.json'
+printf '%s' "$(bash_json "$worst")" | timeout 30 bash "$HOOK" >/dev/null 2>&1; rc=$?
+if [ "$rc" = 2 ] && [ $((SECONDS-t0)) -le 10 ]; then ok "4972 probe worst-case blow-up denies (rc 2) within 10s"; else bad "4972 probe worst-case blow-up rc=$rc after $((SECONDS-t0))s"; fi
+t0=$SECONDS
+many='{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}'
+printf '%s' "$(bash_json "tee ~/.himmel/state/bank-lift${many}.json")" | timeout 30 bash "$HOOK" >/dev/null 2>&1; rc=$?
+if [ "$rc" = 2 ] && [ $((SECONDS-t0)) -le 10 ]; then ok "4972 probe 20 groups denies (rc 2) within 10s"; else bad "4972 probe 20 groups rc=$rc after $((SECONDS-t0))s"; fi
+}
+run_probes4972
 
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered

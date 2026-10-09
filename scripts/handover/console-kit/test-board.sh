@@ -36,6 +36,16 @@ B="$W/bucket"
 mkdir -p "$B" "$W/bin" "$W/repo"
 # HIMMEL-4670: the failures panel reads these ledgers; never the operator's own.
 export HIMMEL_LEG_FAILURES_LEDGER="$W/leg-failures.jsonl" HIMMEL_FAILURE_ROUTES_LOG="$W/failure-routes.log.jsonl" HIMMEL_EVAL_RUNS_LEDGER="$W/eval-runs.jsonl"
+# HIMMEL-4877: the bank lift row reads the lift's `show` output through this stub,
+# never the operator's lift file or account. BANK_LIFT_STUB_OUT is a fixture file
+# of `show` output; unset prints the no-lift output.
+cat > "$W/bin/bank-lift-stub" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = show ] || exit 2
+if [ -n "${BANK_LIFT_STUB_OUT:-}" ]; then cat "$BANK_LIFT_STUB_OUT"; else printf 'bank-lift: none\nbank-lift: INVALID: missing\n'; fi
+STUB
+chmod +x "$W/bin/bank-lift-stub"
+export BOARD_BANK_LIFT="$W/bin/bank-lift-stub"
 
 # The tick stub records its argv and prints a fixed line + fingerprint. N1..N7
 # cover every phase; the fleet is 9/15 with six idle slots. N12 (issue #1336):
@@ -653,6 +663,32 @@ same 'a himmel console (project line reads none) runs gh in --repo' "$(sort -u "
 GH_CWD_LOG="$W/gh-cwd.log" run --doc "$DOCP" --out "$W/p-board.html" >/dev/null
 same 'a recorded project that is gone never falls back to --repo' "$(cat "$W/gh-cwd.log")" ''
 contains 'and reads gh unavailable' "$(cat "$W/p-board.html")" 'gh unavailable'
+
+# --- bank lift (HIMMEL-4877): the lift's `show` output, read-only -- the same
+# reason source as the doctor's C34 row. Not part of the fingerprint; never fatal.
+BL="$W/bank-lift-show.txt"
+bl_html() { BANK_LIFT_STUB_OUT="$1" mrun >/dev/null; rc=$?; cat "$M/board.html"; }
+html="$(bl_html '')"
+same 'bank lift: no lift renders, rc 0' "$rc" "0"
+contains 'bank lift: no lift reads "no lift set"' "$html" '<p class="sub" data-bank-lift="none">bank lift: no lift set</p>'
+for reason in expired account window trust parse; do
+    printf '{\n  "window": "seven_day",\n  "until": 1791000000\n}\nbank-lift: INVALID: %s\n' "$reason" > "$BL"
+    contains "bank lift: a set lift that is INVALID shows its reason ($reason)" "$(bl_html "$BL")" \
+        "<p class=\"sub\" data-bank-lift=\"invalid\">bank lift: lift set but INVALID: $reason</p>"
+done
+printf '{\n  "window": "seven_day",\n  "until": 1791000000,\n  "standing": false,\n  "account": "0123456789abcdef"\n}\nbank-lift: VALID\n' > "$BL"
+html="$(TZ=UTC bl_html "$BL")"
+contains 'bank lift: a valid window lift shows its until' "$html" '<p class="sub" data-bank-lift="valid">bank lift: VALID until 2026-10-03 04:00 · window</p>'
+lacks 'bank lift: the account hash never reaches the board' "$html" '0123456789abcdef'
+printf '{"window":"seven_day","until":1791000000,"standing":true}\nbank-lift: VALID\n' > "$BL"
+contains 'bank lift: a valid standing lift says standing' "$(TZ=UTC bl_html "$BL")" \
+    '<p class="sub" data-bank-lift="valid">bank lift: VALID until 2026-10-03 04:00 · standing</p>'
+printf 'bank-lift: INVALID: <b>x</b>\n' > "$BL"
+contains 'bank lift: an unexpected reason is escaped' "$(bl_html "$BL")" 'INVALID: &lt;b&gt;x&lt;/b&gt;'
+printf 'garbage\n' > "$BL"
+contains 'bank lift: unparseable show output reads unavailable' "$(bl_html "$BL")" 'data-bank-lift="?">bank lift: unavailable</p>'
+html="$(BOARD_BANK_LIFT="$W/no-such-lift" mrun >/dev/null; cat "$M/board.html")"
+contains 'bank lift: a failing show reads unavailable, never fatal' "$html" 'data-bank-lift="?"'
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?

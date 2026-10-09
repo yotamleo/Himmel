@@ -145,7 +145,7 @@ go_verdict_scope() (
     printf '%s/%s' "$slug" "$bucket"
 )
 
-# go_trust_verdict <go-root> <qid> <head-sha> <anchor> — HIMMEL-3832. Before
+# go_trust_verdict <go-root> <qid> <head-sha> <anchor> <pr> — HIMMEL-3832. Before
 # go.sh signs a trust-reviewed GO, the judge it names must have ruled GO on that
 # exact head. The verdict line is the first non-blank line under the `## Verdict`
 # heading (docs/handover/verdict-template.md), and it parses only as exactly
@@ -159,9 +159,15 @@ go_verdict_scope() (
 # <head-sha>. A verdict for another head is ignored (an earlier round). Fail
 # closed: a GO naming no head, trailing text, or no verdict line refuses. rc 2 =
 # refused, the reason on stdout. Read-only.
+# HIMMEL-4928: a GO for <head-sha> also names its PR. write-verdict.sh writes
+# `pr: <n>` as the second line after the verdict line (the line review-round.sh
+# does not read), and the GO counts only when <n> equals <pr>: two PRs on one
+# head are told apart, and a verdict file with no pr: line (written before this
+# field existed) refuses, to be rewritten with write-verdict.sh --pr. A NO-GO
+# vetoes whatever PR it names (it only narrows). An empty <pr> refuses.
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 go_trust_verdict() {
-    local root="$1" qid="$2" sha="$3" anchor="${4:-}" f line word head go=0 scope
+    local root="$1" qid="$2" sha="$3" anchor="${4:-}" pr="${5:-}" f line word head go=0 scope vpr
     case "$qid" in
         [A-Za-z0-9]*) ;;
         *) qid="" ;;
@@ -175,6 +181,11 @@ go_trust_verdict() {
         printf 'cannot resolve this repo'"'"'s <user>/<bucket> verdict scope (USER_SLUG, or the primary checkout of '"'"'%s'"'"') — refusing rather than read every bucket'"'"'s verdicts/%s/.\n' "$anchor" "$qid"
         return 2
     fi
+    case "$pr" in
+        ''|0*|*[!0-9]*)
+            printf 'no PR number was given (got '"'"'%s'"'"'), so no verdict can be matched to a PR.\n' "$pr"
+            return 2 ;;
+    esac
     for f in "$root/$scope/verdicts/$qid"/*.md; do
         [ -f "$f" ] || continue
         line=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }')
@@ -187,6 +198,16 @@ go_trust_verdict() {
         [ "$head" = "$sha" ] || continue
         if [ "$word" != "GO" ]; then
             printf 'the verdict in %s is NO-GO for head %s.\n' "$f" "$sha"
+            return 2
+        fi
+        vpr=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF && !n { n = NR + 2; next } n && NR == n { print; exit }' \
+            | sed -nE 's/^pr: ([1-9][0-9]*)$/\1/p')
+        if [ -z "$vpr" ]; then
+            printf 'the verdict in %s names no PR (no pr: line after the verdict line) — the judge rewrites it with write-verdict.sh --pr %s.\n' "$f" "$pr"
+            return 2
+        fi
+        if [ "$vpr" != "$pr" ]; then
+            printf 'the verdict in %s names PR #%s, not PR #%s.\n' "$f" "$vpr" "$pr"
             return 2
         fi
         go=1

@@ -49,7 +49,7 @@
 // record's uuid. Agent output with no prompt before it opens an implicit run.
 //
 // API (consumed by the SSE endpoint and the AG-UI page):
-//   createJournalMapper({threadId?}) → JournalMapper, stateful and incremental:
+//   createJournalMapper({threadId?, lane?}) → JournalMapper, stateful and incremental:
 //     pushLine(line)    map one complete JSONL line
 //     pushChunk(text)   map raw appended bytes of a growing file; a partial
 //                       last line is held until its newline arrives
@@ -72,7 +72,8 @@ export type MapperStats = {
   malformed: number; // unparseable lines, non-objects, or known types of the wrong shape
 };
 
-export type MapperOptions = { threadId?: string };
+// HIMMEL-4817: `lane` stamps every RUN_STARTED with metadata { lane } (the journal's config dir says which lane wrote it).
+export type MapperOptions = { threadId?: string; lane?: string };
 
 export type JournalMapper = {
   pushLine(line: string): AguiEvent[];
@@ -204,7 +205,7 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
   function startRun(rec: Rec, out: AguiEvent[], id: string) {
     threadId ??= str(rec.sessionId) ?? "journal";
     runId = id;
-    out.push({ type: "RUN_STARTED", threadId, runId, ...epochMs(rec) });
+    out.push({ type: "RUN_STARTED", threadId, runId, ...epochMs(rec), ...(opts.lane ? { metadata: { lane: opts.lane } } : {}) });
   }
 
   function finishRun(rec: Rec, out: AguiEvent[], outcome?: "success" | "cancelled") {

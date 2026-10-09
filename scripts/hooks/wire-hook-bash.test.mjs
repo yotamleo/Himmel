@@ -118,6 +118,21 @@ function commands(settings) {
   );
 }
 
+test('backend routing dispatches both Jira connector prefixes, not unrelated MCP tools', () => {
+  const settings = JSON.parse(readFileSync(SETTINGS, 'utf8'));
+  const backendGroups = settings.hooks.PreToolUse.filter((group) =>
+    group.hooks.some((hook) => hook.command.includes('/block-backend-tier.sh'))
+  );
+  for (const name of [
+    'mcp__plugin_atlassian_atlassian__createJiraIssue',
+    'mcp__claude_ai_Atlassian_MCP__createJiraIssue',
+    'mcp__claude_ai_Atlassian_MCP__lookupJiraAccountId',
+  ]) {
+    assert.equal(backendGroups.filter((group) => new RegExp(group.matcher).test(name)).length, 1, name);
+  }
+  assert.equal(backendGroups.filter((group) => new RegExp(group.matcher).test('mcp__qmd__query')).length, 0);
+});
+
 test('rewrites the known hook inventory through the Bash resolver', () => {
   withFixture((fixture) => {
     const before = JSON.parse(readFileSync(fixture, 'utf8'));
@@ -329,6 +344,45 @@ test('installs a missing owned SessionStart entry back into place', () => {
     // for the 600s default. The installed entry is indistinguishable from its
     // hand-wired siblings, which all carry an explicit timeout.
     assert.equal(sessionHooks[idx].timeout, 30, 'installed entry carries a bounded 30s timeout');
+  });
+});
+
+// HIMMEL-4828: bus-deliver-hook.sh is a PostToolUse script, installed through
+// INSTALL_EVENT; its SessionStart twin takes the default path. The repo's own
+// settings.json carries neither line yet (a child ticket adds it), so this
+// fixture is exactly the "registered by the wirer, not by hand" case.
+test('installs the bus delivery hooks into PostToolUse and SessionStart, dark and idempotent', () => {
+  withFixture((fixture) => {
+    const strip = JSON.parse(readFileSync(fixture, 'utf8'));
+    for (const event of ['PostToolUse', 'SessionStart']) {
+      for (const group of strip.hooks[event]) {
+        group.hooks = group.hooks.filter((h) => !/bus-deliver-(hook|sessionstart)\.sh/.test(h.command ?? ''));
+      }
+    }
+    writeFileSync(fixture, `${JSON.stringify(strip, null, 2)}\n`);
+
+    const result = invoke(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    const after = JSON.parse(readFileSync(fixture, 'utf8'));
+    const find = (event, name) => {
+      for (const group of after.hooks[event]) {
+        const idx = group.hooks.findIndex((h) => (h.command ?? '').includes(name));
+        if (idx !== -1) return { hooks: group.hooks, idx };
+      }
+      return null;
+    };
+    const post = find('PostToolUse', 'bus-deliver-hook.sh');
+    assert.ok(post, 'bus-deliver-hook.sh installed under PostToolUse');
+    assert.match(post.hooks[post.idx - 1].command, /claudex-inbox-hook\.sh/);
+    assert.equal(post.hooks[post.idx].timeout, 30);
+    const start = find('SessionStart', 'bus-deliver-sessionstart.sh');
+    assert.ok(start, 'bus-deliver-sessionstart.sh installed under SessionStart');
+    assert.match(start.hooks[start.idx - 1].command, /claudex-inbox-sessionstart\.sh/);
+    assert.ok(!find('SessionStart', 'bus-deliver-hook.sh'), 'the PostToolUse script is not installed under SessionStart');
+
+    const again = invoke(fixture);
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stdout, /already wired; no change made/);
   });
 });
 

@@ -32,7 +32,7 @@ pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures + 1)); }
 
 sandboxes=()
-# shellcheck disable=SC2317  # invoked via the EXIT trap below
+# shellcheck disable=SC2317,SC2329  # invoked via the EXIT trap below
 cleanup() {
   local d
   for d in ${sandboxes[@]+"${sandboxes[@]}"}; do

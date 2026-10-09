@@ -1520,6 +1520,133 @@ for v in \
     run "HIMMEL-4574 control [${v%%"$NL"*}] -> deny" 2 "$(payload "$v" "$TMP")" "$HR"
 done
 
+# HIMMEL-4916: staging/pathspec operands mention a changed policy file;
+# exempting a git segment must never exempt an executor beside or inside it.
+echo ': changed policy' >>"$WT/scripts/cr/pr-check-env.sh"
+for v in \
+    'git add scripts/cr/pr-check-env.sh docs/a.md' \
+    "git -C $WT add -- scripts/cr/pr-check-env.sh docs/a.md" \
+    '/usr/bin/git add scripts/cr/pr-check-env.sh docs/a.md' \
+    'git restore --staged scripts/cr/pr-check-env.sh' \
+    'git diff -- scripts/cr/pr-check-env.sh' \
+    'git rm --cached scripts/cr/pr-check-env.sh' \
+    'git log -- scripts/cr/pr-check-env.sh' \
+    'git show HEAD:scripts/cr/pr-check-env.sh' \
+    'git add "scripts/cr/pr-check-env.sh" docs/a.md' \
+    'git add -- -config.md scripts/cr/pr-check-env.sh' \
+    'git diff -- --ext-diff scripts/cr/pr-check-env.sh' \
+    'git diff --name-only -- scripts/cr/pr-check-env.sh' \
+    'git diff --name-status -- scripts/cr/pr-check-env.sh' \
+    'git log --follow -- scripts/cr/pr-check-env.sh' \
+    'git diff -w -- scripts/cr/pr-check-env.sh' \
+    'git diff --stat=80 -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4916 pathspec [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# shellcheck disable=SC2016 # literal attack payloads, never expanded here
+for v in \
+    'bash scripts/cr/pr-check-env.sh' \
+    'git add x && bash scripts/cr/pr-check-env.sh' \
+    "git -c alias.x='!bash scripts/cr/pr-check-env.sh' x" \
+    'git add $(bash scripts/cr/pr-check-env.sh)' \
+    'git add <(bash scripts/cr/pr-check-env.sh)' \
+    'git add x | xargs bash scripts/cr/pr-check-env.sh' \
+    "env -S 'bash scripts/cr/pr-check-env.sh'" \
+    'git --exec-path=scripts/cr/pr-check-env.sh add x' \
+    'git -c core.hooksPath=scripts/cr/pr-check-env.sh add x' \
+    "git -c filter.x.clean='bash scripts/cr/pr-check-env.sh' add x" \
+    "git -c filter.x.smudge='bash scripts/cr/pr-check-env.sh' restore x" \
+    "git -c diff.x.textconv='bash scripts/cr/pr-check-env.sh' show HEAD:x" \
+    'git --config-env=core.pager=RUN show scripts/cr/pr-check-env.sh' \
+    'git diff --ext-diff -- scripts/cr/pr-check-env.sh' \
+    'git diff --upload-pack=scripts/cr/pr-check-env.sh x' \
+    'git log ext::scripts/cr/pr-check-env.sh' \
+    'git grep -O bash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e -- -O bash -- scripts/cr/pr-check-env.sh' \
+    'git diff -S -- --ext-diff scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4916 exec control [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# HIMMEL-4950: a brace- or glob-expanded option word before a guarded pathspec
+# can expand into an exec-capable git option; the early expansion return in
+# git_mentions_only must flag it unsafe, not let it pass as a mention.
+# shellcheck disable=SC2016 # literal attack payloads, never expanded here
+for v in \
+    'git grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git grep --open-files-in-pager={bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git log -p --ext-d{iff,iff} -- scripts/cr/pr-check-env.sh' \
+    'git diff --ext-di?f -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$IFS-O{x,bash} -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$IFS-Obash -- scripts/cr/pr-check-env.sh' \
+    'git log HEAD$IFS--output=scripts/cr/pr-check-env.sh -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo${=IFS}-Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e docs/{a,b} -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git grep -e docs/{a,b} -Obash -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4950 brace option [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# After --, an expanded operand is a pathspec, not an option: not flagged unsafe.
+run "HIMMEL-4950 brace operand after -- keeps prior verdict" 0 \
+    "$(payload 'git add -- --foo{a,b} scripts/cr/pr-check-env.sh' "$WT")" "$HR"
+# A brace word that is not option-shaped keeps its prior verdict (allow).
+run "HIMMEL-4950 non-option brace word keeps prior verdict" 0 \
+    "$(payload 'git add docs/{a,b}.md scripts/cr/pr-check-env.sh' "$WT")" "$HR"
+# HIMMEL-4953: the git exec/write-option check runs for EVERY git segment and
+# fails closed on a bailed walk. Each payload used to exit 0 because
+# readers_only returned before it reached the git word.
+# shellcheck disable=SC2016 # literal attack payloads, never expanded here
+for v in \
+    'true; git grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'true; git grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'sort | git grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git grep -O{bash,x} -- scripts/cr/pr-check-env.sh # c' \
+    "git grep \$'-O'bash -- scripts/cr/pr-check-env.sh" \
+    "git grep \$'-O'{bash,x} -- scripts/cr/pr-check-env.sh" \
+    "git grep \$'\\x2dObash' -- scripts/cr/pr-check-env.sh" \
+    'git -p grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'git -p grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git --no-pager grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git {grep,x} -Obash -- scripts/cr/pr-check-env.sh' \
+    'case x in x) git grep -Obash -- scripts/cr/pr-check-env.sh ;; esac' \
+    'case x in x) git grep -O{bash,x} -- scripts/cr/pr-check-env.sh ;; esac' \
+    'git grep -O$(echo bash) -- scripts/cr/pr-check-env.sh' \
+    'git grep -O`echo bash` -- scripts/cr/pr-check-env.sh' \
+    'git grep -O$((1+1)) -- scripts/cr/pr-check-env.sh' \
+    'echo $(true); git grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e x a$IFS-Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep x${=IFS}-Obash -- scripts/cr/pr-check-env.sh' \
+    'git log HEAD$IFS--output=scripts/cr/pr-check-env.sh # c' \
+    'git grep -e x $(printf %s -Obash) -- scripts/cr/pr-check-env.sh' \
+    'git grep -e x "$(printf %s -Obash)" -- scripts/cr/pr-check-env.sh' \
+    'git grep -e x `printf %s -Obash` -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$(printf " ")-Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo`printf " "`-Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$((IFS=1))-Obash -- scripts/cr/pr-check-env.sh' \
+    'G=git; $G grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '${G:-git} grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '$(echo git) grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '$(printf %s g i t) grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '$(echo g)it grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'g$(echo i)t grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'g`echo i`t grep -Obash -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4953 unwalked git segment [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# Pathspec mentions and the HIMMEL-4950 allow cases stay allowed.
+for v in \
+    'git log -- scripts/cr/pr-check-env.sh' \
+    'git log --oneline -- scripts/cr/pr-check-env.sh' \
+    'git grep foo -- scripts/cr/pr-check-env.sh' \
+    'git diff --cached -- scripts/cr/pr-check-env.sh' \
+    'git rm --cached scripts/cr/pr-check-env.sh' \
+    'git show HEAD -- scripts/cr/pr-check-env.sh' \
+    'git add docs/{a,b}.md scripts/cr/pr-check-env.sh' \
+    'git add -- --foo{a,b} scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4953 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
+# guarded mention is unsafe, since it can assemble the git word; split the command.
+# shellcheck disable=SC2016 # the $( is literal hook input
+run "HIMMEL-4953 accepted over-deny [wc + unrelated substitution] -> deny" 2 \
+    "$(payload 'wc -l scripts/cr/pr-check-env.sh; echo $(date)' "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "all guard-pr-check-literal cases passed"

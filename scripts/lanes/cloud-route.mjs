@@ -14,13 +14,16 @@
 //   HOOK-BYPASS  touches scripts/hooks/ (hooks do not run in the cloud, and the
 //                integrity guard locks hook edits out of a normal leg)
 //   LOCAL-NATIVE a trust path (needs a trust-reviewed GO), a run-time need the
-//                cloud lacks by design (luna, a vault, handover state: private
-//                data never leaves the station), more than 3 asks, or no file
+//                cloud lacks by design (luna, a vault, handover state, the state repo
+//                or its specs: private data never leaves the station), more than 3 asks, or no file
 //                named to scope a brief on. graphify and BM25 qmd over the repo
 //                are not such a need: the cloud setup installs both (HIMMEL-4726).
 //                qmd query, vector search and embeds are: it has no qmd models.
 //                So is a semantic graphify run (/graphify, --backend): it would
-//                send content to a model backend
+//                send content to a model backend. Station-bound work is too
+//                (HIMMEL-4969): ~/.himmel or ~/.cache state, a test VM
+//                (himmel-ops:vm, vmsdk, VBoxManage), a LIVE ledger, arming a
+//                cadence (at/systemd)
 //   CLOUD-OK     everything else
 import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -33,7 +36,7 @@ const REPO = resolve(HERE, '..', '..');
 const MAX_ASKS = 3;
 const REPO_SLUG = 'yotamleo/Himmel';
 const HOOKS = /^scripts\/hooks\//;
-const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n]*--backend|\bqmd\b[^\n]*?(?<![\w-])(?:-c|--collections?)[\s=]+['"]?(?!himmel(?![\w-]))[\w-]/i;
+const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bstate[ -]repo\b|(?<![\w.-])handovers\/[\w.-]+\/|(?<![\w.-])specs\/HIMMEL-\d|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n]*--backend|\bqmd\b[^\n]*?(?<![\w-])(?:-c|--collections?)[\s=]+['"]?(?!himmel(?![\w-]))[\w-]|(?:~|\$HOME|\$\{HOME\})\/\.(?:himmel|cache)\/|\btest VMs?\b|himmel-ops:vm|\bvmsdk\b|\bVBoxManage\b|\bLIVE\b[^\n.]{0,40}\bledger\b|\barm(?:s|ed|ing)?\b[^\n.]{0,40}\bcadence\b|\bsystemd[ -](?:timer|unit|service)s?\b|\batrm\b/i;
 const FILE_RE = /(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|\.claude|\.github|\.codex)\/[\w.+@-]+(?:\/[\w.+@-]+)*\/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)/g;
 
 // The trust list is read as data, one extended regex per line (ci-trust-paths.txt).
@@ -87,7 +90,7 @@ export function classifyTicket(t, ctx) {
   const trust = files.find((f) => (ctx.trust ?? []).some((re) => re.test(f)));
   if (trust) return v('LOCAL-NATIVE', `touches trust path ${trust} — needs a trust-reviewed GO`);
   const need = `${t.title}\n${t.description}`.match(NEEDS);
-  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state, qmd models and semantic graphify stay on the station (the cloud has AST-only graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
+  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state, the state repo, qmd models, semantic graphify, ~/.himmel state, test VMs, live ledgers and cadence arming stay on the station (the cloud has AST-only graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
   if (asks > MAX_ASKS) return v('LOCAL-NATIVE', `${asks} asks (more than ${MAX_ASKS}) — cloud sessions drop second asks`);
   if (ctx.heldUnknown) return v('BLOCKED', 'open-PR file list unavailable (gh failed) — cannot prove the files are free');
   return v('CLOUD-OK', `${files.length} file(s), ${asks} ask(s), no hook, trust path or run-time need, none held`);
@@ -109,7 +112,7 @@ export function buildBrief(t, o = {}) {
   const coverage = asks.length ? asks.map((a) => `- ${a.replace(/^\d+[.)]\s*/, '')} — done`).join('\n') : `- ${t.title} — done`;
   const completes = o.completes ?? 'yes';
   const change = o.change ?? "Implement the ticket's asks above, in the named files only.";
-  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief and the repo. You have no local state. Jira is reachable through the Atlassian MCP connector (the local jira CLI is absent in the cloud): read the ticket, comment, file follow-ups with the fixVersion this brief names, and cite the ticket key in your commits and the PR. Use the context7 MCP for current library docs.
+  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief and the repo. You have no local state. Jira is reachable through the Atlassian MCP connector (the local jira CLI is absent in the cloud): read the ticket, comment, file follow-ups with the fixVersion this brief names, and cite the ticket key in your commits and the PR. If the context7 MCP tools are listed in this session, use them for current library docs; otherwise WebFetch the library's own docs.
 
 ## Ticket ${t.key} (verbatim from Jira)
 
@@ -126,6 +129,7 @@ ${named}
 1. Read \`CLAUDE.md\` and these files in full before editing: ${files.join(' ')}
 2. Claim the ticket: through the Atlassian MCP, transition ${t.key} to \`In Progress\` (a cloud session has no handover doc and no queue lock; the ticket status is the claim).
 3. Create the branch as a worktree BEFORE any edit: \`git worktree add -b ${branch} .claude/worktrees/himmel-${n} origin/main\`, and work inside it (the repo's edit-on-main guard denies edits in the cloud's primary clone, even on a feature branch).
+   If you need repo retrieval, run \`bash scripts/cloud/setup-env.sh\` from this worktree first; it rebuilds the AST graph and repo-only index here. Query \`graphify query "<question>" --graph graphify-out/graph.json\`, never the unclassified cached /tmp graph. Search with \`bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel\`, never bare qmd search or a vault collection.
 4. Edit ONLY these files: ${files.join(' ')}. Keep the diff minimal and match the surrounding style.
 5. Write the new or changed test FIRST and show it RED without the fix, then green. Run \`shellcheck\` on every \`.sh\` file you touch. Report rc and the PASS/FAIL tail of each.
 6. Make exactly ONE commit, never amend it. Before pushing, run the impacted suites: \`bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell\` lists every suite that references a changed file, and \`bash scripts/ci/run-shell-tests.sh --impacted origin/main..HEAD\` runs them. A red suite is fixed in a NEW commit, never an amend.

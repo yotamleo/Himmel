@@ -190,6 +190,8 @@ console_context_leg_env_unset_names() {
         HIMMEL_READ_CLAMP_LINES \
         HIMMEL_CONSOLE_RELAY \
         HIMMEL_CONSOLE_JUDGE \
+        HIMMEL_CONSOLE_JUDGE_DOC \
+        HIMMEL_CONSOLE_JUDGE_QID \
         HIMMEL_LEG_CONTEXT_MODE \
         HIMMEL_LEG_AUTOCOMPACT \
         CLAUDE_CODE_EFFORT_LEVEL \

@@ -47,13 +47,13 @@
     "standalone": true,
     "upstream_repo": "mattpocock/skills",
     "track": "head",
-    "ref": "4588b32ecab9ecc9fc8cc6b6c5e7d675b6004b0d"
+    "ref": "f3fc5632f401156837ee3872f14fe33ccf1024ea"
   },
   "coderabbit": {
     "standalone": true,
     "upstream_repo": "coderabbitai/skills",
     "track": "head",
-    "ref": "59945da347a93f9937d3fb09f5ba81a16010351f"
+    "ref": "928c3b61f71b578b1bcfbacc289f1446244dd9dd"
   },
   "ponytail": {
     "standalone": true,

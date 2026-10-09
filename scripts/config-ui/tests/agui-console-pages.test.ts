@@ -28,15 +28,16 @@ test("two console groups retain native, claudex and judge children; recent conso
   const groups = (page as any).consoleGroups?.(rows);
   expect(groups?.map((g: any) => g.console.name)).toEqual(["project-console", "roadmap-console", "wrapped-console"]);
   expect(groups?.[0].rows.map((r: any) => r.name)).toEqual(["claudex-leg", "judge"]);
-  expect(groups?.[1].rows.map((r: any) => r.name)).toEqual(["native-leg", "wrapped-leg"]);
+  // HIMMEL-4925: a cloud session is a lane under its console, never an orphan for want of a shepherd.
+  expect(groups?.[1].rows.map((r: any) => r.name)).toEqual(["native-leg", "cloud-unattended", "wrapped-leg"]);
 });
 
-test("orphans name released console, dead process, absent edge and missing cloud shepherd causes", () => {
+test("orphans name released console, dead process and absent edge causes; a cloud session without a shepherd is none", () => {
   const orphan = (page as any).orphanReason;
   expect(orphan?.(rows[6], rows)).toBe("console wrapped / lock released");
   expect(orphan?.(rows[7], rows)).toBe("console process gone");
   expect(orphan?.(rows[8], rows)).toBe("no console edge");
-  expect(orphan?.(rows[9], rows)).toBe("cloud session without a shepherd");
+  expect(orphan?.(rows[9], rows)).toBeNull();
   expect(orphan?.(rows[2], rows)).toBeNull();
 });
 

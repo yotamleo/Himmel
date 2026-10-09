@@ -103,6 +103,10 @@ export function fleetFixture(dir: string, opts: { cloud?: boolean } = {}): Fleet
   chmodSync(join(dir, "gh"), 0o755);
   writeFileSync(gh.reply, JSON.stringify(GH_REPLY));
   writeFileSync(gh.rc, "0");
+  // HIMMEL-4925: the process-orphan inventory, silent by default so no suite reads the real process table.
+  const orphans = join(dir, "orphan-loops.sh");
+  writeFileSync(orphans, "#!/bin/sh\nexit 0\n");
+  chmodSync(orphans, 0o755);
   if (opts.cloud) {
     const bucket = join(root, "yotam", "himmel");
     for (const t of ["HIMMEL-905", "HIMMEL-906", "HIMMEL-907"])
@@ -119,7 +123,8 @@ export function fleetFixture(dir: string, opts: { cloud?: boolean } = {}): Fleet
     ].join(""));
   }
   return {
-    env: { HOME: home, HANDOVER_DIR: root, CLAUDE_SESSIONS_PGREP: pgrep, CLAUDE_SESSIONS_PROC: proc, CONFIG_UI_GH: join(dir, "gh") },
+    env: { HOME: home, HANDOVER_DIR: root, CLAUDE_SESSIONS_PGREP: pgrep, CLAUDE_SESSIONS_PROC: proc, CONFIG_UI_GH: join(dir, "gh"),
+      CONFIG_UI_ORPHAN_LOOPS: orphans, CONFIG_UI_GITHUB_REPO: "acme/widgets" },
     dir, home, pgrep, journal: path, gh,
     append: (m, record) => appendFileSync(path(m), rec(m, record)),
   };

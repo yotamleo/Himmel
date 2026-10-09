@@ -734,6 +734,84 @@ timed 0 'allow: qmd status, then 700 sh words' "qmd status; echo ${pad_sh}"
 timed 0 'allow: qmd status, then 2000 words' "qmd status; echo ${pad_w}"
 timed 0 'allow: qmd status, bash -c and 2000 words' "qmd status; bash -c 'echo \$0' ${pad_w}"
 
+# HIMMEL-4505: stdin-fed residuals. A shell option's argument (-o errexit,
+# -O extglob, --rcfile f) is no program operand, at/batch read their job from
+# stdin, and a -c string that itself reads stdin is not the program source.
+w='echo qmd query x > f; '
+deny "${w}bash -o errexit < f"
+deny "${w}bash -O extglob < f"
+deny "${w}bash +o errexit < f"
+deny "${w}bash +O extglob < f"
+deny "${w}bash --rcfile r < f"
+deny "${w}bash --init-file r < f"
+deny "${w}bash --rcfile f -i < /dev/null"
+deny "${w}bash --init-file f -i < /dev/null"
+deny "${w}sh -o errexit < f"
+deny "${w}at now < f"
+deny "${w}at -q a now < f"
+deny "${w}at -qf now < f"
+deny "${w}at -mf now < f"
+deny "${w}batch < f"
+deny "${w}sh -c '. /dev/stdin' < f"
+deny "${w}sh -c 'source /dev/stdin' < f"
+deny "${w}bash -c '. /dev/fd/0' < f"
+deny "${w}sh -c 'sh' < f"
+deny "${w}sh -c 'exec bash -s' < f"
+# Controls: no verb written, a program operand, or a program file given to at.
+allow 'echo qmd status > f; bash -o errexit < f'
+allow 'echo qmd status > f; at now < f'
+allow 'echo hi > f; sh -c ". /dev/stdin" < f'
+allow "${w}bash -o errexit other.sh"
+allow "${w}bash --rcfile r other.sh"
+allow "${w}at -f job.sh now"
+allow "${w}sh -c 'echo hi' < g"
+allow "bash -o errexit -c 'qmd status'"
+
+# HIMMEL-4526: past the 8 KB (nested scan) and 16 KB (normaliser) budgets a
+# command naming qmd and a verb denies instead of falling back to a narrower
+# reading. size_deny/size_allow LABEL CMD keep the padded payload out of the log.
+size_deny() { assert_rc "deny: $1" 2 "$(run_case "$(j_bash "$2")")"; }
+size_allow() { assert_rc "allow: $1" 0 "$(run_case "$(j_bash "$2")")"; }
+pad_t=$(printf 'true %.0s' $(seq 2000))
+pad_u=$(printf 'true %.0s' $(seq 4000))
+for pad_k in t u; do
+    case "$pad_k" in t) pad=$pad_t pad_n='>8KB' ;; *) pad=$pad_u pad_n='>16KB' ;; esac
+    size_deny "$pad_n awk system reader" "${pad}; echo qmd query x | awk '{system(\$0)}'"
+    size_deny "$pad_n sed e reader" "${pad}; echo qmd query x | sed e"
+    size_deny "$pad_n expansion program" "${pad}; l=sh; echo qmd query x | \$l"
+    size_deny "$pad_n pipe to sh" "${pad}; echo qmd query x | sh"
+    size_deny "$pad_n 2>&1 pipe to sh" "${pad}; echo qmd query x 2>&1 | sh"
+    size_deny "$pad_n ssh launcher" "${pad}; ssh host qmd query x"
+    size_deny "$pad_n tmux launcher" "${pad}; tmux new -d 'qmd query x'"
+    size_deny "$pad_n written file run" "${pad}; echo qmd query x > f; sh f"
+    size_deny "$pad_n stdin file" "${pad}; echo qmd query x > f; sh < f"
+    size_deny "$pad_n bare verb" "${pad}; qmd query x"
+    size_allow "$pad_n no verb" "${pad}; qmd status; echo hi | cat"
+    size_allow "$pad_n no qmd" "${pad}; echo hi | sh"
+    size_allow "$pad_n verb without qmd" "${pad}; echo query search"
+done
+# Past 16 KiB tmux, screen and pwsh spell the program with keys, escapes or
+# base64 that never contain qmd: naming one at all fails closed.
+for pad_c in 2740 3334 6667; do
+    pad=$(printf 'true; %.0s' $(seq "$pad_c"))
+    pad_n=">16KB x$pad_c"
+    size_deny "$pad_n tmux keys" "${pad}; tmux send-keys -t a q m d Space q u e r y Space x Enter"
+    size_deny "$pad_n tmux split keys" "${pad}; tmux send-keys -t a \"qmd que\" \"ry x\" Enter"
+    size_deny "$pad_n tmux hex keys" "${pad}; tmux send-keys -t a 0x71 m d Space 0x71 uery Enter"
+    size_deny "$pad_n screen stuff" "${pad}; screen -X stuff '\\161md query x\\n'"
+    size_deny "$pad_n pwsh encoded" "${pad}; pwsh -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+    size_deny "$pad_n powershell encoded" "${pad}; powershell -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+    size_deny "$pad_n tmux before pad" "tmux send-keys -t a q m d Space q u e r y Enter; ${pad}"
+    # ANSI-C escapes spell the program without the literal text: any $' fails closed.
+    size_deny "$pad_n ansi hex tmux" "${pad}; "'$'"'\\x74mux' send-keys -t a q m d Space q u e r y Space x Enter"
+    size_deny "$pad_n ansi octal tmux" "${pad}; "'$'"'\\164mux' send-keys -t a q m d Enter"
+    size_deny "$pad_n ansi mid tmux" "${pad}; "'$'"'t\\x6dux' send-keys -t a q m d Enter"
+    size_deny "$pad_n ansi split tmux" "${pad}; "'$'"'\\x74'mux send-keys -t a q m d Enter"
+    size_deny "$pad_n ansi pwsh" "${pad}; "'$'"'\\x70wsh' -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+    size_deny "$pad_n ansi powershell" "${pad}; "'$'"'\\x70owershell' -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+    size_allow "$pad_n no reader" "${pad}; echo hi | cat"
+done
+
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
 allow 'bash /home/u/himmel/scripts/lib/qmd-bounded.sh search x'
@@ -812,6 +890,58 @@ deny "PATH=/tmp; grep 'a|qmd query' f"
 deny "grep() { sh; }; grep 'a|qmd query' f"
 deny "echo 'x; qmd query' | grep x"
 deny "bash -c 'grep x f; qmd query'"
+# HIMMEL-4989: a command word built from a glob, a parameter expansion or a
+# command substitution can be tmux, screen or pwsh, which type or run a string
+# the guard cannot read; a file the command wrote can be run through sh -c, ENV
+# or BASH_ENV; and an alias or function defined in the command can be tmux.
+# Each row below was run in real bash against stub tmux/screen/pwsh programs
+# and ran the program (or the written file).
+deny "/usr/bin/tm?x new 'qmd query x'"
+deny "/usr/bin/t[m]ux new 'qmd query x'"
+deny "/usr/bin/pw?h -c 'qmd query x'"
+deny "/usr/bin/scr*n -dm 'qmd query x'"
+deny '/usr/bin/tm?x send-keys -H 71 6d 64'
+deny "a=tm; \${a}ux new 'qmd query x'"
+deny "a=t b=mux; \$a\$b new 'qmd query x'"
+deny "a=scr; \${a}een -dm 'qmd query x'"
+deny "a=pw; \${a}sh -c 'qmd query x'"
+deny "a=tm; \${a}ux send-keys -H 71 6d 64 20 71 75 65 72 79"
+deny "a=ls; a=tm; \${a}ux send-keys -H 71 6d 64 20 71 75 65 72 79"
+deny "a=ls; b=ux; a=tm; \$a\$b send-keys -H 71 6d 64 20 71 75 65 72 79"
+allow "a=ls; \$a -l; a=tm; echo \$a"
+deny "read x < f; env -u HOME \"\$x\" send-keys -H 71 6d 64 20 71 75 65 72 79"
+deny "read x < f; nice -n 5 \"\$x\" send-keys -H 71 6d 64 20 71 75 65 72 79"
+allow "env -u HOME ls -l; nice -n 5 echo hi"
+deny "alias f='command tmux'; f send-keys -H 71 6d 64 20 71 75 65 72 79"
+allow "alias f='command ls'; f -l"
+deny "\$(printf '\\x74mux') new 'qmd query x'"
+deny "\`printf '\\x74mux'\` new 'qmd query x'"
+deny "\$(echo dG11eA== | base64 -d) new 'qmd query x'"
+deny "\$(rev <<< xumt) new 'qmd query x'"
+deny "\$(printf '\\x74mux') send-keys -H 71 6d 64"
+deny 'echo qmd query x > f; sh -c ". f"'
+deny 'echo qmd query x > f; ENV=f sh -i < /dev/null'
+deny 'echo qmd query x > f; BASH_ENV=f bash -c true'
+deny 'echo qmd query x > f; env BASH_ENV=f bash -c true'
+deny 'echo qmd query x > f; export ENV=./f; sh -i'
+deny "alias f=tmux
+f new 'qmd query x'"
+deny "alias f=tmux; f new 'qmd query x'"
+deny "alias f='tmux new'; f 'qmd query x'"
+deny "f(){ tmux \"\$@\"; }; f new 'qmd query x'"
+deny "f() { /usr/bin/screen \"\$@\"; }; f -dm 'qmd query x'"
+deny "function f { pwsh \"\$@\"; }; f -c 'qmd query x'"
+deny "alias f=tmux; f send-keys -H 71 6d 64"
+# ... while a plain expansion that cannot be one of them, a glob over other
+# programs and a file written without a verb stay allowed.
+allow 'echo $HOME; qmd status'
+allow 'b=/tmp/bin; "$b/tool" go'
+allow 'ls /usr/bin/tm?x-notes'
+allow 'echo hello > f; sh -c ". f"'
+allow 'echo hello > f; ENV=f sh -i < /dev/null'
+allow 'alias ll="ls -l"; ll'
+allow 'f(){ ls "$@"; }; f -l'
+allow 'cd "$(git rev-parse --show-toplevel)" && ls'
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \

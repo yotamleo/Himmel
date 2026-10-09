@@ -93,6 +93,12 @@ for (const p of providers) {
       assert(effective === "conditional" && rule && rule.provider === "ollama-cloud" &&
         rule.corpus === "salus" && rule.hard === undefined,
         `salus x ${p} x ${u} must be conditional via its OWN ollama-cloud row (persisted opt-in, HIMMEL-4185), got ${effective}`);
+    } else if (p === "openai-codex" && u === "inference") {
+      // HIMMEL-5002 operator ruling 2026-10-08: codex inference on salus is an
+      // explicit allow via its OWN row, ahead of the hard wildcard deny.
+      assert(effective === "allow" && rule && rule.corpus === "salus" && rule.provider === "openai-codex" &&
+        rule.purpose === "inference" && rule.hard === undefined,
+        `salus x ${p} x ${u} must be allow via its OWN openai-codex row (HIMMEL-5002 ruling), got ${effective}`);
     } else if (p === "openrouter") {
       assert(effective === "deny", `salus x ${p} x ${u} must stay deny by default (configurable ≠ open), got ${effective}`);
       assert(rule && rule.provider === "openrouter" && rule.hard === undefined,
@@ -289,6 +295,19 @@ assert(evaluate("luna-personal", "deepseek", "embedding").effective === "deny",
 assert(evaluate("handover-state", "openai-codex", "embedding").effective === "deny",
   "no bulk pipelines over handover-state");
 
+// 6b. openai-codex on luna + salus (HIMMEL-5002, operator ruling 2026-10-08):
+//     inference ONLY, via explicit rows; every OTHER provider and every other
+//     codex purpose stays denied.
+for (const c of ["luna-personal", "luna-clippings", "salus"]) {
+  const { effective, rule } = evaluate(c, "openai-codex", "inference");
+  assert(effective === "allow" && rule && rule.corpus === c && rule.provider === "openai-codex" && rule.purpose === "inference",
+    `${c} x openai-codex x inference must be allow via its OWN row (HIMMEL-5002), got ${effective}`);
+  for (const u of purposes.filter(x => x !== "inference"))
+    assert(evaluate(c, "openai-codex", u).effective === "deny", `${c} x openai-codex x ${u} must stay deny (inference-only ruling)`);
+  for (const p of ["deepseek", "zai-glm", "openrouter", "alibaba"])
+    assert(evaluate(c, p, "inference").effective === "deny", `${c} x ${p} x inference must stay deny (only codex was ruled in)`);
+}
+
 // 7. OpenRouter (HIMMEL-1774): declared as its OWN provider — content transits
 //    the aggregator, a different trust boundary from the vendor cells, so the
 //    anthropic allowances do NOT carry over. Operator ruling pinned per cell:
@@ -391,6 +410,29 @@ for (const c of ["luna-personal", "luna-clippings", "handover-state"]) {
     assert(evaluate(c, "ollama-cloud", u).effective === "deny",
       `${c} x ollama-cloud x ${u} must deny (the ollama-cloud allow is extraction-only)`);
   }
+}
+
+// 6. HIMMEL-4938 (operator ruling 2026-10-08): the hosted Atlassian MCP server may
+//    be asked for its published tool catalog (initialize + tools/list) and NOTHING
+//    else. The one allow cell is mcp-tool-catalog x atlassian-mcp x catalog-fetch;
+//    every other purpose, every other corpus and every other provider stays deny.
+assert(evaluate("mcp-tool-catalog", "atlassian-mcp", "catalog-fetch").effective === "allow",
+  "mcp-tool-catalog x atlassian-mcp x catalog-fetch must be allow (HIMMEL-4938)");
+for (const u of purposes.filter(x => x !== "catalog-fetch")) {
+  assert(evaluate("mcp-tool-catalog", "atlassian-mcp", u).effective === "deny",
+    `mcp-tool-catalog x atlassian-mcp x ${u} must stay deny — only tools/list is permitted`);
+}
+// himmel-code included: an explicit himmel-code x atlassian-mcp x * deny sits before
+// the himmel-code x * x * wildcard allow, so that wildcard cannot reach this provider.
+for (const c of corpora.filter(x => x !== "mcp-tool-catalog")) {
+  for (const u of purposes) {
+    assert(evaluate(c, "atlassian-mcp", u).effective === "deny",
+      `${c} x atlassian-mcp x ${u} must be deny — the allow is scoped to the tool catalog`);
+  }
+}
+for (const p of providers.filter(x => x !== "atlassian-mcp")) {
+  assert(evaluate("mcp-tool-catalog", p, "catalog-fetch").effective === "deny",
+    `mcp-tool-catalog x ${p} x catalog-fetch must be deny — the allow is scoped to atlassian-mcp`);
 }
 
 if (failures > 0) {

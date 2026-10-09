@@ -58,6 +58,13 @@ export HANDOVER_REGISTRY="$tmp/no-registry-for-this-suite.json"
 # real home directory (case 8 scans the temp root for private strings).
 export BRIDGE_ROOT="$tmp/bridge"
 
+# HIMMEL-4902: `next` pre-fills the HANDOFF through handoff-facts.sh, which reads
+# the bank and open PRs. Stub both for the WHOLE suite so no case reads the real
+# bank or calls gh.
+printf '#!/usr/bin/env bash\necho "bank-preflight: leg=unknown five_hour=9.0 seven_day=91.0 extra_usage=n/a"\necho PROCEED\n' > "$tmp/facts-bank.sh"
+printf '#!/usr/bin/env bash\necho "#5 [DEMO-1] stub pr (feat/x)"\n' > "$tmp/facts-prs.sh"
+export HANDOFF_FACTS_BANK="$tmp/facts-bank.sh" HANDOFF_FACTS_PRS="$tmp/facts-prs.sh"
+
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
@@ -157,7 +164,7 @@ check "4 new renders in bounded time" "$([ $((SECONDS - t4_start)) -lt 20 ] && e
 # HIMMEL-3912: render_template must splice values LITERALLY ('&', backslash,
 # '/', '$', quotes, newline).
 (
-    # shellcheck disable=SC2317  # called by the eval'd render_template
+    # shellcheck disable=SC2317,SC2329  # called by the eval'd render_template
     err() { echo "$@" >&2; }
     eval "$(sed -n '/^render_template() {/,/^}/p' "$C")"
     tpl="$REPO_REAL/docs/handover/console-template.md"
@@ -262,6 +269,14 @@ check "6 successor has no surviving placeholder" "$(grep -c '{{' "$doc6B" 2>/dev
 check "6 successor has no BRIDGE_ROOT expansion" "$(grep -c 'BRIDGE_ROOT' "$doc6B" 2>/dev/null)" "0"
 check "6 successor names its inbox literally" "$(grep -cF "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}B-console.md" "$doc6B" 2>/dev/null)" "3"
 check "6 handoff has no surviving placeholder" "$(grep -c '{{' "$handoff6A" 2>/dev/null)" "0"
+# HIMMEL-4902: the mechanical fields are pre-filled by handoff-facts.sh (the
+# bank and PR commands are stubbed above), so the console writes only judgement
+# notes; and `next` puts the predecessor's waiter in handover mode.
+check "6 handoff pre-fills the bank line" "$(grep -c '^\*\*Bank at write:\*\* 5-hour 9.0 %, 7-day 91.0 %' "$handoff6A")" "1"
+check "6 handoff pre-fills the open PRs" "$(grep -c '^#5 \[DEMO-1\] stub pr' "$handoff6A")" "1"
+check "6 handoff keeps no sha/url placeholder" "$(grep -E '^\*\*(Head|Bank at write):\*\*' "$handoff6A" | grep -c '<sha>\|<origin url>\|<n> %')" "0"
+check "6 handoff leaves one judgement-notes block" "$(grep -c '^## Rulings and judgement notes' "$handoff6A")" "1"
+check "6 next puts the predecessor waiter in handover mode" "$(cat "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}A-console.md.handover" 2>/dev/null)" "DEMO-nextleg-${today}B-console"
 
 # --- 6c (HIMMEL-3266): the GENERATED stub and HANDOFF must not tell the
 # successor to mint and rotate a fresh nonce per leg -- leg-preface.md (the

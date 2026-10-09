@@ -47,9 +47,21 @@ segment index/pruning policy belongs with the later consumer lifecycle work;
 this change does not claim constant-time polling or a decompression-bomb limit.
 
 Cursor publication is atomic for process crashes, not fsynced for power loss.
-No bridge, transport, registration or CLI wiring is installed by this package.
+No bridge or transport wiring is installed by this package.
+
+## Identity and registration CLI
+
+`bin/bus register|bind|rebind|adopt|status|peers` (spec §8). Identity is
+`(name, pid, start time)`, written by the launcher under `peers/<name>.json`;
+`lib/identity.mjs` stamps a caller by its **nearest** claude ancestor whose bound
+`{pid, start}` matches (comm `claude`, `/proc` root injectable). A nested or
+pid-reused claude is `identity unbound`. Names are single-use; `bind` is once;
+`rebind` only when the bound pid is gone; `adopt <new console>` (run as the leg)
+only when the old console is `gone` or its own record names the new one;
+`status <name>` prints `live|gone|unbound`; `peers` prints the caller's own edges.
+`lib/edges.mjs` is the single edge table the server and CLI share.
 
 ## Tests
 
-`npm test` runs `tests/test-store.mjs`. The existing `node-suites` GitHub Actions
+`npm test` runs `tests/test-store.mjs` and `tests/test-identity.mjs`. The existing `node-suites` GitHub Actions
 matrix includes `himmel-bus` with Node 24; other matrix packages keep Node 22.

@@ -66,7 +66,9 @@ for (const command of RIDER_COMMANDS) {
   test(`guard-pr-check-literal.sh denies a rider on the gateAllow wildcard tail: ${JSON.stringify(command)}`, () => {
     const { status, stderr } = runHook(command, { env: { HIMMEL_REPO: '' } });
     assert.equal(status, 2, `expected deny (rc=2), got rc=${status}: ${stderr}`);
-    assert.match(stderr, /not one simple command/);
+    // A substitution rider is denied by the HIMMEL-4953 PR_GIT_UNSAFE rule
+    // with the HIMMEL-4916 wording; every other rider by the simple-command rule.
+    assert.match(stderr, /not one simple command|cannot be proven to be pathspec mentions/);
   });
 }
 

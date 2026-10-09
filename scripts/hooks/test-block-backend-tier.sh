@@ -214,6 +214,22 @@ for tool in getJiraIssue searchJiraIssuesUsingJql createJiraIssue \
     assert_rc "block $tool (verb present)" 2 "$rc"
 done
 
+# --- Both Jira connector prefixes route writes but preserve unsupported reads ---
+# Missing live-prefix registration must fail the write and replacement-hint rows.
+for prefix in mcp__plugin_atlassian_atlassian__ mcp__claude_ai_Atlassian_MCP__; do
+    input="{\"tool_name\":\"${prefix}createJiraIssue\",\"tool_input\":{}}"
+    rc=$(run_case "$input")
+    assert_rc "block ${prefix}createJiraIssue" 2 "$rc"
+    assert_stderr_contains "${prefix} write names CLI replacement" "$input" \
+        'jira/dist/index.js create'
+    rc=$(run_case "{\"tool_name\":\"${prefix}lookupJiraAccountId\",\"tool_input\":{}}")
+    assert_rc "allow ${prefix}lookupJiraAccountId (no CLI equivalent)" 0 "$rc"
+    rc=$(run_case "$input" "$STUB_REDUCED")
+    assert_rc "allow ${prefix}createJiraIssue when CLI lacks create" 0 "$rc"
+    rc=$(run_case "$input" "$STUB_FULL" 'MCP_JIRA_OK=1')
+    assert_rc "bypass ${prefix}createJiraIssue with MCP_JIRA_OK" 0 "$rc"
+done
+
 # --- Autogeneration property: REMOVE verbs from the fixture ---
 rc=$(run_case '{"tool_name":"mcp__plugin_atlassian_atlassian__createIssueLink","tool_input":{}}' "$STUB_REDUCED")
 assert_rc "allow createIssueLink when 'link' verb absent" 0 "$rc"

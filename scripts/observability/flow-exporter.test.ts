@@ -2169,3 +2169,42 @@ test("eval-runs scrape survives a thresholds file that is valid JSON but not an 
   expect(body).not.toContain("himmel_eval_metric_regression{");
   expect(body).toContain("# himmel_eval_metric_regression omitted: eval-compare.json unreadable");
 });
+
+// HIMMEL-4662: a malformed band must leave the metric ungated with a diagnostic,
+// never read as a NaN width that silently reports "no regression".
+test("eval-runs regression gauge skips a metric whose eval-compare.json band is not a finite non-negative number", async () => {
+  const thresholds = join(tmp, "bad-band-thresholds.json");
+  writeFileSync(thresholds, JSON.stringify({
+    "lane-quality": {
+      as_string: { higher_is_better: true, band: "0.15" },
+      negative: { higher_is_better: true, band: -0.1 },
+      not_a_number: { higher_is_better: true, band: "NaN" },
+      negative_rel: { higher_is_better: false, band_rel: -0.5 },
+      null_rel: { higher_is_better: false, band_rel: null },
+      valid: { higher_is_better: true, band: 0.15 },
+    },
+  }));
+  const ledger = join(tmp, "eval-runs.jsonl");
+  const metrics = (v: number) => ({ as_string: v, negative: v, not_a_number: v, negative_rel: 1 - v, null_rel: 1 - v, valid: v });
+  writeFileSync(ledger, [
+    evalRow({ run_id: "a1", ts: "2026-07-10T00:00:00Z", metrics: metrics(0.8) }),
+    evalRow({ run_id: "a2", ts: "2026-07-12T00:00:00Z", metrics: metrics(0.5) }),
+  ].join("\n") + "\n");
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: join(tmp, "none"),
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    evalRunsLedgerPath: ledger,
+    evalThresholdsPath: thresholds,
+  });
+  for (const m of ["as_string", "negative", "not_a_number", "negative_rel", "null_rel"]) {
+    expect(body).not.toContain(`himmel_eval_metric_regression{eval="lane-quality",metric="${m}"}`);
+    expect(body).toContain(`# himmel_eval_metric_regression skipped: eval=lane-quality metric=${m} `);
+  }
+  // control: a valid band still gates, and 0.8 -> 0.5 is beyond it
+  expect(body).toContain('himmel_eval_metric_regression{eval="lane-quality",metric="valid"} 1');
+  expect(body).not.toContain("metric=valid ");
+});

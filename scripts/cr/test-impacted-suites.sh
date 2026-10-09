@@ -64,6 +64,20 @@ mkf scripts/test-diff-fullpath.sh 'bash scripts/eval/guard-corpus/diff'
 mkf scripts/test-diff-var.sh 'DIFF="$HERE/diff"'
 mkf scripts/claude-fake
 mkf scripts/test-claude-fake.sh "launcher=path.join(scripts,'claude-fake')"
+mkf scripts/test-diff-source.sh 'cd eval/guard-corpus && source diff'
+mkf scripts/test-diff-dot.sh 'cd eval/guard-corpus && . "diff"'
+mkf scripts/test-diff-directive.sh '# shellcheck source=diff'
+mkf scripts/test-diff-dashdash.sh 'cd eval/guard-corpus && source -- diff'
+mkf scripts/q/'we"ird.sh'
+mkf scripts/test-q-dquote.sh 'bash "$d/q/we"ird.sh'
+mkf scripts/q/'back\slash.sh'
+mkf scripts/test-q-backslash.sh 'bash "$d/q/back\slash.sh"'
+mkf scripts/q/$'ta\tb.sh'
+mkf scripts/test-q-tab.sh $'bash "$d/q/ta\tb.sh"'
+mkf scripts/test-diff-plain.sh 'cd eval/guard-corpus && diff a b'
+mkf scripts/test-diff-prose.sh '# the source diff is shown below'
+mkf scripts/diff-helper.sh 'cd eval/guard-corpus && source diff'
+mkf scripts/test-diff-helper.sh 'bash "$d/diff-helper.sh"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -189,6 +203,29 @@ out="$(run_is "$range")"
 # A suite-local variable ($HERE/diff) still ends in /diff, so it stays listed.
 if grepq "$out" '^scripts/test-diff-var\.sh$'; then pass "extensionless diff: a variable-built \$HERE/diff reference stays listed"; else fail "\$HERE/diff suite under-listed: $out"; fi
 
+# --- 11c. a bare source / . / shellcheck source= of a single-word file (HIMMEL-4621) ---
+# After a `cd`, the operand is the bare name with no `/` before it. Only a line
+# that sources it counts: a plain `diff a b` command and prose stay unlisted.
+if grepq "$out" '^scripts/test-diff-source\.sh$'; then pass "bare 'source diff' after a cd is listed"; else fail "source diff suite under-listed: $out"; fi
+if grepq "$out" '^scripts/test-diff-dot\.sh$'; then pass "bare '. \"diff\"' after a cd is listed"; else fail ". diff suite under-listed: $out"; fi
+if grepq "$out" '^scripts/test-diff-directive\.sh$'; then pass "'# shellcheck source=diff' is listed"; else fail "shellcheck source=diff suite under-listed: $out"; fi
+if grepq "$out" '^scripts/test-diff-dashdash\.sh$'; then pass "'source -- diff' is listed (HIMMEL-4978)"; else fail "source -- diff suite under-listed: $out"; fi
+if grepq "$out" '^scripts/test-diff-helper\.sh$'; then pass "a suite reaching diff through a sourcing helper is listed"; else fail "source-closure bare-name suite under-listed: $out"; fi
+if ! grepq "$out" 'test-diff-plain\.sh' && ! grepq "$out" 'test-diff-prose\.sh' && ! grepq "$out" 'test-diff-word\.sh'; then pass "a plain 'diff a b' command and comment prose stay unlisted"; else fail "plain diff over-listed: $out"; fi
+
+# --- 11d. a changed path git would C-quote (HIMMEL-4978) ---------------------
+# `git diff --name-only` quotes a name holding a double quote, backslash or tab,
+# so no needle matched and the selector listed nothing and exited 0.
+change 'scripts/q/we"ird.sh'
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-q-dquote\.sh$'; then pass "changed path with a double quote selects its suite"; else fail "double-quote path selected nothing: $out"; fi
+change 'scripts/q/back\slash.sh'
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-q-backslash\.sh$'; then pass "changed path with a backslash selects its suite"; else fail "backslash path selected nothing: $out"; fi
+change $'scripts/q/ta\tb.sh'
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-q-tab\.sh$'; then pass "changed path with a tab selects its suite"; else fail "tab path selected nothing: $out"; fi
+
 # --- 12. the answer does not depend on the cwd it is run from ----------------
 # git ls-tree / git grep are cwd-scoped; from a subdirectory the suites one
 # level up would silently drop out and --check would pass on a partial set.
@@ -206,6 +243,20 @@ git -C "$FX" commit -q -m "chore: add widget + café suite"
 change scripts/uniq-widget.sh
 out="$(run_is "$range" --shell)"
 if [ "$out" = "scripts/test-café.sh" ]; then pass "non-ASCII suite path is emitted verbatim"; else fail "non-ASCII suite path mangled: $out"; fi
+
+# --- 13b. a SUITE path git grep -l would C-quote (HIMMEL-4997) ----------------
+# A suite file name holding a double quote, backslash or tab came back quoted
+# ("scripts/test-q\"x.sh") and the runner filtered it out as "not a suite".
+mkf scripts/uniq-quoter.sh
+mkf 'scripts/test-qg"x.sh' 'bash "$d/uniq-quoter.sh"'
+mkf 'scripts/test-qg\y.sh' 'bash "$d/uniq-quoter.sh"'
+mkf $'scripts/test-qg\tz.sh' 'bash "$d/uniq-quoter.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add quoter + quoted suites"
+change scripts/uniq-quoter.sh
+out="$(run_is "$range" --shell)"
+want=$'scripts/test-qg\tz.sh\nscripts/test-qg"x.sh\nscripts/test-qg\\y.sh'
+if [ "$(printf '%s\n' "$out" | LC_ALL=C sort)" = "$(printf '%s\n' "$want" | LC_ALL=C sort)" ]; then pass "suite paths with a double quote, backslash and tab are emitted verbatim"; else fail "quoted suite paths mangled: $out"; fi
 
 # --- 14. a step that builds the list and fails is an error, not a short list --
 # A `sort` shim that fails: the shell-only filter used to end in `|| true`, so

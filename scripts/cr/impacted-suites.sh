@@ -490,10 +490,15 @@ fi
 if ! mb=$(git merge-base "$base_sha" "$head_sha"); then
     echo "impacted-suites.sh: no merge-base between '${base}' and '${head}'" >&2; exit 2
 fi
-if ! changed=$(git -c core.quotepath=off diff --name-only --no-renames "$mb" "$head_sha"); then
+# HIMMEL-4978: -z, because without it git C-quotes a name holding a double quote,
+# backslash or tab ("a\"b.sh"): no needle matched it and the run listed nothing
+# and exited 0. -z output is raw; tr turns it into the one-per-line lists the
+# loops below read. ponytail: a name holding a newline still splits in two (a
+# bogus path, never a missed one); upgrade path is NUL-reading loops if one ever appears.
+if ! changed=$(git diff -z --name-only --no-renames "$mb" "$head_sha" | tr '\0' '\n'); then
     echo "impacted-suites.sh: git diff ${mb}..${head_sha} failed" >&2; exit 2
 fi
-if ! tree=$(git -c core.quotepath=off ls-tree -r --name-only "$head_sha"); then
+if ! tree=$(git ls-tree -r -z --name-only "$head_sha" | tr '\0' '\n'); then
     echo "impacted-suites.sh: git ls-tree ${head_sha} failed" >&2; exit 2
 fi
 
@@ -564,6 +569,25 @@ file_literal() {
     fi
 }
 
+src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
+# bare_source_ere <path> — HIMMEL-4621: for a nested single-word extensionless
+# file (the ones file_literal names `/<name>`), two EREs that match a reference
+# with no `/` before the name, which `/<name>` misses: a `source`/`.` operand
+# after a `cd` (`cd dir && source diff`) and `# shellcheck source=diff`. Only a
+# line that sources it counts, so a plain `diff a b` command stays unselected.
+# Prints nothing for any other file.
+# ponytail: `cd dir && bash diff` and "$dir/$f" with f=diff stay unfound (no
+# source keyword to anchor on); upgrade path is a lint on new suites if a
+# --selector-miss row ever names one.
+bare_source_ere() {
+    local f="$1" name="${1##*/}"
+    [ "${f#*/}" != "$f" ] || return 0
+    grep -Eq "$generic_re" <<< "$name" && return 0
+    case "$name" in *[-_.]*) return 0 ;; esac
+    { printf '%s(source|\\.)[[:space:]]+(--[[:space:]]+)?["'"'"']?([^[:space:]"'"'"']*/)?' "$src_lead"; needle_tail_ere "$name"; printf '\n'; } || return 1
+    { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$name"; printf '\n'; } || return 1
+}
+
 seen="$work/seen"     # every file already in the source closure (visited set)
 front="$work/front"   # the files whose sourcers the next round looks for
 : > "$seen"
@@ -579,6 +603,7 @@ while IFS= read -r f; do
     fi
     name="${f##*/}"
     add_needle "$(file_literal "$f")"
+    bare_source_ere "$f" >> "$pats" || io_fail "writing a bare source needle"
     printf '%s\n' "$f" >> "$seen" || io_fail "seeding the source closure"
     printf '%s\n' "$f" >> "$front" || io_fail "seeding the source closure"
     case "$f" in
@@ -610,23 +635,23 @@ varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
 # "# Same source and spelling as tick.sh's ...") is prose, never an edge. Only a
 # line whose first non-blank character is `#` is skipped: a `#` later in a line
 # (a quoted string, a trailing comment after a real source) never hides one.
-src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
+# (src_lead is defined above bare_source_ere, which the changed-file loop needs.)
 grep_rc=0
-git -c core.quotepath=off grep -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
+git grep -z -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
     echo "impacted-suites: git grep failed (rc=$grep_rc) listing variable-sourcing files — cannot tell which suites are impacted" >&2
     exit 2
 fi
-sed "s/^${head_sha}://" "$work/varsrc.raw" > "$varsrc" || io_fail "listing variable-sourcing files"
+tr '\0' '\n' < "$work/varsrc.raw" | sed "s/^${head_sha}://" > "$varsrc" || io_fail "listing variable-sourcing files"
 # closure_grep <patfile> <outfile> <what> — the .sh files at head matching any pattern.
 closure_grep() {
     grep_rc=0
-    git -c core.quotepath=off grep -l -E -f "$1" "$head_sha" -- ':(glob)**/*.sh' > "$2.raw" || grep_rc=$?
+    git grep -z -l -E -f "$1" "$head_sha" -- ':(glob)**/*.sh' > "$2.raw" || grep_rc=$?
     if [ "$grep_rc" -gt 1 ]; then
         echo "impacted-suites: git grep failed (rc=$grep_rc) $3 — cannot tell which suites are impacted" >&2
         exit 2
     fi
-    sed "s/^${head_sha}://" "$2.raw" > "$2" || io_fail "reading $3"
+    tr '\0' '\n' < "$2.raw" | sed "s/^${head_sha}://" > "$2" || io_fail "reading $3"
 }
 while [ -s "$front" ]; do
     : > "$work/srcpats"
@@ -642,6 +667,7 @@ while [ -s "$front" ]; do
         { printf '%s(source|\\.)[[:space:]]%s' "$src_lead" "$src_pre"; needle_tail_ere "$lit"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
         { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$lit"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
         { printf 'shellcheck[[:space:]]+source=%s' "$dir_pre"; needle_tail_ere "$lit"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
+        bare_source_ere "$f" >> "$work/srcpats" || io_fail "writing a bare source-edge pattern"
     done < "$front"
     closure_grep "$work/srcpats" "$work/hit.src" "walking the source closure"
     closure_grep "$work/dirpats" "$work/hit.dir" "reading shellcheck source directives"
@@ -889,16 +915,17 @@ if [ -s "$pats" ]; then
     # rc 1 is "no match"; anything higher is a search that did not run, which
     # must not read as an empty impacted set.
     grep_rc=0
-    # core.quotepath=off like the diff and ls-tree above: a non-ASCII suite path
-    # must come back as itself, not as a quoted "\303\251" the runner cannot open.
-    git -c core.quotepath=off grep -l -E -f "$pats" "$head_sha" -- \
+    # -z like the diff and ls-tree above (HIMMEL-4997): a suite path holding a
+    # non-ASCII byte, double quote, backslash or tab must come back as itself,
+    # not as a quoted "\303\251" the runner cannot open.
+    git grep -z -l -E -f "$pats" "$head_sha" -- \
         ':(glob)**/test-*.sh' ':(glob)**/*.test.mjs' ':(glob)**/*.test.js' ':(glob)**/*.test.ts' \
         > "$work/grep.out" || grep_rc=$?
     if [ "$grep_rc" -gt 1 ]; then
         echo "impacted-suites: git grep failed (rc=$grep_rc) — cannot tell which suites are impacted" >&2
         exit 2
     fi
-    sed "s/^${head_sha}://" "$work/grep.out" >> "$found" || io_fail "reading the search result"
+    tr '\0' '\n' < "$work/grep.out" | sed "s/^${head_sha}://" >> "$found" || io_fail "reading the search result"
 fi
 
 impacted="$work/impacted"

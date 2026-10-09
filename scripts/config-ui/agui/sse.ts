@@ -19,6 +19,7 @@
 import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { createJournalMapper } from "./journal-mapper.ts";
+import { laneOfJournal } from "./lane.ts";
 import { byTime, stampLines, subagentFiles, type Line } from "./journal-merge.ts";
 import type { AguiEvent } from "./events.ts";
 
@@ -81,7 +82,7 @@ export function redactPayload(e: AguiEvent, redact: (value: unknown) => unknown)
 type Source = { path: string; fh?: FileHandle; offset: number; size: number; tail: string; utf8: TextDecoder; last: { ts: number } };
 
 export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8Array> {
-  const mapper = createJournalMapper({ threadId: o.threadId });
+  const mapper = createJournalMapper({ threadId: o.threadId, lane: laneOfJournal(path) === "native" ? undefined : laneOfJournal(path) }); // HIMMEL-4817: a non-native stream carries its lane (native is the unmarked default)
   const enc = new TextEncoder();
   const started = Date.now();
   const src = (p: string): Source => ({ path: p, offset: 0, size: 0, tail: "", utf8: new TextDecoder(), last: { ts: -Infinity } });

@@ -36,7 +36,12 @@ SessionStart injection is the ~700 tok this change reclaims),
 receiving-code-review, dispatching-parallel-agents — nothing vendored
 references them.
 
-vendored_from=mattpocock/skills@1.3.1 path=skills/productivity/grilling
+vendored_from=mattpocock/skills@f3fc5632f401156837ee3872f14fe33ccf1024ea path=skills/productivity/grilling
+
+HIMMEL-4914 (2026-10-08): grilling re-vendored byte-for-byte at the commit
+above, ahead of the unchanged 1.3.1 release tag. The head-level
+`mattpocock-skills` entry in scripts/plugin-upstreams.json records the same
+commit; the release-level scripts/upstreams.json row stays at 1.3.1.
 
 grilling only. 0 of the plugin's 11 exposed skills were ever invoked in 1628
 local transcripts; grilling reaches us through the minerva hook's

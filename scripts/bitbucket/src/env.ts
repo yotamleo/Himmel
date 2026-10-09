@@ -21,6 +21,10 @@ function repoRoot(): string {
   }
 }
 
+const DOTENV_KEYS = new Set([
+  'BITBUCKET_EMAIL', 'BITBUCKET_API_TOKEN', 'BITBUCKET_WORKSPACE', 'BITBUCKET_REPO_SLUG',
+]);
+
 function loadEnv(): void {
   const envPath = `${repoRoot()}/.env`;
   if (!existsSync(envPath)) return;
@@ -28,6 +32,7 @@ function loadEnv(): void {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue;
     const [key, ...rest] = trimmed.split('=');
+    if (!DOTENV_KEYS.has(key.trim())) continue;
     process.env[key.trim()] ??= rest.join('=').trim();
   }
 }
