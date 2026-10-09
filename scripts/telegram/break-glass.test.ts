@@ -93,7 +93,7 @@ function harness(code = 0, stdout = "ok\n", stderr = ""): Harness {
   return h;
 }
 const msg = (text: string, over: Partial<{ from: number; chat_id: number; forwarded: boolean }> = {}) =>
-  ({ from: over.from ?? 1, chat_id: over.chat_id ?? 7, text, ts: now(), caption: false, forwarded: over.forwarded ?? false });
+  ({ from: over.from ?? 1, chat_id: over.chat_id ?? over.from ?? 1, text, ts: now(), caption: false, forwarded: over.forwarded ?? false });
 const codeOf = (reply: string) => reply.match(/\/confirm ([0-9a-f]{8})/)?.[1] ?? "";
 async function issue(root: string, h: Harness, text: string) {
   await handleAutoCommand(root, msg(text), auto(text), h.deps);
@@ -136,11 +136,11 @@ test("a mutating op issues a code and runs nothing; the matching /confirm runs i
   }
 });
 
-test("a wrong, missing, expired, other-user, other-chat or forwarded confirm refuses and burns the code", async () => {
+test("a wrong, missing, expired, other-user, group-chat or forwarded confirm refuses and burns the code", async () => {
   const variants: Array<[string, (root: string, h: Harness, code: string) => Promise<void>]> = [
     ["wrong", (root, h, code) => confirm(root, h, code === "00000000" ? "11111111" : "00000000")],
     ["other-user", (root, h, code) => confirm(root, h, code, { from: 2 })],
-    ["other-chat", (root, h, code) => confirm(root, h, code, { chat_id: 8 })],
+    ["group-chat", (root, h, code) => confirm(root, h, code, { chat_id: -100 })],
     ["expired", async (root, h, code) => { h.clock.t += 5 * 60_000 + 1; await confirm(root, h, code); }],
   ];
   for (const [name, bad] of variants) {
@@ -149,7 +149,7 @@ test("a wrong, missing, expired, other-user, other-chat or forwarded confirm ref
     const code = await issue(root, h, "/revert-main 2202");
     await bad(root, h, code);
     expect([name, h.runs]).toEqual([name, []]);
-    expect([name, h.audits[h.audits.length - 1].result]).toEqual([name, "confirm-refused"]);
+    expect([name, h.audits[h.audits.length - 1].result]).toEqual([name, name === "group-chat" ? "refused-group" : "confirm-refused"]);
     h.clock.t = Date.now();
     await confirm(root, h, code);
     expect([name, "burned", h.runs]).toEqual([name, "burned", []]);
@@ -166,6 +166,19 @@ test("a wrong, missing, expired, other-user, other-chat or forwarded confirm ref
   await confirm(fwdRoot, f, code, { forwarded: true });
   expect(f.runs).toEqual([]);
   expect(f.audits[f.audits.length - 1].result).toBe("refused-forwarded");
+});
+
+test("break-glass ops are DM-only: in a group every op refuses and issues no code", async () => {
+  for (const text of ["/station-status", "/revert-main 2202", "/repin-hooks", "/launch-leg N7", "/cr-reset 9", "/close-wrapped", "/relaunch-console", "/restart-bridge"]) {
+    const root = await mkdtemp(join(tmpdir(), "bg-group-"));
+    const h = harness();
+    await handleAutoCommand(root, msg(text, { chat_id: -100 }), auto(text), h.deps);
+    expect([text, h.runs]).toEqual([text, []]);
+    expect([text, h.audits.map((a) => a.result)]).toEqual([text, ["refused-group"]]);
+    expect([text, /\/confirm [0-9a-f]{8}/.test(h.replies.join(" "))]).toEqual([text, false]);
+    expect(h.replies[0]).toContain("private chat");
+    expect(existsSync(join(root, "break-glass-pending.json"))).toBe(false);
+  }
 });
 
 test("a forwarded mutating op issues no code; a new op replaces an older pending code", async () => {

@@ -159,17 +159,44 @@ op_station_status() {
     return 0
 }
 
+# After a revert merges, a failed primary sync must never invite a second
+# revert: the revert PR number is recorded, and a re-call only re-syncs.
+revert_sync() {
+    local rnum="$1" rc
+    sync_primary && return 0
+    rc=$?
+    echo "ERR break-glass: already reverted (revert PR $rnum), sync failed; fix the primary, then /repin-hooks" >&2
+    return "$rc"
+}
+
 op_revert_main() {
-    local pr="$ARG" def view state base id rnum tries i
+    local pr="$ARG" def view state base id merge tip head rnum tries i done_file
     case "$pr" in ''|*[!0-9]*) echo "ERR break-glass: bad PR number: '$pr'" >&2; return 1 ;; esac
     def="$(default_branch)"
-    view="$(cd "$PRIMARY" && "$GH" pr view "$pr" --json id,state,baseRefName 2>/dev/null)" \
+    done_file="${BREAK_GLASS_STATE:-$HOME/.himmel/state/break-glass}/revert-$pr.done"
+    if [ -f "$done_file" ]; then
+        rnum="$(cat "$done_file")"
+        echo "already reverted PR $pr (revert PR $rnum); syncing the primary only"
+        revert_sync "$rnum"
+        return $?
+    fi
+    view="$(cd "$PRIMARY" && "$GH" pr view "$pr" --json id,state,baseRefName,mergeCommit 2>/dev/null)" \
         || { echo "ERR break-glass: gh pr view $pr failed" >&2; return 13; }
     state="$(printf '%s' "$view" | jq -r '.state // empty')"
     base="$(printf '%s' "$view" | jq -r '.baseRefName // empty')"
     id="$(printf '%s' "$view" | jq -r '.id // empty')"
+    merge="$(printf '%s' "$view" | jq -r '.mergeCommit.oid // empty')"
     if [ "$state" != "MERGED" ] || [ "$base" != "$def" ] || [ -z "$id" ]; then
         echo "ERR break-glass: PR $pr is not a merged PR into $def (state=$state base=$base)" >&2
+        return 12
+    fi
+    # Break-glass reverts only the PR that IS main's HEAD: anything older is a
+    # normal reviewed revert, never an --admin one from a phone.
+    git -C "$PRIMARY" fetch --quiet origin "$def" || { echo "ERR break-glass: fetch origin $def failed" >&2; return 13; }
+    tip="$(git -C "$PRIMARY" rev-parse "origin/$def" 2>/dev/null)"
+    if [ -z "$merge" ] || [ "$merge" != "$tip" ]; then
+        head="$(git -C "$PRIMARY" log -1 --format=%s "origin/$def" | grep -oE '\(#[0-9]+\)$' | tr -d '()')"
+        echo "ERR break-glass: PR $pr is not $def's HEAD (HEAD is ${head:-a commit with no PR number}, $(printf '%.12s' "$tip")); only the HEAD PR can be break-glass reverted" >&2
         return 12
     fi
     # GitHub's own revert keeps the original title inside `Revert "…"`, so the
@@ -193,7 +220,8 @@ op_revert_main() {
         sleep "${BREAK_GLASS_MERGE_SLEEP:-3}"
     done
     echo "merged revert PR $rnum"
-    sync_primary
+    mkdir -p "${done_file%/*}" && chmod 700 "${done_file%/*}" && printf '%s\n' "$rnum" > "$done_file"
+    revert_sync "$rnum"
 }
 
 # The current console's fleet manifest: the seam, else the newest
@@ -273,6 +301,12 @@ op_launch_leg() {
         return 23
     fi
     doc="$docs"
+    # A manifest leg runs the primary's own launcher, which no sha256 sidecar
+    # records, so the hook-integrity bypass is for sidecar launchers only.
+    if [ "$bypass" = "bypass" ]; then
+        echo "ERR break-glass: --hook-bypass is only for a sha256-recorded launch-$label.sh; send /launch-leg $label without it" >&2
+        return 23
+    fi
     [ -f "$doc" ] || { echo "ERR break-glass: leg doc missing: $doc" >&2; return 23; }
     wt="$(sed -n '1,/^---$/{s/^resume_cwd:[[:space:]]*//p}' "$doc" | head -n 1)"
     [ -n "$wt" ] && [ -d "$wt" ] || { echo "ERR break-glass: worktree missing for $label: '${wt}'" >&2; return 23; }

@@ -38,8 +38,12 @@ mkdir -p "$TMP/seed/scripts/hooks"; echo v1 > "$TMP/seed/scripts/hooks/h.sh"
 git -C "$TMP/seed" add -A; git -C "$TMP/seed" commit -qm "seed"; git -C "$TMP/seed" push -q origin main
 git clone -q "$TMP/origin.git" "$TMP/primary"
 PRIMARY="$TMP/primary"
-echo v2 > "$TMP/seed/scripts/hooks/h.sh"; git -C "$TMP/seed" commit -qam "hook v2"; git -C "$TMP/seed" push -q origin main
+echo v2 > "$TMP/seed/scripts/hooks/h.sh"; git -C "$TMP/seed" commit -qam "hook v2 (#12)"; git -C "$TMP/seed" push -q origin main
 TIP="$(git -C "$TMP/seed" rev-parse HEAD)"
+SEED1="$(git -C "$TMP/seed" rev-parse HEAD~1)"
+# PR 12 is main's HEAD (its merge commit is the tip); PR 11 merged earlier.
+MV12="{\"id\":\"PR_12\",\"state\":\"MERGED\",\"baseRefName\":\"main\",\"mergeCommit\":{\"oid\":\"$TIP\"}}"
+MV11="{\"id\":\"PR_11\",\"state\":\"MERGED\",\"baseRefName\":\"main\",\"mergeCommit\":{\"oid\":\"$SEED1\"}}"
 
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/gh" <<'EOF'
@@ -121,14 +125,34 @@ assert_rc "V2 a PR merged into another branch is refused" 12 "$?"
 assert_not_contains "V3 a refused revert never calls the revert mutation" "graphql" "$(cat "$GH_LOG")"
 GH_VIEW_RC=1 bg revert-main 12 - >/dev/null; assert_rc "V4 a gh failure is rc 13" 13 "$?"
 bg revert-main 12x - >/dev/null; assert_rc "V5 a non-numeric PR is bad input" 1 "$?"
-GH_VIEW='{"id":"PR_1","state":"MERGED","baseRefName":"main"}' GH_MERGE_RC=1 bg revert-main 12 - >/dev/null
+: > "$GH_LOG"
+GH_VIEW="$MV11" bg revert-main 11 - >/dev/null
+assert_rc "V11 a merged PR that is not main's HEAD is refused" 12 "$?"
+assert_contains "V12 the refusal names main's HEAD PR" "#12" "$(cat "$TMP/err")"
+assert_not_contains "V13 a non-HEAD revert never calls the revert mutation" "graphql" "$(cat "$GH_LOG")"
+GH_VIEW="$MV12" GH_MERGE_RC=1 bg revert-main 12 - >/dev/null
 assert_rc "V6 a revert PR that will not merge is rc 18 (left open)" 18 "$?"
 : > "$GH_LOG"
-out=$(GH_VIEW='{"id":"PR_1","state":"MERGED","baseRefName":"main"}' bg revert-main 12 -); rc=$?
+out=$(GH_VIEW="$MV12" bg revert-main 12 -); rc=$?
 assert_rc "V7 a merged PR is reverted, merged and the primary synced" 0 "$rc"
 assert_contains "V8 it names the revert PR" "revert_pr=77" "$out"
 assert_contains "V9 the merge is --admin squash (break-glass)" "pr merge 77 --squash --admin" "$(cat "$GH_LOG")"
 assert_contains "V10 the primary sync ran after the merge" "primary=" "$out"
+: > "$GH_LOG"
+out=$(GH_VIEW="$MV12" bg revert-main 12 -); rc=$?
+assert_rc "V14 a second /revert-main of the same PR is idempotent" 0 "$rc"
+assert_contains "V15 it says the PR is already reverted" "already reverted" "$out"
+assert_not_contains "V16 and never calls the revert mutation again" "graphql" "$(cat "$GH_LOG")"
+rm -f "$HOME/.himmel/state/break-glass/revert-12.done"
+echo local > "$PRIMARY/local.txt"; git -C "$PRIMARY" add local.txt; git -C "$PRIMARY" commit -qm local
+GH_VIEW="$MV12" bg revert-main 12 - >/dev/null; rc=$?
+assert_rc "V17 a revert whose primary sync fails keeps the sync rc" 22 "$rc"
+assert_contains "V18 it says already reverted, sync failed" "already reverted (revert PR 77), sync failed" "$(cat "$TMP/err")"
+: > "$GH_LOG"
+GH_VIEW="$MV12" bg revert-main 12 - >/dev/null
+assert_contains "V19 the retry after a failed sync never reverts again" "already reverted (revert PR 77), sync failed" "$(cat "$TMP/err")"
+assert_not_contains "V20 no second revert mutation" "graphql" "$(cat "$GH_LOG")"
+git -C "$PRIMARY" reset -q --hard "$TIP"
 
 # --- /launch-leg -------------------------------------------------------------
 git -C "$PRIMARY" worktree add -q "$TMP/wt" -b feat/leg-x
@@ -144,10 +168,11 @@ cat > "$FLEET" <<EOF
  {"doc":"$BUCKET/a.md","label":"N5"},{"doc":"$BUCKET/b.md","label":"N5"}]}
 EOF
 export BREAK_GLASS_FLEET="$FLEET" BREAK_GLASS_LEG_CMD="$TMP/bin/record" RECORD="$TMP/leg.rec"
-rm -f "$RECORD"; out=$(bg launch-leg N7 bypass); rc=$?
-assert_rc "L1 a manifest leg with a linked worktree launches" 0 "$rc"
+rm -f "$RECORD"; bg launch-leg N7 bypass >/dev/null
+assert_rc "L1 --hook-bypass is refused for a manifest leg (no recorded sha256)" 23 "$?"
+rm -f "$RECORD"; out=$(bg launch-leg N7 -); rc=$?
+assert_rc "L2 a manifest leg with a linked worktree launches" 0 "$rc"
 wait_for "$RECORD"; rec="$(cat "$RECORD" 2>/dev/null)"
-assert_contains "L2 the bypass exports HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1" "bypass=1" "$rec"
 assert_contains "L3 every other *_OK is scrubbed" "other=unset" "$rec"
 assert_contains "L4 the bot token is scrubbed" "token=unset" "$rec"
 assert_contains "L5 it launches in the leg's own worktree" "legrepo=$TMP/wt" "$rec"
@@ -155,8 +180,8 @@ assert_contains "L6 with the doc's model, session name and fleet/console" "--fle
 assert_contains "L7 and the model named in the doc" "claude-opus-5-5" "$rec"
 rm -f "$RECORD"; bg launch-leg N7 - >/dev/null; wait_for "$RECORD"
 assert_contains "L8 without --hook-bypass nothing is exported" "bypass=unset" "$(cat "$RECORD" 2>/dev/null)"
-bg launch-leg N8 bypass >/dev/null; assert_rc "L9 a leg whose worktree is gone is refused" 23 "$?"
-bg launch-leg N9 bypass >/dev/null; assert_rc "L10 the primary (not a linked worktree) is refused" 23 "$?"
+bg launch-leg N8 - >/dev/null; assert_rc "L9 a leg whose worktree is gone is refused" 23 "$?"
+bg launch-leg N9 - >/dev/null; assert_rc "L10 the primary (not a linked worktree) is refused" 23 "$?"
 bg launch-leg N5 bypass >/dev/null; assert_rc "L11 a label naming two legs is refused" 23 "$?"
 bg launch-leg N4 bypass >/dev/null; assert_rc "L12 an unknown label with no launcher is refused" 23 "$?"
 bg launch-leg 'N7;x' bypass >/dev/null; assert_rc "L13 a malformed label is bad input" 1 "$?"

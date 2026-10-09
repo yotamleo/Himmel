@@ -221,7 +221,7 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
 export type AuditResult = "armed" | "already-armed" | "ambiguous" | "refused-forwarded" | "no-match" | "error"
   | "merged" | "not-green" | "head-moved" | "no-open-pr"
   | "restarting" | "restart-unsupported" | "delta-granted"
-  | "break-glass-ok" | "refused-agent" | "confirm-issued" | "confirm-refused";
+  | "break-glass-ok" | "refused-agent" | "confirm-issued" | "confirm-refused" | "refused-group";
 export type AuditFields = {
   chat_id: number; user: number; forwarded: boolean; op: string;
   arg: string; resolved?: string; backups?: string; time: string; rc: number; result: string;

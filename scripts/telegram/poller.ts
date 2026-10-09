@@ -740,6 +740,15 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
     await reply("⚠️ forwarded commands are not executed");
     return;
   }
+  // Break-glass ops and their /confirm are DM-only (HIMMEL-5047 judge ruling): a
+  // private chat is the one where chat_id === from. A group /confirm still burns
+  // the pending code, so a code seen in a group can never be replayed.
+  if ((BREAK_GLASS_OPS.has(route.op) || route.op === "confirm") && msg.chat_id !== msg.from) {
+    if (route.op === "confirm") await takeConfirm(root);
+    await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: -1, result: "refused-group" });
+    await reply("⚠️ break-glass ops run only in your private chat with the bot; nothing ran");
+    return;
+  }
   // restart (HIMMEL-1272) is executed IN THIS PROCESS, not by auto-action.sh: rung 1
   // must exit the caller, and rung 2's relaunch has to outlive the processes it
   // kills. ORDERING IS LOAD-BEARING — ack, then audit, THEN fire. The reply is an

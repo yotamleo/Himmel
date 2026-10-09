@@ -178,13 +178,15 @@ capability or second factor.
 `/restart-bridge`. Each is off until named individually in
 `TELEGRAM_AUTO_ACTIONS`. Every op except `/station-status` runs only after the
 operator sends back a one-time `/confirm <code>`, in the same chat within 5
-minutes.
+minutes. Break-glass ops and their `/confirm` run only in the operator's
+private chat with the bot, never in a group.
 
-- `/revert-main` merges its revert with `--admin`: that is break-glass, and it
-  is operator-initiated, confirm-coded and audited.
+- `/revert-main` reverts only the PR that is main's current HEAD, and merges
+  its revert with `--admin`: that is break-glass, and it is
+  operator-initiated, confirm-coded and audited.
 - `/launch-leg --hook-bypass` narrowly reverses HIMMEL-4905 for legs. It
-  exports only `HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1`, for a manifest leg or a
-  sha-recorded launcher.
+  exports only `HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1`, and only for a
+  sha256-recorded launcher; a manifest leg is refused with it.
 - Lockout recovery is `/revert-main <pr>` then `/repin-hooks`.
 - `/allow-rule` is deferred to HIMMEL-5048.
 
