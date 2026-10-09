@@ -1685,6 +1685,31 @@ for v in \
     'git grep --extended-regexp -e .'; do
     run "HIMMEL-4958 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# HIMMEL-5095: a capital O after a value-taking short option in a cluster is
+# part of that option's value (git's parse-options), not the pager flag.
+# shellcheck disable=SC2016 # literal payloads, never expanded here
+for v in \
+    'git grep -ceFOO' \
+    'git grep -eOverflow' \
+    'git commit -m"Fix Overflow"' \
+    'git commit -mOops' \
+    'git stash push -mOld' \
+    'git checkout -bOld-fix' \
+    'git branch -DOld' \
+    'git grep --extended' \
+    'git grep --extended -e . -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5095 attached O in a value [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git grep -iO -e x' \
+    'git grep -iOe x' \
+    'git grep -Obash -e x' \
+    'git grep -ciObash -e x' \
+    'git grep -ObashO -e x' \
+    'git grep -iOe x -- scripts/cr/pr-check-env.sh' \
+    'git commit -Obash'; do
+    run "HIMMEL-5095 O before any value letter [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
 # guarded mention is unsafe, since it can assemble the git word; split the command.
 # shellcheck disable=SC2016 # the $( is literal hook input

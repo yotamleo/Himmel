@@ -837,6 +837,26 @@ PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0 PR_TOKFAIL=0 PR_GIT_EXEC=0
 # A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
 PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
+# HIMMEL-5095: true when short-option cluster <word> carries a capital O as a
+# FLAG letter, i.e. before any value-taking letter (git's parse-options: the
+# rest of the cluster after -e/-m/-b/... is that option's value, so the O in
+# `-eOverflow` or `-mOops` is text). -O itself takes the rest as the pager.
+# diff/log/show keep the old any-O reading (an orderfile, never a pager).
+short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
+    local c ch vals=mbBDcF
+    case "$1" in --* | -) return 1 ;; -*) ;; *) return 1 ;; esac
+    case "$2" in
+        diff | log | show) case "$1" in *O*) return 0 ;; esac; return 1 ;;
+        grep) vals=efABCm ;;
+    esac
+    c=${1#-}
+    while [ -n "$c" ]; do
+        ch=${c:0:1}; c=${c:1}
+        [ "$ch" = O ] && return 0
+        case "$vals" in *"$ch"*) return 1 ;; esac
+    done
+    return 1
+}
 git_mentions_only() { # git_mentions_only <command-word index>
     local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
@@ -859,15 +879,16 @@ git_mentions_only() { # git_mentions_only <command-word index>
         # Refuse these even when the older text classifier cannot see a
         # runner: git aliases/config and helper options can execute operands.
         case "$w" in
-            --oneline) ;;
+            --oneline | --extended | --extended-regexp) ;;
             -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
-                --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; bad=1 ;;
+                --o* | --ext*) PR_GIT_UNSAFE=1; bad=1 ;;
+            *) if short_cluster_has_O "$w" "$sub"; then PR_GIT_UNSAFE=1; bad=1; fi ;;
         esac
         # HIMMEL-4958: an exec/write option is denied whatever the pathspec; a
         # directory or empty pathspec matches guarded scripts without naming them.
         case "$w" in
             # Benign long options that share a prefix with an exec option.
-            --oneline | --on* | --output-indicator-* | --extended-regexp) ;;
+            --oneline | --on* | --output-indicator-* | --extended | --extended-regexp) ;;
             # Only the prefixes of --output and --open-files-in-pager (--ou* would
             # also hit --ours); a bare --o* also hit --others and --objects.
             --exec* | --upload* | --receive* | ext::* | --ext* | --op* | \
@@ -877,9 +898,9 @@ git_mentions_only() { # git_mentions_only <command-word index>
                 if [ -n "$sub" ] && [ "${w#--}" = "$w" ]; then
                     # After the subcommand -c* is a short-flag cluster (grep -c),
                     # not a config option; -O inside it is the pager/orderfile flag.
-                    case "$w" in
-                        *O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
-                    esac
+                    if short_cluster_has_O "$w" "$sub"; then
+                        case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
+                    fi
                 else
                     # Match the config KEY (git folds its case), never the value.
                     # --config-env=KEY=ENVVAR and `--config-env KEY=ENVVAR` carry the key too.
@@ -895,7 +916,9 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     esac
                 fi ;;
             # -O runs a pager only for grep; diff/log/show take it as an orderfile.
-            -O* | -[!-]*O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
+            -*) if short_cluster_has_O "$w" "$sub"; then
+                    case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
+                fi ;;
         esac
         if [ "$dir" = 1 ]; then
             dir=0
