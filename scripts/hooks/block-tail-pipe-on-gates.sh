@@ -61,8 +61,10 @@
 #     same logical line (`gate; echo done`, `gate && x`, `gate || x`): a gate must
 #     be the final segment so the task exit status is the gate's (twice a
 #     background check-ci.sh exit 3 was reported as exit 0). Allowed: the gate as
-#     the last segment, a gate followed only by a redirect, a later segment that
-#     reads `$?`/PIPESTATUS (the prescribed `gate > f 2>&1; echo "RC=$?"` shape),
+#     the last segment, a gate followed only by a redirect, a segment RIGHT AFTER
+#     the gate that reads `$?`/PIPESTATUS (the prescribed `gate > f 2>&1;
+#     echo "RC=$?"` shape; a read past an intervening command sees that command's
+#     status, so it does not count),
 #     a later segment that is itself a gate, a gate that is an
 #     `if`/`elif`/`while`/`until` condition, and closing keywords (`done`, `fi`).
 #     Checked on the ORIGINAL text only (GUARD_UNWRAP_DEPTH=0): guard_unwrap's
@@ -776,7 +778,7 @@ stmt_runs_gate() {
         st=${rest%%|*}; st=${st#&}
         prog=$(invoked_program "$st")
         if [ -n "$prog" ] && [ "$prog" != "$ENV_SPLIT_SENTINEL" ] \
-            && printf '%s' "$prog" | grep -qE "$GATE_RE"; then
+            && grep -qE "$GATE_RE" <<<"$prog"; then
             return 0
         fi
         case "$rest" in *'|'*) rest=${rest#*|} ;; *) return 1 ;; esac
@@ -821,7 +823,11 @@ EOF
                 later=${S[j]}
                 stmt_runs_gate "$later" || later_gates=0
                 # shellcheck disable=SC2016 # a literal `$?` is what is looked for
-                case $later in *'$?'* | *'${?}'* | *PIPESTATUS*) later_status=1 ;; esac
+                # Only the segment right after the gate still sees its status;
+                # anything past an intervening command reads that command's.
+                if [ "$j" -eq "$((i + 1))" ]; then
+                    case $later in *'$?'* | *'${?}'* | *PIPESTATUS*) later_status=1 ;; esac
+                fi
                 j=$((j + 1))
             done
             if [ "$later_gates" = 0 ] && [ "$later_status" = 0 ]; then

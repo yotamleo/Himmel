@@ -947,6 +947,8 @@ deny "2082 gate in a subshell ; echo" '(bash scripts/check-ci.sh 12; echo done)'
 # shellcheck disable=SC2016 # the payload is data for the hook, not for this shell
 deny "2082 gate in a command substitution ; echo" 'RC=$(bash scripts/check-ci.sh 12; echo done)'
 deny "2082 gate ; two more segments" 'bash scripts/check-ci.sh 12; echo a; echo b'
+# shellcheck disable=SC2016 # the payload is data for the hook, not for this shell
+deny "2082 \$? read past an intervening command" 'bash scripts/check-ci.sh 12; echo done; echo "RC=$?"'
 deny "2082 absolute-path gate ; echo" 'bash /home/x/himmel/scripts/check-ci.sh 12; echo done'
 res=$(run_hook "$(j_bash 'bash scripts/check-ci.sh 12; echo done')")
 case $res in
