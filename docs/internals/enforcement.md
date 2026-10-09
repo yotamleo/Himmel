@@ -3150,9 +3150,19 @@ one is GO for it. A verdict for another head is ignored as an earlier round.
 Anything else exits 5 and writes nothing: no files, a free-form line, or an id
 that is not a path segment (`[A-Za-z0-9][A-Za-z0-9._-]*`). The id is still
 signed into the trust mac, so the HMAC domains and merge-on-green's exits 17/21
-are unchanged. Residual: the verdict file is plain text under the handover root,
-which the leg's uid can write, so it proves a GO verdict exists, not that a
-judge wrote it. Like the key residual below, that is HIMMEL-3897's.
+are unchanged. HIMMEL-4984: `write-verdict.sh` ends each record with
+`mac: <64 hex>`, an HMAC under the GO key (domain `himmel-verdict-v1`, message
+`scope|qid|name|sha256(every byte above the mac line)`); `go_verdict_mac_ok`
+refuses an unsigned or edited record, so a hand-written exact-format file no
+longer passes, here or in `review-round.sh` (NO-GO delta, layer-decision and
+scope paths). `go_trust_verdict` also refuses a scope-round record
+(`delta-scope:` / `delta-from:`), and `review-round.sh` binds scope records to
+the branch's PR/branch and lets any NO-GO for the new head block the scope round.
+Records written before this change are unsigned and are refused; re-run
+`write-verdict.sh` for an open PR's judge record. Residual: the key is readable
+by the leg's uid, so a same-uid forger can still sign; it proves a record came
+through the writer's format and key, not who ran it. Like the key residual
+below, that is HIMMEL-3897's.
 
 ### CodeRabbit availability — arm it per repo (HIMMEL-1125)
 

@@ -58,6 +58,12 @@ tmp="$(cd "$tmp" && pwd -P)"
 root="$tmp/root"
 mkdir -p "$root" || exit 1
 export USER_SLUG=tuser
+# HIMMEL-4984: the writer signs with the GO key under $HOME/.config/himmel; a
+# scratch HOME with a fixed key keeps the run off the operator's real one.
+KEYHOME="$tmp/home"
+mkdir -p "$KEYHOME/.config/himmel" || exit 1
+printf '%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef > "$KEYHOME/.config/himmel/go-hmac.key"
+export HOME="$KEYHOME"
 fails=0
 check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 contains() { case "$2" in *"$3"*) echo "ok - $1" ;; *) echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)) ;; esac; }

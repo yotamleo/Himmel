@@ -28,6 +28,15 @@
 #     branch: <name>            (only when --branch is given)
 #
 #     <the evidence file, verbatim>
+#     mac: <64 hex>
+#
+# HIMMEL-4984: the last line signs everything above it with the GO key
+# (go-gate.sh's go_verdict_mac, the himmel-verdict-v1 domain), bound to the
+# record's <user>/<bucket>, qid and name. review-round.sh's scope and NO-GO paths
+# and go.sh --trust-reviewed accept a record only when that mac verifies, so a
+# hand-written exact-format file buys nothing. A GO needs a readable GO key
+# (exit 3 without one); a NO-GO without one is written unsigned: it still vetoes,
+# it buys no delta round.
 #
 # HIMMEL-4928: the `pr:` line sits at a fixed place, two lines after the verdict
 # line, where go.sh --trust-reviewed reads it and refuses a verdict naming
@@ -200,7 +209,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/go-gate.sh
 # shellcheck disable=SC1091
 if ! . "$HERE/../../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1 \
-        || ! declare -F go_resolve_root >/dev/null 2>&1 || ! declare -F go_verdict_scope >/dev/null 2>&1; then
+        || ! declare -F go_resolve_root >/dev/null 2>&1 || ! declare -F go_verdict_scope >/dev/null 2>&1 \
+        || ! declare -F go_verdict_mac >/dev/null 2>&1 || ! declare -F go_key_file >/dev/null 2>&1; then
     echo "write-verdict: cannot load scripts/lib/go-gate.sh - refusing" >&2
     exit 3
 fi
@@ -321,8 +331,29 @@ if ! {
     printf 'pr: %s\n' "$PR" &&
     { [ -z "$BRANCH" ] || printf 'branch: %s\n' "$BRANCH"; } &&
     printf '\n' &&
-    cat "$EVIDENCE"
-} > "$tmpf" || ! mv -f "$tmpf" "$TARGET"; then
+    cat "$EVIDENCE" &&
+    # HIMMEL-4984: the body ends in a newline, so the mac line is a line of its own.
+    { [ -z "$(tail -c 1 "$EVIDENCE")" ] || printf '\n'; }
+} > "$tmpf"; then
+    echo "write-verdict: writing '$TARGET' failed" >&2
+    exit 5
+fi
+# HIMMEL-4984: sign every byte above the mac line with the GO key, bound to this
+# record's scope, qid and name; a record without a valid mac buys no round and
+# no merge trust, so a key that cannot sign refuses the write.
+if MAC=$(go_verdict_mac "$SCOPE" "$QID" "$NAME" < "$tmpf"); then
+    SIGNED=1
+elif [ "$ANSWER" = NO-GO ]; then
+    # A NO-GO only narrows (HIMMEL-4714): written unsigned it still vetoes, it just buys no round.
+    echo "write-verdict: warning - NO-GO written without a mac (no readable GO key); it vetoes but buys no delta round" >&2
+    SIGNED=0
+else
+    echo "write-verdict: cannot sign the verdict - no readable GO key at $(go_key_file) (go.sh mints it on the console's first GO), or openssl is missing; nothing written" >&2
+    exit 3
+fi
+if { [ "$SIGNED" -ne 1 ] || printf 'mac: %s\n' "$MAC" >> "$tmpf"; } && mv -f "$tmpf" "$TARGET"; then
+    :
+else
     echo "write-verdict: writing '$TARGET' failed" >&2
     exit 5
 fi

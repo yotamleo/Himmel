@@ -1056,7 +1056,20 @@ vroot="$tmp/hroot"
 mkdir -p "$vroot"
 HANDOVER_DIR="$vroot" USER_SLUG=tuser
 export HANDOVER_DIR USER_SLUG
+# HIMMEL-4984: records carry a mac under the GO key; the fixture gets its own.
+mkdir -p "$tmp/jhome/.config/himmel"
+printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n' > "$tmp/jhome/.config/himmel/go-hmac.key"
+chmod 600 "$tmp/jhome/.config/himmel/go-hmac.key"
+HOME="$tmp/jhome"
+export HOME
 vscope="$vroot/tuser/fx/verdicts"
+# resign <qid> <file>: re-mac a record the test edited to model an older shape.
+resign() {
+    local rs_body rs_mac
+    rs_body="$(sed '/^mac: /d' "$2"; printf x)"; rs_body="${rs_body%x}"
+    rs_mac="$(printf '%s' "$rs_body" | bash -c '. "$1"; go_verdict_mac "$2" "$3" "$4"' _ "$fx/scripts/lib/go-gate.sh" tuser/fx "$1" "$(basename "$2" .md)")" || fail "resign $1"
+    { printf '%s' "$rs_body"; printf 'mac: %s\n' "$rs_mac"; } > "$2"
+}
 # The writer takes evidence only from /tmp/claude-<uid>/ (HIMMEL-4714).
 jscratch="/tmp/claude-$(id -u)"
 [ -d "$jscratch" ] || mkdir -m 700 "$jscratch" || fail "cannot create $jscratch"
@@ -1101,7 +1114,7 @@ assert_has "$jn3_out" "pr-check: delta round 5 on judgenogo (from $jn_fix)" "the
 # branch: line when present); a GO, another head, another PR, a record with no
 # pr: line, or an unresolvable PR buys no delta round.
 printf 'class: tool-defaults\n\nthe fix does not hold\n' > "$jev/judge-evidence.md"
-for pb_case in pb-accept pb-branch-ok pb-go pb-other-head pb-other-pr pb-no-pr-line pb-gh-fails pb-other-branch; do
+for pb_case in pb-accept pb-branch-ok pb-go pb-other-head pb-other-pr pb-no-pr-line pb-gh-fails pb-other-branch pb-unsigned pb-edited; do
     three_rounds "$pb_case" clean
     pb_r3="$cap_r3_head"
     fix_commit "$pb_case"
@@ -1119,10 +1132,15 @@ for pb_case in pb-accept pb-branch-ok pb-go pb-other-head pb-other-pr pb-no-pr-l
         bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$pb_case" "$pb_word" "$pb_head" \
         --pr "$pb_pr" ${pb_branch:+--branch "$pb_branch"} --evidence-file "$jev/judge-evidence.md" \
         >/dev/null 2>"$tmp/judge-$pb_case.err" || fail "judge writes $pb_case"
+    # HIMMEL-4984: a hand-copied exact-format record (no mac) or an edited one.
+    [ "$pb_case" != pb-unsigned ] || sed -i.bak '/^mac: /d' "$vscope/$pb_case/judge.md"
+    [ "$pb_case" != pb-edited ] || sed -i.bak 's/does not hold/holds/' "$vscope/$pb_case/judge.md"
+    rm -f "$vscope/$pb_case/judge.md.bak"
     if [ "$pb_case" = pb-no-pr-line ]; then
         # Model a record written before HIMMEL-4928 added the pr: line.
         sed -i.bak '/^pr: /d' "$vscope/$pb_case/judge.md"
         rm -f "$vscope/$pb_case/judge.md.bak"
+        resign "$pb_case" "$vscope/$pb_case/judge.md"
     fi
     pb_rc=0
     pb_out="$(GH_PR_RC="$pb_gh" start_round "$cap_fix_head" clean "$pb_case")" || pb_rc=$?
@@ -1158,6 +1176,8 @@ for pb_case in pv-bound pv-gh-fails pv-no-pr-line pv-other-pr pv-other-branch; d
     if [ "$pb_case" = pv-no-pr-line ]; then
         sed -i.bak '/^pr: /d' "$vscope/$pb_case/judge.md" "$vscope/$pb_case/judge-$pb_r3.md"
         rm -f "$vscope/$pb_case/"*.bak
+        resign "$pb_case" "$vscope/$pb_case/judge.md"
+        resign "$pb_case" "$vscope/$pb_case/judge-$pb_r3.md"
     fi
     pb_rc=0
     pb_out="$(GH_PR_RC="$pb_gh" start_round "$cap_fix_head" clean "$pb_case")" || pb_rc=$?
@@ -1215,6 +1235,7 @@ for class_case in different-class-allowed layer-decision-unlocks other-repeat-re
         # Model a record written before class: existed, retaining its stamp.
         sed -i.bak '/^class:/d' "$vscope/$class_case-first/judge.md"
         rm -f "$vscope/$class_case-first/judge.md.bak"
+        resign "$class_case-first" "$vscope/$class_case-first/judge.md"
     fi
     cc_out="$(start_round "$cc_second" clean "$class_case")"; cc_rc=$?
     assert_eq "$cc_rc" "0" "$class_case first round setup"
@@ -1549,6 +1570,37 @@ printf '# VERDICT sg-1 - judge\n\n**GO** for head `%s`.\n\ndelta-scope: test-onl
 sg_rc=0; start_round "$sg_head" clean scopeforge >/dev/null || sg_rc=$?
 assert_eq "$sg_rc" "8" "a hand-written scope record is refused"
 rm -rf "$vscope/sg-1"
+
+# HIMMEL-4984: a record admits a scope round only when it carries a valid mac
+# and binds to this branch and PR; any NO-GO for the new head blocks it.
+for sx_case in sx-ok sx-unsigned sx-edited sx-other-pr sx-other-branch sx-nogo-beside; do
+    three_rounds "$sx_case" clean
+    sx_r3="$cap_r3_head"
+    scope_commit "$sx_case" "tests/test-$sx_case.sh"
+    sx_head="$scope_head"
+    sx_want=8
+    printf 'delta-scope: test-only\ndelta-from: %s\n\nthe delta changes no production path\n' "$sx_r3" > "$jev/judge-evidence.md"
+    sx_pr=1 sx_branch=""
+    case "$sx_case" in
+        sx-ok) sx_want=0 ;;
+        sx-other-pr) sx_pr=2 ;;
+        sx-other-branch) sx_branch=some-other-branch ;;
+    esac
+    env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_RELAY CLAUDE_CODE_SESSION_ID=judge-sess-4984 \
+        bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$sx_case" GO "$sx_head" \
+        --pr "$sx_pr" ${sx_branch:+--branch "$sx_branch"} --evidence-file "$jev/judge-evidence.md" \
+        >/dev/null 2>"$tmp/judge-$sx_case.err" || fail "judge writes $sx_case"
+    case "$sx_case" in
+        sx-unsigned) sed -i.bak '/^mac: /d' "$vscope/$sx_case/judge.md"; rm -f "$vscope/$sx_case/judge.md.bak" ;;
+        sx-edited) sed -i.bak 's/no production path/no prod/' "$vscope/$sx_case/judge.md"; rm -f "$vscope/$sx_case/judge.md.bak" ;;
+        sx-nogo-beside)
+            printf 'class: tool-defaults\n\na NO-GO for the same head\n' > "$jev/judge-evidence.md"
+            judge "$sx_case-nogo" NO-GO "$sx_head" ;;
+    esac
+    sx_rc=0; start_round "$sx_head" clean "$sx_case" >/dev/null || sx_rc=$?
+    assert_eq "$sx_rc" "$sx_want" "$sx_case"
+    [ "$sx_want" = 0 ] || assert_eq "$(cat "$git_dir/cr-review-rounds/$sx_case.round")" "3" "$sx_case leaves counter unchanged"
+done
 
 # An unknown scope word is refused.
 three_rounds scopeword clean

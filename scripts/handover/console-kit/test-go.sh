@@ -27,7 +27,7 @@ trap 'rm -rf "$tmp"' EXIT
 tmp="$(cd "$tmp" && pwd)"
 # Sections 14-15 run after section 13 sources go-gate.sh, which assigns its
 # own `tmp`; name their dirs here so nothing below reads `$tmp` past that point.
-ROOT14="$tmp/root14"; ROOT15="$tmp/root15"; ROOT16="$tmp/root16"
+ROOT14="$tmp/root14"; ROOT15="$tmp/root15"; ROOT16="$tmp/root16"; ROOT18="$tmp/root18"
 # HIMMEL-3543: go.sh mints its GO key under $HOME/.config/himmel — keep it off
 # the operator's real key.
 export HOME="$tmp/home"; mkdir -p "$HOME"
@@ -78,9 +78,21 @@ contains() { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: outpu
 # verdict <root> <qid> <verdict line> [<file name>] - a judge's verdict file,
 # as docs/handover/verdict-template.md lays it out.
 verdict() {
+  local vf="$1/$VSCOPE/verdicts/$2/${4:-HIMMEL-1-judge-$2}.md" vmac
   mkdir -p "$1/$VSCOPE/verdicts/$2"
-  printf '# VERDICT %s - judge\n\n## Reason (scope asked)\n\nq\n\n## Verdict\n\n%s\n\npr: %s\n\nreason\n\n## Evidence checked\n\ne\n' \
-    "$2" "$3" "${VPR:-83}" > "$1/$VSCOPE/verdicts/$2/${4:-HIMMEL-1-judge-$2}.md"
+  printf '# VERDICT %s - judge\n\n## Reason (scope asked)\n\nq\n\n## Verdict\n\n%s\n\npr: %s\n\nreason\n\n## Evidence checked\n\ne\n%s' \
+    "$2" "$3" "${VPR:-83}" "${VEXTRA:-}" > "$vf"
+  # HIMMEL-4984: a record counts only with write-verdict.sh's mac (VSIGN=0 models a hand-written one).
+  [ "${VSIGN:-1}" = 1 ] || return 0
+  vsign "$2" "$vf"
+}
+# vsign <qid> <file> - append write-verdict.sh's mac line to a hand-built record.
+vsign() {
+  local vmac
+  mkdir -p "$HOME/.config/himmel"
+  [ -s "$HOME/.config/himmel/go-hmac.key" ] || printf '%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef > "$HOME/.config/himmel/go-hmac.key"
+  vmac="$(cat "$2" | bash -c '. "$1"; go_verdict_mac "$2" "$3" "$4"' _ "$HERE/../../lib/go-gate.sh" "$VSCOPE" "$1" "$(basename "$2" .md)")" || { echo "FAIL: cannot sign $2" >&2; return 1; }
+  printf 'mac: %s\n' "$vmac" >> "$2"
 }
 
 # HIMMEL-4589: a trust verdict counts only under <user>/<bucket>, the user slug
@@ -396,6 +408,7 @@ mkdir -p "$ROOT15/$VSCOPE/verdicts/J13"
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 printf '# VERDICT J13 - judge\r\n\r\n## Verdict\r\n\r\n**GO** for head `%s`.\r\n\r\npr: 83\r\n\r\nreason\r\n' "$SHA" \
   > "$ROOT15/$VSCOPE/verdicts/J13/HIMMEL-1-judge-J13.md"
+vsign J13 "$ROOT15/$VSCOPE/verdicts/J13/HIMMEL-1-judge-J13.md"
 rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J13 83 "$SHA" >/dev/null 2>&1 || rc=$?
 check    "3832: a CRLF verdict file -> exit 0" "$rc" "0"
 
@@ -453,13 +466,37 @@ rm -rf "$ROOT17/.locks"
 mkdir -p "$ROOT17/$VSCOPE/verdicts/L2"
 # shellcheck disable=SC2016  # the backticks are the verdict line literal text
 printf '# VERDICT L2 - judge\n\n## Verdict\n\n**GO** for head `%s`.\n\nreason\n' "$SHA" > "$ROOT17/$VSCOPE/verdicts/L2/HIMMEL-1-judge-L2.md"
+vsign L2 "$ROOT17/$VSCOPE/verdicts/L2/HIMMEL-1-judge-L2.md"
 t17 "a legacy GO with no pr: line" L2 90 "names no PR"
 mkdir -p "$ROOT17/$VSCOPE/verdicts/L3"
 # shellcheck disable=SC2016  # the backticks are the verdict line literal text
 printf '# VERDICT L3 - judge\n\n## Verdict\n\n**GO** for head `%s`.\n\nreason\npr: 90\n' "$SHA" > "$ROOT17/$VSCOPE/verdicts/L3/HIMMEL-1-judge-L3.md"
+vsign L3 "$ROOT17/$VSCOPE/verdicts/L3/HIMMEL-1-judge-L3.md"
 t17 "a pr: line in the body is not the field" L3 90 "names no PR"
 VPR=90; verdict "$ROOT17" L4 "**NO-GO** for head \`$SHA\`."
 t17 "a NO-GO naming another PR still vetoes" L4 91 "NO-GO for head"
+VPR=
+
+# --- 18. HIMMEL-4984: a record counts as merge trust only with its mac --------
+mkdir -p "$ROOT18"
+t18() {  # <label> <qid> - expect a refusal, nothing written
+  local rc=0
+  out="$(HANDOVER_DIR="$ROOT18" bash "$SCRIPT" --trust-reviewed "$2" 95 "$SHA" 2>&1)" || rc=$?
+  check "4984: $1 -> exit 5" "$rc" "5"
+  check "4984: $1 -> nothing written" "$(find "$ROOT18/.locks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+}
+VPR=95
+VSIGN=0 verdict "$ROOT18" M1 "**GO** for head \`$SHA\`."
+t18 "a hand-written exact-format GO (no mac)" M1
+verdict "$ROOT18" M2 "**GO** for head \`$SHA\`."
+sed -i.bak 's/^reason$/reasoN/' "$ROOT18/$VSCOPE/verdicts/M2/HIMMEL-1-judge-M2.md"
+rm -f "$ROOT18/$VSCOPE/verdicts/M2/"*.bak
+t18 "an edited evidence byte invalidates the mac" M2
+VEXTRA=$'\ndelta-scope: test-only\ndelta-from: 0123456789abcdef0123456789abcdef01234566\n' verdict "$ROOT18" M3 "**GO** for head \`$SHA\`."
+t18 "a signed scope-round record is not merge trust" M3
+verdict "$ROOT18" M4 "**GO** for head \`$SHA\`."
+rc=0; HANDOVER_DIR="$ROOT18" bash "$SCRIPT" --trust-reviewed M4 95 "$SHA" >/dev/null 2>&1 || rc=$?
+check "4984: a signed GO still satisfies --trust-reviewed -> exit 0" "$rc" "0"
 VPR=
 
 echo "---"

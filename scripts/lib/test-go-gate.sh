@@ -282,6 +282,30 @@ rc=0; GIT_CEILING_DIRECTORIES="$REAL_A" bash -c 'unset -f _go_in_harness 2>/dev/
     _ "$GO_GATE_SRC" "$REAL_A_SUB" "$REAL_A" || rc=$?
 [ "$rc" -eq 0 ] || fail "5c: an exported GIT_CEILING_DIRECTORIES (anchor top) flipped _go_in_harness(REAL_A/handovers, REAL_A) to false (rc=$rc) -- HIMMEL-3572 round 2"
 
+# --- 6. HIMMEL-4984: go_msg_mac signs verdict records; go_mac is unchanged ---
+PINHOME="$ROOT/pinhome"; mkdir -p "$PINHOME/.config/himmel"
+printf '%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef > "$PINHOME/.config/himmel/go-hmac.key"
+PINSHA=$(printf '1%.0s' $(seq 1 40))
+pin_mac() { HOME="$PINHOME" bash -c 'unset -f go_mac go_msg_mac 2>/dev/null || true; . "$1"; shift; "$@"' _ "$GO_GATE_SRC" "$@"; }
+# 6a. Pin: go_mac output is byte-identical to the pre-refactor values.
+[ "$(pin_mac go_mac 92 "$PINSHA" o/r)" = b00594fd457b1bbf8c73c1a82079acc0fb894ae7d6d756833912b89961184a07 ] \
+    || fail "6a: go_mac (plain) no longer matches its pinned value"
+[ "$(pin_mac go_mac 92 "$PINSHA" o/r rev-1)" = 08e2b5dd55947a3a812d5dd7c624cac40cab1d881daf4c8fdf9cd55e63a83833 ] \
+    || fail "6a: go_mac (trust-reviewed) no longer matches its pinned value"
+# 6b. go_msg_mac is a real HMAC-SHA256 over "<domain>|<msg>" with the GO key.
+want=$(printf 'himmel-verdict-v1|a|b' | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$(cat "$PINHOME/.config/himmel/go-hmac.key")" | awk '{print $NF}')
+[ "$(pin_mac go_msg_mac himmel-verdict-v1 'a|b')" = "$want" ] || fail "6b: go_msg_mac is not HMAC-SHA256 over <domain>|<msg>"
+# 6c. Domains are separate: a verdict mac never equals a GO mac, whatever the message.
+v=$(pin_mac go_msg_mac himmel-verdict-v1 "o/r|92|$PINSHA")
+[ -n "$v" ] && [ "$v" != "$(pin_mac go_mac 92 "$PINSHA" o/r)" ] || fail "6c: a verdict mac equals a GO mac"
+g=$(pin_mac go_msg_mac himmel-go-v2 "o/r|92|$PINSHA")
+[ "$g" = "$(pin_mac go_mac 92 "$PINSHA" o/r)" ] && [ "$g" != "$v" ] || fail "6c: the GO domain via go_msg_mac does not stay distinct from the verdict domain"
+# 6d. Only the verdict domain is accepted for a verdict mac; empty domain or msg refuses; no key fails closed.
+rc=0; pin_mac go_msg_mac '' x >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail "6d: an empty domain was signed"
+rc=0; pin_mac go_msg_mac himmel-verdict-v1 '' >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail "6d: an empty message was signed"
+rc=0; HOME="$ROOT/nokey" bash -c '. "$1"; go_msg_mac himmel-verdict-v1 x' _ "$GO_GATE_SRC" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "6d: go_msg_mac signed with no key"
+
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
     exit 0

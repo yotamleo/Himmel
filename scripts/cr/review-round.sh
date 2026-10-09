@@ -14,6 +14,12 @@
 # unchanged) is admitted past the cap without spending the one delta round; a
 # conflict-resolving merge needs a judge GO carrying `delta-scope:
 # merge-resolution` and `delta-from:`, bound like the HIMMEL-4952 scope records.
+# HIMMEL-4984: every verdict record read here (NO-GO delta, layer-decision,
+# scope) must carry write-verdict.sh's mac under the GO key; a hand-written or
+# edited record disqualifies its qid. Scope records also bind to this branch's
+# PR/branch, and any NO-GO for the new head blocks the scope round. The key is
+# readable by the same uid, so the ceiling is a same-uid forger (HIMMEL-3578);
+# a lint-only record still rests on the judge's word.
 # Bash 3.2-safe.
 # Platform guard: requires POSIX Bash 3.2+; on Windows, run under Git Bash.
 set -uo pipefail
@@ -299,6 +305,37 @@ try {
 '
 }
 
+# record_binds <l9> <l10> <l11> - HIMMEL-4632, shared with the HIMMEL-4984 scope
+# path. A record binds to this branch's PR: its `pr:` line (line 10,
+# write-verdict.sh's fixed place) must name the PR gh resolves for the branch,
+# and a `branch:` line (line 11, optional) must name the branch. No pr: line, or
+# no resolvable PR, binds nothing. The binding only picks which records BUY the
+# round: every NO-GO for the head still feeds the HIMMEL-4885 class veto, and an
+# unresolvable PR (pr_want="-") refuses (exit 8) in the caller. The PR is
+# resolved by --head, never `gh pr view <branch>` (a branch named 42 would
+# resolve to PR 42), and bounded: this runs under the counter lock. pr_want
+# caches it for the calling subshell, which must set it to "" first.
+# ponytail: the binding is covered by the record mac (HIMMEL-4984), whose key
+# is same-uid readable (HIMMEL-3578).
+record_binds() {
+    [ -z "$1" ] || return 1
+    case "$2" in 'pr: '[1-9]*) ;; *) return 1 ;; esac
+    case "${2#pr: }" in *[!0-9]*) return 1 ;; esac
+    case "$3" in 'branch: '*) [ "${3#branch: }" = "$branch" ] || return 1 ;; esac
+    if [ -z "$pr_want" ]; then
+        # shellcheck source=scripts/lib/timeout-bin.sh
+        # shellcheck disable=SC1091
+        . "$HIMMEL_ROOT/scripts/lib/timeout-bin.sh" 2>/dev/null || _TIMEOUT_BIN=""
+        pr_want="$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 30} gh pr list --head "$branch" --state open \
+            --json number -q '.[].number' 2>/dev/null)" || pr_want=""
+        case "$pr_want" in ''|0*|*[!0-9]*)
+            echo "review-round: cannot resolve the one open PR for $branch (gh pr list --head) - no judge record is honoured" >&2
+            pr_want="-" ;;
+        esac
+    fi
+    [ "${2#pr: }" = "$pr_want" ]
+}
+
 # HIMMEL-4700: print space-separated "<qid>/<name>" records ruling NO-GO for
 # head $1 (one per qid), in console-kit/write-verdict.sh format, under this repo's
 # verdict scope; rc 1 when there is none. A qid counts only when every record
@@ -328,35 +365,7 @@ judge_nogo_record() (
         dir="$dir/$seg"
         [ -d "$dir" ] && [ ! -L "$dir" ] || exit 1
     done
-    # HIMMEL-4632: a record binds to this branch's PR - its `pr:` line (line
-    # 10, write-verdict.sh's fixed place) must name the PR gh resolves for the
-    # branch, and a `branch:` line (line 11, optional) must name the branch.
-    # No pr: line, or no resolvable PR, binds nothing. The binding only picks
-    # which records BUY the round: every NO-GO for the head still feeds the
-    # HIMMEL-4885 class veto, and an unresolvable PR refuses (exit 8).
-    # The PR is resolved by --head, never `gh pr view <branch>` (a branch named
-    # 42 would resolve to PR 42), and bounded: this runs under the counter lock.
-    # ponytail: the binding is a format check like the stamp (same-uid
-    # ceiling above); HIMMEL-4984's record mac is checked here once it lands.
     pr_want=""
-    record_binds() {
-        [ -z "$1" ] || return 1
-        case "$2" in 'pr: '[1-9]*) ;; *) return 1 ;; esac
-        case "${2#pr: }" in *[!0-9]*) return 1 ;; esac
-        case "$3" in 'branch: '*) [ "${3#branch: }" = "$branch" ] || return 1 ;; esac
-        if [ -z "$pr_want" ]; then
-            # shellcheck source=scripts/lib/timeout-bin.sh
-            # shellcheck disable=SC1091
-            . "$lib/timeout-bin.sh" 2>/dev/null || _TIMEOUT_BIN=""
-            pr_want="$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 30} gh pr list --head "$branch" --state open \
-                --json number -q '.[].number' 2>/dev/null)" || pr_want=""
-            case "$pr_want" in ''|0*|*[!0-9]*)
-                echo "review-round: cannot resolve the one open PR for $branch (gh pr list --head) - no judge NO-GO is honoured" >&2
-                pr_want="-" ;;
-            esac
-        fi
-        [ "${2#pr: }" = "$pr_want" ]
-    }
     re_session='^writer-session: [A-Za-z0-9-]+$'
     re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
     hits="" check_hits=""
@@ -406,6 +415,9 @@ judge_nogo_record() (
             fi
             word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
             [ -n "$word" ] || { bad=1; break; }
+            # HIMMEL-4984: a record buys a round only when write-verdict.sh signed
+            # it; one hand-written or edited disqualifies its qid.
+            go_verdict_mac_ok "$f" "$scope" "$qid" "$name" || { bad=1; break; }
             if [ "$word" = "NO-GO $want" ]; then
                 [ -n "$hit" ] || hit="$qid/$name"
                 if [ -z "$bound" ] && record_binds "$l9" "$l10" "$l11"; then bound="$qid/$name"; fi
@@ -491,6 +503,19 @@ judge_scope_record() (
     done
     re_session='^writer-session: [A-Za-z0-9-]+$'
     re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+    pr_want=""
+    # HIMMEL-4984: any NO-GO for the new head, in any qid (consumed or not, signed
+    # or not - a NO-GO only narrows), blocks the scope round: a GO beside it is
+    # not the judges' last word.
+    for nf in "$dir"/*/*.md; do
+        [ -f "$nf" ] && [ ! -L "$nf" ] || continue
+        nl8=$(sed -n '8p' "$nf" 2>/dev/null | tr -d '\r')
+        case "$nl8" in
+            "**NO-GO** for head \`$want\`"|"**NO-GO** for head \`$want\`.")
+                echo "review-round: ${nf#"$dir"/} rules NO-GO for $want - the scope round is refused (HIMMEL-4984)" >&2
+                exit 8 ;;
+        esac
+    done
     for qdir in "$dir"/*/; do
         qdir="${qdir%/}"
         qid="${qdir##*/}"
@@ -511,16 +536,25 @@ judge_scope_record() (
             if [ -L "$f" ] || [ ! -f "$f" ]; then bad=1; break; fi
             name="${f##*/}"; name="${name%.md}"
             case "$name" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) bad=1; break ;; esac
-            l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8=""
+            l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8="" l9="" l10="" l11=""
             { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4
-              IFS= read -r l5; IFS= read -r l6; IFS= read -r l7; IFS= read -r l8; } < "$f" 2>/dev/null
+              IFS= read -r l5; IFS= read -r l6; IFS= read -r l7; IFS= read -r l8
+              IFS= read -r l9; IFS= read -r l10; IFS= read -r l11; } < "$f" 2>/dev/null
             if [ "$l1" != "# VERDICT $qid - $name" ] || [ -n "$l2$l5$l7" ] || [ "$l6" != "## Verdict" ] \
                 || ! [[ $l3 =~ $re_session ]] || ! [[ $l4 =~ $re_written ]]; then
                 bad=1; break
             fi
             word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
             [ -n "$word" ] || { bad=1; break; }
+            # HIMMEL-4984: signed by write-verdict.sh, or the qid is disqualified.
+            go_verdict_mac_ok "$f" "$scope" "$qid" "$name" || { bad=1; break; }
             if [ -n "$hit" ] || [ "$word" != "GO $want" ]; then continue; fi
+            # HIMMEL-4984: the record names this branch's PR (and branch, when it
+            # carries one); a record for another PR or branch is refused.
+            if ! record_binds "" "$l10" "$l11"; then
+                [ "$pr_want" != "-" ] || exit 8
+                continue
+            fi
             evidence="$(sed -n '9,$p' "$f")"
             n_from="$(printf '%s\n' "$evidence" | grep -cE '^delta-from: ')"
             n_from_ok="$(printf '%s\n' "$evidence" | grep -cFx "delta-from: $from")"

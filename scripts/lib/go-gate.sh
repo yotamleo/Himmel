@@ -167,7 +167,7 @@ go_verdict_scope() (
 # vetoes whatever PR it names (it only narrows). An empty <pr> refuses.
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 go_trust_verdict() {
-    local root="$1" qid="$2" sha="$3" anchor="${4:-}" pr="${5:-}" f line word head go=0 scope vpr
+    local root="$1" qid="$2" sha="$3" anchor="${4:-}" pr="${5:-}" f line word head go=0 scope vpr name
     case "$qid" in
         [A-Za-z0-9]*) ;;
         *) qid="" ;;
@@ -198,6 +198,18 @@ go_trust_verdict() {
         [ "$head" = "$sha" ] || continue
         if [ "$word" != "GO" ]; then
             printf 'the verdict in %s is NO-GO for head %s.\n' "$f" "$sha"
+            return 2
+        fi
+        # HIMMEL-4984: a GO counts only when write-verdict.sh signed it, and a
+        # post-cap scope record (delta-scope:) is round-admission evidence,
+        # never merge trust.
+        name=${f##*/}; name=${name%.md}
+        if ! go_verdict_mac_ok "$f" "$scope" "$qid" "$name"; then
+            printf 'the verdict in %s carries no valid mac (HIMMEL-4984) — only a record written by write-verdict.sh counts; the judge rewrites it.\n' "$f"
+            return 2
+        fi
+        if grep -qE '^delta-(scope|from): ' "$f" 2>/dev/null; then
+            printf 'the verdict in %s is a post-cap scope record (delta-scope:/delta-from:), not merge trust (HIMMEL-4984) — pass the qid of a judge that ruled GO on the PR itself.\n' "$f"
             return 2
         fi
         vpr=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF && !n { n = NR + 2; next } n && NR == n { print; exit }' \
@@ -351,14 +363,26 @@ go_key_file() {
 # separate domain tag "himmel-go-trust-v1|<nwo>|<pr>|<sha>|<trust-id>", so a
 # trust-reviewed mac never verifies as an ordinary one, nor the reverse.
 go_mac() {
-    local key="" kfile i b hx ipad="" opad="" inner="" nwo="$3" msg
-    if [ -n "${4:-}" ]; then
-        msg="himmel-go-trust-v1|$nwo|$1|$2|$4"
-    else
-        msg="himmel-go-v2|$nwo|$1|$2"
-    fi
-    [ -n "${HOME:-}" ] || return 1
+    local nwo="$3"
     [ -n "$nwo" ] || return 1
+    if [ -n "${4:-}" ]; then
+        go_msg_mac himmel-go-trust-v1 "$nwo|$1|$2|$4"
+    else
+        go_msg_mac himmel-go-v2 "$nwo|$1|$2"
+    fi
+}
+
+# go_msg_mac <domain> <msg> — HIMMEL-4984: HMAC-SHA256(key, "<domain>|<msg>") as
+# 64 lowercase hex on stdout, the body go_mac signs with. The domain tag keeps
+# every use apart: himmel-go-v2 / himmel-go-trust-v1 are go_mac's, and
+# himmel-verdict-v1 signs a write-verdict.sh record, so a verdict mac is never
+# valid as a GO mac or the reverse. rc 1 (nothing printed) on an empty domain or
+# message, no HOME, or the key missing/unreadable/not 64 hex, or no openssl.
+go_msg_mac() {
+    local key="" kfile i b hx ipad="" opad="" inner="" msg
+    [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+    msg="$1|$2"
+    [ -n "${HOME:-}" ] || return 1
     kfile=$(go_key_file)
     [ -f "$kfile" ] && [ -r "$kfile" ] || return 1
     IFS= read -r key < "$kfile" || [ -n "$key" ] || return 1
@@ -385,6 +409,47 @@ go_mac() {
         | openssl dgst -sha256 -binary | od -An -v -tx1 | tr -d ' \n')
     [ "${#inner}" -eq 64 ] || return 1
     printf '%s\n' "$inner"
+}
+
+# --- HIMMEL-4984: verdict records are signed with the GO key ------------------
+# write-verdict.sh ends every record with `mac: <64 hex>`: go_msg_mac under the
+# himmel-verdict-v1 domain over "<user>/<bucket>|<qid>|<name>|<sha256 of every
+# byte above the mac line>". The record's own path (scope, qid, name) is in the
+# message, so a record copied to another qid, name or repo bucket fails, and the
+# body hash covers the verdict, head, pr, branch, class, layer-decision and every
+# evidence byte. Consumers (review-round.sh's scope and NO-GO paths,
+# go_trust_verdict) verify with go_verdict_mac_ok; a record without a valid mac
+# buys nothing.
+# ponytail: same-uid ceiling - the key sits in the operator's HOME like the GO
+# key, so a same-uid process that reads it can sign; the upgrade path is a
+# separate-uid or keyring signer (HIMMEL-3578).
+
+# _go_sha256 — sha256 of stdin as 64 lowercase hex.
+_go_sha256() {
+    local h
+    h=$({ sha256sum 2>/dev/null || shasum -a 256 2>/dev/null || openssl dgst -sha256 -r 2>/dev/null; } | awk '{print $1}') || return 1
+    case "$h" in ''|*[!0123456789abcdef]*) return 1 ;; esac
+    [ "${#h}" -eq 64 ] || return 1
+    printf '%s\n' "$h"
+}
+
+# go_verdict_mac <scope> <qid> <name> — the mac for the record body on stdin.
+go_verdict_mac() {
+    local hash
+    hash=$(_go_sha256) || return 1
+    go_msg_mac himmel-verdict-v1 "$1|$2|$3|$hash"
+}
+
+# go_verdict_mac_ok <file> <scope> <qid> <name> — rc 0 iff the file's last line is
+# `mac: <64 hex>` and equals the mac of every line above it.
+go_verdict_mac_ok() {
+    local got want
+    got=$(tail -n 1 "$1" 2>/dev/null | tr -d '\r')
+    case "$got" in 'mac: '*) got=${got#mac: } ;; *) return 1 ;; esac
+    case "$got" in ''|*[!0123456789abcdef]*) return 1 ;; esac
+    [ "${#got}" -eq 64 ] || return 1
+    want=$(sed '$d' "$1" 2>/dev/null | go_verdict_mac "$2" "$3" "$4") || return 1
+    [ -n "$want" ] && [ "$got" = "$want" ]
 }
 
 # --- HIMMEL-3572 row 1: one root for the GO writer and the gate --------------
