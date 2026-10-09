@@ -701,8 +701,16 @@ check "HIMMEL-1871 round 7: distinct same-head drops share NO ledger key (no gua
 # HIMMEL-3104: the critic DID answer on both refused runs, so CFP keeps the
 # raw response and records one `score` row each (audit evidence the panel
 # refused to certify, not a verdict). Everything else stays out of the ledger.
-check "HIMMEL-1871 round 7: refused runs append NOTHING to the ledger but score rows" \
-    "$(grep -vc '"kind":"score"' "$DIGF_LEDGER" || true)" "0"
+# HIMMEL-1932: the refusal itself is recorded as ONE avail row (deduped on
+# (head, model), so the two refused runs leave one). An avail row is not a
+# finding: round 7's guarantee that nothing can inherit or dedup against a
+# refused run still holds for every other kind.
+check "HIMMEL-1871 round 7: refused runs append NOTHING to the ledger but score rows and the refusal avail row" \
+    "$(grep -vc '"kind":"score"\|"kind":"avail"' "$DIGF_LEDGER" || true)" "0"
+check "HIMMEL-1932: the refusal is recorded as exactly one avail unavailable certify-refused row" \
+    "$(grep -c '"kind":"avail".*"status":"unavailable".*"reason":"certify-refused"' "$DIGF_LEDGER" || true)" "1"
+check "HIMMEL-1932: the refusal row is an avail row, not a finding (no finding row, no guard id)" \
+    "$(grep -c '"kind":"finding"\|citation-guard-' "$DIGF_LEDGER" || true)" "0"
 check "HIMMEL-3104: each refused run that got an answer records one score row" \
     "$(grep -c '"kind":"score"' "$DIGF_LEDGER" || true)" "2"
 

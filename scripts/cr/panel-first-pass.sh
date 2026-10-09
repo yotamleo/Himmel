@@ -50,7 +50,8 @@
 #       step 1.
 #   Every other critic-panel.sh failure fails OPEN to claude-only (this
 #   script still exits 0; panel findings are empty and a loud note went to
-#   stderr).
+#   stderr). Panel exit 6 (HIMMEL-1932, a refusal to certify) gets its own note
+#   instead of the all-critics-failed text.
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
 case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
@@ -223,8 +224,9 @@ PINABORT
         # panel_findings and panel_avail_lines from the first attempt, so a
         # stale first-attempt availability line can never leak into the
         # aggregate. rc=1 after the retry still degrades to claude-only,
-        # loudly (same fail-open contract as below).
-        if command -v rtk >/dev/null 2>&1; then
+        # loudly (same fail-open contract as below). Only rc=1 retries: an
+        # exit-6 refusal is not a diff problem, and a retry would overwrite it.
+        if [ "$panel_rc" -eq 1 ] && command -v rtk >/dev/null 2>&1; then
             # Same captured-base rule as the first attempt (HIMMEL-1984).
             retry_diff=$(rtk proxy git diff "$diff_range" 2>/dev/null) || retry_diff=""
             if [ -n "$retry_diff" ]; then
@@ -250,7 +252,21 @@ PINABORTRETRY
         fi
         if [ "$panel_rc" -ne 0 ]; then
             # rc=1 after retry (or rtk absent / retry-diff empty) - fail-open.
-            echo "critic panel unavailable (all critics failed) - claude-only review" >&2
+            if [ "$panel_rc" -eq 6 ]; then
+                # HIMMEL-1932: exit 6 is a deliberate fail-closed refusal, not
+                # a failed panel. The panel recorded certify-refused on the
+                # ledger, so clear-cr-marker.sh holds this SHA closed. If that
+                # write failed there is nothing to hold, so ABORT instead.
+                case "$panel_avail_lines" in
+                *"could not record certify-refused"*)
+                    echo "/pr-check ABORT - critic-panel.sh exit 6 and the refusal could not be recorded on the CR ledger (HIMMEL-1932), so nothing would hold the CR marker closed. Fix the ledger path and re-run /pr-check from step 1." >&2
+                    exit 7
+                    ;;
+                esac
+                echo "critic panel REFUSED to certify this run (exit 6: the citation-guard digest could not be computed - fix sha256sum/shasum) - claude-only review; the CR marker stays held at this SHA until the panel is re-run on a new HEAD" >&2
+            else
+                echo "critic panel unavailable (all critics failed) - claude-only review" >&2
+            fi
             panel_findings=""
         fi
     fi

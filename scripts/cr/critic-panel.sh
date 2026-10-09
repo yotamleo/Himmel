@@ -2136,6 +2136,17 @@ if [ "$ndb" -gt 0 ]; then
     fi
     if ! printf '%s' "$_guard_digest" | grep -qE '^[0-9a-f]{64}$'; then
         echo "critic-panel.sh: FATAL cannot compute the citation-guard SHA-256 id (sha256sum/shasum missing or failing) — refusing to certify this run (exit 6). Blocking findings were rejected by the citation validator; fix the digest tooling and re-run." >&2
+        # HIMMEL-1932: leave the refusal on the ledger so clear-cr-marker.sh
+        # can hold the gate closed at this head. It is an avail row, never a
+        # finding or a score: nothing can inherit or dedup against it, so the
+        # no-rows guarantee above still holds for every finding. Best-effort:
+        # a failed append only costs the visibility, the exit stays 6.
+        if [ "${_SKIP_LEDGER:-0}" != "1" ]; then
+            CR_LEDGER="$PANEL_LEDGER" bash "$LEDGER_APPEND" avail --branch "$REVIEW_BRANCH" --head "$REVIEW_HEAD" \
+                --model critic-panel --status unavailable --reason certify-refused \
+                --detail "citation-guard digest unavailable (sha256sum/shasum); run refused, exit 6" >/dev/null \
+                || echo "critic-panel.sh: could not record certify-refused on the CR ledger" >&2
+        fi
         exit 6
     fi
     citation_guard_id="citation-guard-$(printf '%.16s' "$_guard_digest")"
