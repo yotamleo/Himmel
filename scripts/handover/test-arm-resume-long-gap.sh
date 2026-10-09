@@ -715,12 +715,18 @@ assert_contains "LG6b near arm records long_gap=0" '"long_gap":"0"' "$tline"
 #       refuses (rc 6); with the store removed the same arm proceeds, so the
 #       rc 6 is the stub entry and not an artefact of the host scheduler.
 # ---------------------------------------------------------------------------
+#       Windows reads schtasks, not the cron table, so the rc 6 half is cron-only.
 HO=$(make_handover "$WORK_REPO")
-printf '%d %d * * * true # HIMMEL-Other-Cadence\n' "$((10#${FAR_HHMM#*:}))" "$((10#${FAR_HHMM%:*}))" > "$TMP/sched-stub.crontab"
-out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$FAR_HHMM" --handover "$HO" --long-gap --dry-run 2>&1)
-rc=$?
-assert_rc "LG-hermetic stub crontab entry at the same minute refuses (rc 6)" 6 "$rc"
-rm -f "$TMP/sched-stub.crontab"
+case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
+    msys*|cygwin*|win32*|MINGW*) ;;
+    *)
+        printf '%d %d * * * true # HIMMEL-Other-Cadence\n' "$((10#${FAR_HHMM#*:}))" "$((10#${FAR_HHMM%:*}))" > "$TMP/sched-stub.crontab"
+        out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$FAR_HHMM" --handover "$HO" --long-gap --dry-run 2>&1)
+        rc=$?
+        assert_rc "LG-hermetic stub crontab entry at the same minute refuses (rc 6)" 6 "$rc"
+        rm -f "$TMP/sched-stub.crontab"
+        ;;
+esac
 out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$FAR_HHMM" --handover "$HO" --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "LG-hermetic control: same arm with the stub entry removed proceeds (rc 0)" 0 "$rc"
