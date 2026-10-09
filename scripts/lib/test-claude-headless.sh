@@ -85,7 +85,7 @@ run_sut() {
   # $1 = fake bin, $2 = artifact path, extra args follow
   local bin="$1" artifact="$2"; shift 2
   FAKE_ARTIFACT="$artifact" HIMMEL_CLAUDE_BIN="$bin" bash "$SUT" \
-    --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" \
+    --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" \
     --cwd "$WORKTREE" --artifact "$artifact" --permission-mode default \
     --prompt-file "$PROMPT_FILE" "$@"
 }
@@ -135,7 +135,7 @@ rm -f "$LIVE_DIR"/*.json
 # --- 4: bypassPermissions is refused before anything is written ---
 ART4="$W/artifact4.txt"
 FAKE_ARTIFACT="$ART4" HIMMEL_CLAUDE_BIN="$FAKE_OK" bash "$SUT" \
-  --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$ART4" --permission-mode bypassPermissions --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
 RC4=$?
 check "bypassPermissions refused (nonzero)" "1" "$RC4"
@@ -147,7 +147,7 @@ jq -n '{id:"a", role:"r", worktree:"w", ticket:"t", status:"dispatched"}' > "$LI
 jq -n '{id:"b", role:"r", worktree:"w", ticket:"t", status:"running"}' > "$LIVE_DIR/b.json"
 ART5="$W/artifact5.txt"
 OUT5="$(HIMMEL_DISPATCH_MAX_CONCURRENT=2 FAKE_ARTIFACT="$ART5" HIMMEL_CLAUDE_BIN="$FAKE_OK" bash "$SUT" \
-  --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$ART5" --permission-mode default --prompt-file "$PROMPT_FILE" 2>&1)"
 RC5=$?
 check "concurrency cap refused (nonzero)" "1" "$RC5"
@@ -167,7 +167,7 @@ rm -f "$LIVE_DIR"/*.json
 printf '{"five_hour":{"utilization":95},"seven_day":{"utilization":20},"primaries_refreshed_at":%s}\n' "$(date +%s)" > "$BANK_CACHE"
 ART7="$W/artifact7.txt"
 FAKE_ARTIFACT="$ART7" HIMMEL_CLAUDE_BIN="$FAKE_OK" bash "$SUT" \
-  --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$ART7" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
 RC7=$?
 check "bank-preflight refusal blocks dispatch (nonzero)" "1" "$RC7"
@@ -178,7 +178,7 @@ mk_bank_cache
 # --- 7: --max-turns validation ---
 ART8="$W/artifact8.txt"
 FAKE_ARTIFACT="$ART8" HIMMEL_CLAUDE_BIN="$FAKE_OK" bash "$SUT" \
-  --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$ART8" --permission-mode default --prompt-file "$PROMPT_FILE" --max-turns 1 >/dev/null 2>&1
 RC8=$?
 check "max-turns 1 rejected" "1" "$RC8"
@@ -191,7 +191,7 @@ jq -n '{id:"d2", status:"dispatched"}' > "$LIVE_DIR/d2.json"
 jq -n '{id:"d3", status:"dispatched"}' > "$LIVE_DIR/d3.json"
 ART9="$W/artifact9.txt"
 HIMMEL_DISPATCH_MAX_CONCURRENT=notanumber FAKE_ARTIFACT="$ART9" HIMMEL_CLAUDE_BIN="$FAKE_OK" bash "$SUT" \
-  --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$ART9" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
 RC9=$?
 check "malformed cap falls back to default, does not fail open" "1" "$RC9"
@@ -226,7 +226,7 @@ EOF
 chmod +x "$FAKE_STDIN_CHECK"
 ART11="$W/artifact11.txt"
 printf 'write it\n' | FAKE_ARTIFACT="$ART11" HIMMEL_CLAUDE_BIN="$FAKE_STDIN_CHECK" bash "$SUT" \
-  --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$ART11" --permission-mode default >/dev/null 2>&1
 RC11=$?
 check "stdin-mode prompt reaches the backgrounded invocation" "0" "$RC11"
@@ -248,7 +248,7 @@ echo '{"is_error":false,"result":"done","session_id":"fake-dir","permission_deni
 EOF
 chmod +x "$FAKE_DIR_UPDATE"
 FAKE_ARTIFACT="$ARTDIR" HIMMEL_CLAUDE_BIN="$FAKE_DIR_UPDATE" bash "$SUT" \
-  --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$ARTDIR" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
 RC12=$?
 ROW12="$(ls "$LIVE_DIR"/*.json 2>/dev/null | head -1)"
@@ -398,7 +398,7 @@ EOF
   ART15="$W/artifact15.txt"
   ARGV_OUT="$W/argv-dump15.txt"
   FAKE_ARGV_OUT="$ARGV_OUT" FAKE_ARTIFACT="$ART15" HIMMEL_CLAUDE_BIN="$FAKE_ARGV_DUMP" bash "$SUT" \
-    --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+    --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" --cwd "$WORKTREE" \
     --artifact "$ART15" --permission-mode default --prompt-file "$PROMPT_FILE" \
     --settings "$SETTINGS_FILE" >/dev/null 2>&1
   RC15=$?
@@ -427,7 +427,7 @@ EOF
 chmod +x "$FAKE_ARGV16"
 SYS16="$W/system16.md"; echo "you are a reviewer" > "$SYS16"
 FAKE_ARGV_OUT="$W/argv16.txt" FAKE_ARTIFACT="$W/artifact16.txt" HIMMEL_CLAUDE_BIN="$FAKE_ARGV16" bash "$SUT" \
-  --role test-role --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$W/artifact16.txt" --permission-mode acceptEdits --prompt-file "$PROMPT_FILE" \
   --system-prompt-file "$SYS16" --tools "Read,Grep" --isolated >/dev/null 2>&1
 check "16 isolated run succeeds" "0" "$?"
@@ -436,12 +436,12 @@ check "16 --tools value passed" "Read,Grep" "$(grep -A1 -x -- '--tools' "$W/argv
 check "16 --isolated -> --safe-mode --strict-mcp-config --no-session-persistence" "3" \
   "$(grep -c -x -E -- '--safe-mode|--strict-mcp-config|--no-session-persistence' "$W/argv16.txt")"
 FAKE_ARGV_OUT="$W/argv16b.txt" FAKE_ARTIFACT="$W/artifact16b.txt" HIMMEL_CLAUDE_BIN="$FAKE_ARGV16" bash "$SUT" \
-  --role test-role --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$W/artifact16b.txt" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
 check "16 without the flags none of them is passed" "0" \
   "$(grep -c -x -E -- '--system-prompt-file|--tools|--safe-mode|--strict-mcp-config|--no-session-persistence' "$W/argv16b.txt")"
 FAKE_ARGV_OUT="$W/argv16c.txt" FAKE_ARTIFACT="$W/artifact16c.txt" HIMMEL_CLAUDE_BIN="$FAKE_ARGV16" bash "$SUT" \
-  --role test-role --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --role test-role --model test-model --ticket HIMMEL-3107 --worktree "$WORKTREE" --cwd "$WORKTREE" \
   --artifact "$W/artifact16c.txt" --permission-mode default --prompt-file "$PROMPT_FILE" \
   --system-prompt-file "$W/no-such-file.md" >/dev/null 2>&1
 check_ne "16 unreadable --system-prompt-file refuses" "0" "$?"
@@ -477,7 +477,7 @@ chmod +x "$W/fakebin/claude"
 lane_run() { # <lane> <tag> -> rc; no HIMMEL_CLAUDE_BIN
   rm -f "$W/lane-seen-$2" "$W/native-seen"
   PATH="$W/fakebin:$PATH" NATIVE_SEEN="$W/native-seen" HIMMEL_CLAUDE_LANE="$1" LANE_SEEN="$W/lane-seen-$2" FAKE_ARGV_OUT="$W/lane-argv-$2" FAKE_ARTIFACT="$W/lane-art-$2" \
-    bash "$MINI/scripts/lib/claude-headless.sh" --role test-role --ticket HIMMEL-4082 --worktree "$WORKTREE" \
+    bash "$MINI/scripts/lib/claude-headless.sh" --role test-role --model test-model --ticket HIMMEL-4082 --worktree "$WORKTREE" \
     --cwd "$WORKTREE" --artifact "$W/lane-art-$2" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
 }
 lane_run openrouter or; check "17 openrouter lane exits 0" "0" "$?"
@@ -542,7 +542,7 @@ seam_launch() { # <tag> [extra variable name] [startup file] -> prints launched|
     export BASH_ENV="${3:-$SH18/funcs.sh}" SHADOW_MARK="$W/mark19-$1"
     [ -n "${2:-}" ] && export "$2=x"
     FAKE_ARTIFACT="$art" HIMMEL_CLAUDE_BIN="$FAKE_OK" unshare -rn bash "$SUT" \
-      --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" \
+      --role test-role --model test-model --ticket HIMMEL-2178 --worktree "$WORKTREE" \
       --cwd "$WORKTREE" --artifact "$art" --permission-mode default \
       --prompt-file "$PROMPT_FILE" ) >/dev/null 2>"$W/err19-$1"
   [ -f "$art" ] && echo launched || echo refused
@@ -568,6 +568,44 @@ else
       "$([ -f "$W/mark19-ctl" ] && printf yes || printf no) $([ -f "$W/mark19-cat" ] && printf yes || printf no) $([ -f "$W/mark19-rov" ] && printf yes || printf no)"
   fi
 fi
+rm -f "$LIVE_DIR"/*.json
+
+# --- 20 (HIMMEL-2198): --model is required at the chokepoint; a dispatch that
+# omits it would burn the scarcer default quota. Refused before any row exists.
+ART20="$W/artifact20.txt"
+OUT20="$(FAKE_ARTIFACT="$ART20" HIMMEL_CLAUDE_BIN="$FAKE_OK" bash "$SUT" \
+  --role test-role --ticket HIMMEL-2198 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+  --artifact "$ART20" --permission-mode default --prompt-file "$PROMPT_FILE" 2>&1)"
+RC20=$?
+check "20 missing --model refused (nonzero)" "1" "$RC20"
+check "20 missing --model: usage error names the flag" "1" "$(printf '%s' "$OUT20" | grep -c -- '--model is required' || true)"
+check "20 missing --model: no registry row written" "0" "$(ls "$LIVE_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')"
+
+# --- 21-23 (HIMMEL-2197): a dispatched row whose wrapper died without
+# finalize_on_exit (SIGKILL, host death) must stop counting against the cap.
+# The row records the wrapper pid and its start time; the next admission reaps a
+# row whose pid is gone, or alive with a different start time (pid reuse).
+proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+cap1_run() { HIMMEL_DISPATCH_MAX_CONCURRENT=1 run_sut "$FAKE_OK" "$1" >/dev/null 2>&1; }
+( : ) & DEAD_PID=$!; wait "$DEAD_PID" 2>/dev/null
+jq -n --arg p "$DEAD_PID" '{id:"dead", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:"Thu Jan 1 00:00:00 1970"}' > "$LIVE_DIR/dead.json"
+cap1_run "$W/artifact21.txt"; RC21=$?
+check "21 SIGKILLed holder reaped: next admission succeeds at cap 1" "0" "$RC21"
+check "21 reaped row is marked interrupted" "interrupted" "$(jq -r '.status' "$LIVE_DIR/dead.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+
+sleep 60 & LIVE_PID=$!
+jq -n --arg p "$LIVE_PID" --arg s "$(proc_start "$LIVE_PID")" '{id:"live", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s}' > "$LIVE_DIR/live.json"
+cap1_run "$W/artifact22.txt"; RC22=$?
+check "22 live holder is never reaped: cap still refuses" "1" "$RC22"
+check "22 live holder row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/live.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+
+jq -n --arg p "$LIVE_PID" '{id:"reuse", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:"Thu Jan 1 00:00:00 1970"}' > "$LIVE_DIR/reuse.json"
+cap1_run "$W/artifact23.txt"; RC23=$?
+check "23 pid reused with a different start time is reaped" "0" "$RC23"
+check "23 reused-pid row is marked interrupted" "interrupted" "$(jq -r '.status' "$LIVE_DIR/reuse.json" 2>/dev/null)"
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
 rm -f "$LIVE_DIR"/*.json
 
 echo "--- $PASS passed, $FAIL failed, $SKIP skipped ---"

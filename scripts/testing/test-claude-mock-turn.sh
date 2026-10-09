@@ -182,7 +182,7 @@ node "$MOCK" --fixture "$H/fixture.json" --port-file "$H/port" --log "$H/mock.lo
 i=0; while [ ! -s "$H/port" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 [ -s "$H/port" ] || { kill "$m" 2>/dev/null; exit 97; }
 ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$H/port")"; export ANTHROPIC_BASE_URL
-printf 'say hi' | bash "$REPO/scripts/lib/claude-headless.sh" --role mock-turn --ticket HIMMEL-4411 \
+printf 'say hi' | bash "$REPO/scripts/lib/claude-headless.sh" --role mock-turn --model test-model --ticket HIMMEL-4411 \
   --worktree "$H/wt" --artifact "$H/wt/artifact.txt" --permission-mode default --max-turns 4 \
   --allowed-tools 'Bash' >"$H/headless.out" 2>"$H/headless.err"
 echo $? >"$H/headless.rc"

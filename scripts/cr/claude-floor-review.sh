@@ -157,6 +157,7 @@ rm -f "$out_json" || die "cannot clear $out_json" 1
 # contract this script parses. Its model: line picks the model.
 awk 'NR==1 && $0=="---" {fm=1; next} fm && $0=="---" {fm=0; next} !fm' "$AGENT_MD" > "$work/system.md"
 model=$(awk 'NR==1 && $0!="---" {exit} NR>1 && $0=="---" {exit} /^model:/ {sub(/^model:[[:space:]]*/, ""); print; exit}' "$AGENT_MD")
+[ -n "$model" ] || die "the reviewer agent frontmatter names no model: — claude-headless.sh requires one (HIMMEL-2198)" 1
 cat >> "$work/system.md" <<'EOF'
 
 ## Floor-review output contract (HIMMEL-3107)
@@ -199,7 +200,7 @@ claude_lane_egress "$(git rev-parse --show-toplevel)" || die "not eligible: the 
 bash "$REPO_ROOT/scripts/lib/claude-headless.sh" --role cr-floor --ticket "${ticket:-UNKNOWN-0}" \
     --worktree "$snap" --cwd "$snap" --artifact "$out_json" --permission-mode acceptEdits \
     --prompt-file "$work/prompt.md" --system-prompt-file "$work/system.md" \
-    --tools "Read,Grep,Glob,Write" --isolated --max-turns 40 ${model:+--model "$model"} \
+    --tools "Read,Grep,Glob,Write" --isolated --max-turns 40 --model "$model" \
     2> "$work/headless.err"
 headless_rc=$?
 row=$(sed -n 's/^claude-headless\.sh: id=.* registry=//p' "$work/headless.err" | tail -1)

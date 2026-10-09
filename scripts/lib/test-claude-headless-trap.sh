@@ -133,7 +133,7 @@ run_with_ambient_claude_pid() {
   done
   env CLAUDE_PID="$ambient" FAKE_ARTIFACT="$artifact" HIMMEL_CLAUDE_BIN="$FAKE_OK" \
     ${envs[@]+"${envs[@]}"} bash "$SUT" \
-    --role test-role --ticket HIMMEL-2514 --worktree "$WORKTREE" --cwd "$WORKTREE" \
+    --role test-role --model test-model --ticket HIMMEL-2514 --worktree "$WORKTREE" --cwd "$WORKTREE" \
     --artifact "$artifact" --prompt-file "$PROMPT_FILE" ${extra[@]+"${extra[@]}"}
 }
 
