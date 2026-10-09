@@ -196,7 +196,7 @@ for (let attempt = 0; attempt < 5; attempt++) {
     try {
         // fchmod the fd we created (wx), not the path: a path can be swapped between calls.
         const wfd = fs.openSync(tmp, "wx", 0o600);
-        try { fs.fchmodSync(wfd, mode); fs.writeSync(wfd, JSON.stringify(j, null, 2) + "\n"); } finally { fs.closeSync(wfd); }
+        try { fs.fchmodSync(wfd, mode); fs.writeFileSync(wfd, JSON.stringify(j, null, 2) + "\n"); } finally { fs.closeSync(wfd); }
         if (sig() !== before) { fs.unlinkSync(tmp); continue; }
         fs.renameSync(tmp, p);
         process.exit(0);
