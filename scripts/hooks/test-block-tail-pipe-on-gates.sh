@@ -969,6 +969,72 @@ allow "2082 allow: gate chained into a gate" 'bash scripts/ci/run-shell-tests.sh
 allow "2082 allow: same-line marker" 'bash scripts/check-ci.sh 12; echo done # tail-pipe-ok: exit irrelevant'
 allow "2082 allow: gate quoted as data" 'echo "bash scripts/check-ci.sh 12; echo done"'
 
+# --- HIMMEL-2082 delta (judge j2255a): separators, wrappers, status reads -----
+# A newline or a lone `&` ends the gate's statement just like `;` does.
+deny "2082 gate NL echo" $'bash scripts/check-ci.sh 12\necho done'
+deny "2082 test suite NL true" $'bash scripts/ci/run-shell-tests.sh x\ntrue'
+deny "2082 gate & echo" 'bash scripts/check-ci.sh 12 & echo done'
+deny "2082 gate on line 2 of 3, echo on line 3" $'echo start\nbash scripts/check-ci.sh 12\necho done'
+# The quiet-run.sh wrapper is stepped over like any other launcher.
+deny "2082 quiet-run wrapper ; echo" 'bash scripts/quiet-run.sh ci -- bash scripts/check-ci.sh 12; echo done'
+deny "2082 quiet-run wrapper || true" 'bash scripts/quiet-run.sh ci -- bash scripts/check-ci.sh 12 || true'
+# `$?` only exempts a read that SURFACES the status.
+# shellcheck disable=SC2016 # the payloads are data for the hook, not for this shell
+deny "2082 x=\$? then exit 0" 'bash scripts/check-ci.sh 12; x=$?; exit 0'
+# shellcheck disable=SC2016 # the payloads are data for the hook, not for this shell
+deny "2082 x=\$? then true" 'bash scripts/check-ci.sh 12; x=$?; true'
+# shellcheck disable=SC2016 # the payloads are data for the hook, not for this shell
+deny "2082 escaped \$? is text" 'bash scripts/check-ci.sh 12; echo "\$?"'
+# shellcheck disable=SC2016 # the payloads are data for the hook, not for this shell
+deny "2082 : \$? discards the status" 'bash scripts/check-ci.sh 12; : $?; echo done'
+# shellcheck disable=SC2016 # the payloads are data for the hook, not for this shell
+deny "2082 \$PIPESTATUSX is another variable" 'bash scripts/check-ci.sh 12; echo $PIPESTATUSX; true'
+# shellcheck disable=SC2016 # the payloads are data for the hook, not for this shell
+deny "2082 single-quoted \$? is text" "bash scripts/check-ci.sh 12; echo '\$?'; true"
+# A gate may be followed by another gate only across `&&`.
+deny "2082 gate ; gate" 'bash scripts/check-ci.sh 12; bash scripts/check-ci.sh 13'
+deny "2082 gate || gate" 'bash scripts/check-ci.sh 12 || bash scripts/ci/run-shell-tests.sh scripts/hooks'
+deny "2082 gate && gate ; echo" 'bash scripts/check-ci.sh 12 && bash scripts/check-ci.sh 13; echo done'
+# A `case` arm is a statement of its own.
+deny "2082 case arm gate then echo" 'case x in x) bash scripts/check-ci.sh 12;; esac; echo done'
+# Allowed: the failure is preserved.
+allow "2082 allow: gate || exit 1" 'bash scripts/check-ci.sh 12 || exit 1'
+allow "2082 allow: gate || exit 1 then more" 'bash scripts/check-ci.sh 12 || exit 1; echo ok'
+# shellcheck disable=SC2016 # the payload is data for the hook, not for this shell
+allow "2082 allow: rc captured and re-exited" 'bash scripts/check-ci.sh 12; rc=$?; echo "rc=$rc"; exit $rc'
+allow "2082 allow: gate NL RC read" $'bash scripts/check-ci.sh 12 > out.txt 2>&1\necho "RC=$?"'
+allow "2082 allow: gate || echo of the status" 'bash scripts/check-ci.sh 12 || echo "failed rc=$?"'
+allow "2082 allow: gate && gate" 'bash scripts/check-ci.sh 12 && bash scripts/check-ci.sh 13'
+allow "2082 allow: bash -n only parses" 'bash -n scripts/check-ci.sh; echo done'
+deny "2082 gate || exit 0 loses the failure" 'bash scripts/check-ci.sh 12 || exit 0'
+
+# Cost: the trailing scan is linear. A 10 KB chain used to take tens of seconds
+# (stmt_runs_gate re-ran, a subprocess each, on every later statement).
+perf_chain=''
+perf_k=0
+while [ "${#perf_chain}" -lt 9500 ]; do
+    perf_chain="${perf_chain}bash scripts/check-ci.sh 1 > o 2>&1; echo \"RC=\$?\"; "
+    perf_k=$((perf_k + 1))
+done
+perf_chain="${perf_chain}echo end"
+perf_start=$SECONDS
+perf_rc=$(printf '%s' "$(j_bash "$perf_chain")" | timeout -s KILL 20 bash "$HOOK" >/dev/null 2>&1; echo $?)
+perf_gate_chain=''
+while [ "${#perf_gate_chain}" -lt 9500 ]; do
+    perf_gate_chain="${perf_gate_chain}bash scripts/check-ci.sh 1 && "
+done
+perf_gate_chain="${perf_gate_chain}bash scripts/check-ci.sh 2"
+perf_gate_rc=$(printf '%s' "$(j_bash "$perf_gate_chain")" | timeout -s KILL 20 bash "$HOOK" >/dev/null 2>&1; echo $?)
+perf_secs=$((SECONDS - perf_start))
+# The last statement of the first chain is `echo end` after an RC read of a gate
+# that was itself followed by `echo RC` only: every gate is surfaced, but the
+# final `echo end` follows the last RC read, not a gate, so the chain is allowed.
+if [ "$perf_rc" = 0 ] && [ "$perf_gate_rc" = 0 ] && [ "$perf_secs" -lt 8 ]; then
+    pass "2082 10 KB chains scan in linear time (${perf_secs}s, $perf_k gates)"
+else
+    fail "2082 10 KB chains scan in linear time: rc=$perf_rc/$perf_gate_rc after ${perf_secs}s"
+fi
+
 if [ "$FAILED" -eq 0 ]; then
     echo "OK block-tail-pipe-on-gates: all cases passed"
     exit 0
