@@ -312,6 +312,14 @@ rm -f "$repo/.salus"
 [ "$rc" -ne 0 ] || fail "salus repo under openrouter: expected a refusal, got rc=0"
 [ ! -e "$work/lane-seen" ] || fail "salus repo under openrouter: the launcher ran anyway"
 grep -q 'corpus "salus"' "$work/lane-err" || fail "salus repo under openrouter: stderr did not name the corpus: $(head -c 300 "$work/lane-err")"
+# claudex + a handover-state repo (the fixture repo doubles as the handover root).
+rm -f "$work/lane-seen"
+HANDOVER_DIR="$repo" HIMMEL_CLAUDE_LANE=claudex LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE="$work/lane-argv" PATH="$bindir:$PATH" \
+    bash "$mini/scripts/cr/hermes-critic.sh" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "handover-state repo under claudex: expected a refusal, got rc=0"
+[ ! -e "$work/lane-seen" ] || fail "handover-state repo under claudex: the launcher ran anyway"
+grep -q 'corpus "handover-state"' "$work/lane-err" || fail "handover-state repo under claudex: stderr did not name the corpus: $(head -c 300 "$work/lane-err")"
 : > "$work/lane-argv"; rm -f "$work/lane-seen"
 # shellcheck disable=SC2016 # the stub text must keep its literal $vars
 sed -i.bak 's|^echo claude-openrouter > "\$LANE_CAPTURE"$|{ echo claude-openrouter; echo "cwd=${CLAUDE_OPENROUTER_CWD:-}"; } > "$LANE_CAPTURE"|' "$mini/scripts/claude-openrouter"

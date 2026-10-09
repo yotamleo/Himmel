@@ -442,5 +442,13 @@ check "29 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)
 has "29 names the corpus" 'corpus "salus"' "$W/out"
 check "29 no provenance artifact" no "$([ -e "$R/.git/cr-floor/$HEAD_SHA.json" ] && echo yes || echo no)"
 
+# 30. HIMMEL-4111: claudex refuses a handover-state repo (matrix: conditional)
+# at the floor site too; the fixture repo doubles as the handover root.
+mk_repo 30; row codex unavailable quota
+HANDOVER_DIR="$R" HIMMEL_CLAUDE_LANE=claudex run_sut
+check "30 handover-state repo under claudex -> exit 3" 3 "$RC"
+check "30 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
+has "30 names the corpus" 'corpus "handover-state"' "$W/out"
+
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

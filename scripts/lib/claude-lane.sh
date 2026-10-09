@@ -40,6 +40,10 @@ _CLAUDE_LANE_DIR="${BASH_SOURCE[0]%/*}"
 # repo> so the launcher classifies the repo, not the scratch cwd.
 # ponytail: a repo in none of those corpora is not gated here (as in
 # scripts/hermes/egress-gate.sh); claude-openrouter still refuses it as unknown.
+# ponytail: only hermes-critic.sh and claude-floor-review.sh gate; the shared
+# headless launcher scripts/lib/claude-headless.sh resolves the lane but does not,
+# so a new caller of it would be ungated - move this call into it when a third
+# review site appears.
 claude_lane_egress() {
   local dir="${1:?claude_lane_egress: reviewed repo required}" lane="${HIMMEL_CLAUDE_LANE:-native}"
   local prov corpus="" d prev list line v lroot="" hroot hd out verdict
@@ -88,7 +92,7 @@ claude_lane_egress() {
     fi
     # HIMMEL-4420: handover_root reads only the live env, so a .env-only HANDOVER_DIR
     # is loaded from himmel's own primary checkout (cwd = this lib, never the reviewed repo).
-    hd="$(cd "$_CLAUDE_LANE_DIR" 2>/dev/null && { . ./load-dotenv.sh && load_dotenv HANDOVER_DIR; } >/dev/null 2>&1; . ./handover-path.sh 2>/dev/null && handover_root 2>/dev/null)" || hd=""
+    hd="$(cd "$_CLAUDE_LANE_DIR" 2>/dev/null || exit 1; { . ./load-dotenv.sh && load_dotenv HANDOVER_DIR; } >/dev/null 2>&1; . ./handover-path.sh 2>/dev/null && handover_root 2>/dev/null)" || hd=""
     hroot=""
     if [ -n "$hd" ]; then
       hroot="$(cd -P "$hd" 2>/dev/null && pwd -P)" || {
@@ -104,7 +108,7 @@ claude_lane_egress() {
     out="$(node "$_CLAUDE_LANE_DIR/../guardrails/egress-matrix-eval.mjs" "$corpus" "$prov" inference 2>/dev/null)" || out=""
     verdict="${out%%$'\t'*}"
     case "$verdict" in
-      allow|allow+log) ;;
+      allow) ;;  # allow+log needs a ledger line this seam does not write: fail closed
       *) echo "claude-lane: REFUSED - the reviewed repo is corpus \"$corpus\" and the egress matrix says \"${verdict:-unevaluable}\" for provider \"$prov\" at purpose inference (${out#*$'\t'}) - the $lane lane would send the review pack there" >&2
          return 3 ;;
     esac
