@@ -903,5 +903,8 @@ check "genuine review lacking headings -> malformed-output" "$(printf '%s' "$cls
 check "the three fixtures land in three different classes" "$(printf '%s\n' "$cls_up" "$cls_empty" "$cls_mal" | cut -d'|' -f2 | sort -u | wc -l | tr -d '[:space:]')" "3"
 cls_kw="$(cls_run 'Add a test for rate limiting and the throttle path before merging.')"
 check "short headingless review that merely mentions rate limiting/quota/429 -> malformed-output" "$(printf '%s' "$cls_kw" | cut -d'|' -f1,2)" "1|malformed-output"
+cls_multi="$(cls_run "$(printf 'API call failed after 3 retries\nError code: 429 - too many requests')")"
+check "multiline vendor error with a later 429 line -> rate-limit (finer class wins)" "$(printf '%s' "$cls_multi" | cut -d'|' -f1,2)" "1|rate-limit"
+check "multiline vendor error: vendor first line stays the last stderr line" "$(printf '%s' "$cls_multi" | cut -d'|' -f3-)" "critic-first-pass.sh: raw tail: API call failed after 3 retries"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

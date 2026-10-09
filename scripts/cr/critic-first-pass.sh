@@ -887,9 +887,16 @@ if [ "$rc" -ne 0 ]; then
     if [ "$_cfp_up" -eq 1 ]; then
         [ -n "$log" ] && printf '%s\n' "$raw" > "$log"
         echo "critic-first-pass.sh: upstream error — the critic's provider returned an error, not a review; fail-open, proceed claude-only. If this is the only configured cross-model lane, the lane is down: retry when it recovers.${log:+ Raw output: $log}" >&2
+        # A status/quota/auth line later in a multiline body must still reach
+        # the classifier (it wins over upstream-error), so surface it first.
+        _cfp_first="$(printf '%s\n' "$raw" | grep -m1 -v '^[[:space:]]*$' | cut -c1-300)"
+        _cfp_sig="$(first_signal_line "$log")"
+        if [ -n "$_cfp_sig" ] && [ "$_cfp_sig" != "$_cfp_first" ]; then
+            echo "critic-first-pass.sh: raw signal: $_cfp_sig" >&2
+        fi
         # Last stderr line = the vendor's own first line (critic-panel.sh takes
         # the last line as the ledger detail=).
-        printf 'critic-first-pass.sh: raw tail: %s\n' "$(printf '%s\n' "$raw" | grep -m1 -v '^[[:space:]]*$' | cut -c1-300)" >&2
+        printf 'critic-first-pass.sh: raw tail: %s\n' "$_cfp_first" >&2
     elif [ -n "$log" ]; then
         printf '%s\n' "$raw" > "$log"
         echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. Raw output: $log" >&2
