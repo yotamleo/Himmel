@@ -15,7 +15,7 @@ fails=0
 ok()  { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 
-TMP="$(mktemp -d)" || exit 1
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/test-apt-install.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 # Stub apt-get: logs argv; an install fails (or hangs, STUB_HANG=1) while the
@@ -87,8 +87,9 @@ run_case c4 STUB_HANG=1
 # 5. everything fails: non-zero, one line naming the mirror and the packages.
 run_case c5 STUB_ALL_FAIL=1
 n="$(grep -c 'apt-install: FAILED' <<<"$out")"
-[ "$rc" -ne 0 ] && [ "$n" -eq 1 ] && grep 'apt-install: FAILED' <<<"$out" | grep -q 'alt.example' \
-  && grep 'apt-install: FAILED' <<<"$out" | grep -q 'ffmpeg at' \
+failed_line="$(grep 'apt-install: FAILED' <<<"$out")"
+[ "$rc" -ne 0 ] && [ "$n" -eq 1 ] && grep -q 'alt.example' <<<"$failed_line" \
+  && grep -q 'ffmpeg at' <<<"$failed_line" \
   && ok "total failure prints one line naming mirror and packages" || bad "final failure (rc=$rc n=$n out=$out)"
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
