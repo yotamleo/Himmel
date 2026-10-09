@@ -147,7 +147,7 @@ ${coverage}
 
 8. Turn on \`/autofix-pr\` for the PR, so you fix your own CI reds and review comments.
 9. Do NOT merge, do NOT request reviewers, and do NOT touch any other file.
-10. Report (this replaces the handover doc): post ONE top-level PR comment whose first line is \`CLOUD-DONE <your session URL>\` followed by the PR head SHA and the test results, then, if the Atlassian MCP tools are listed, comment on ${t.key} with the PR URL (otherwise add that comment to \`## Jira steps not done\`). Leave the ticket \`In Progress\`: the local shepherd closes it at merge. Once a local shepherd comments on the PR, stop pushing to the branch. If you are blocked on a question, post it instead as a \`CLOUD-BLOCKED <your session URL>\` PR comment (a ${t.key} comment if no PR exists yet) and end the session.
+10. Report (this replaces the handover doc): post ONE top-level PR comment whose first line is \`CLOUD-DONE <your session URL>\` followed by the PR head SHA and the test results, then, if the Atlassian MCP tools are listed, comment on ${t.key} with the PR URL (otherwise add that comment to \`## Jira steps not done\`). Leave the ticket \`In Progress\`: the local shepherd closes it at merge. Once a local shepherd comments on the PR, stop pushing to the branch. If you are blocked on a question, post it instead as a \`CLOUD-BLOCKED <your session URL>\` PR comment (a ${t.key} comment if no PR exists yet and the Atlassian MCP tools are listed; otherwise state the blocker in your final output) and end the session.
 
 When done, print the PR URL, the branch, the commit SHA, and a 3-line summary.
 `;
