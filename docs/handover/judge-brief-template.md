@@ -292,7 +292,10 @@ gathering, per the rule below.>
 >    green is vacuous (the console's run is the control).
 > 3. **Recurring classes.** An env override sending a record away from the gate
 >    that reads it; a fail-open default (`${x:-0}`) beside fail-closed siblings;
->    a silent rc-0 drop; a symlink target replaced, not refused.
+>    a silent rc-0 drop; a symlink target replaced, not refused; a string
+>    compared across processes or sessions (`ps lstart`, `date`, `sort`, `ls`)
+>    without `TZ` and `LC_ALL` pinned (`proc-tree.sh:94` is the reference;
+>    HIMMEL-3791 and j2271a both hit it).
 > 4. **Tree-scan suites.** A diff that ADDS a script, ledger, launch site or
 >    `.ps1`: name the tree-scan suites you ran in full (not only the impacted
 >    ones), with counts.
