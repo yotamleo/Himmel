@@ -225,16 +225,21 @@ else fail "IS14: rc=$rc out: $out"; fi
 # never names breaks it while the selector skips it. A tripwire, not a parser:
 # it reads uncommented lines naming REPO / REPO_ROOT / SRC_ROOT / `repo,`.
 unmarked=""
+if ! suite_list=$(git -C "$SRC_ROOT" ls-files -- 'scripts/**/test-*.sh' 'scripts/test-*.sh' \
+           'templates/**/test-*.sh' 'marketplace/**/test-*.sh') || [ -z "$suite_list" ]; then
+  unmarked=" (git ls-files failed or listed no suites)"
+  suite_list=""
+fi
 while IFS= read -r ts; do
   [ -n "$ts" ] || continue
+  if [ ! -r "$SRC_ROOT/$ts" ]; then unmarked="$unmarked $ts(unreadable)"; continue; fi
   grep -qx '# selector: tree-scan' "$SRC_ROOT/$ts" && continue
   walks=$(grep -vE '^[[:space:]]*#' "$SRC_ROOT/$ts" \
        | grep -E '(ls-files|ls-tree|find )' \
        | grep -vE 'ls-files -s|--error-unmatch' \
        | grep -E '\$\{?(REPO|REPO_ROOT|SRC_ROOT)\}?|, *repo\b' || true)
   if [ -n "$walks" ]; then unmarked="$unmarked $ts"; fi
-done < <(git -C "$SRC_ROOT" ls-files -- 'scripts/**/test-*.sh' 'scripts/test-*.sh' \
-           'templates/**/test-*.sh' 'marketplace/**/test-*.sh')
+done <<< "$suite_list"
 if [ -z "$unmarked" ]; then
   pass "IS15: every suite that walks the real tree carries '# selector: tree-scan'"
 else fail "IS15: tree-walking suite(s) without the marker:$unmarked"; fi
