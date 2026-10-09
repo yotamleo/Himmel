@@ -114,7 +114,13 @@ Run these, in order, and write the result as the first bullet under
    `bash scripts/handover/console-kit/close-wrapped-leg.sh --console <predecessor doc>`
    (same checks as a leg: it refuses while the lock is held, the tail is not
    `WRAPPED`, or not exactly one live session carries its name; exit 6 means
-   retry shortly). Left open, the wrapped session is idle-compacted at full cost.
+   retry shortly; exit 7 means it still has a live subagent, a judge call
+   whose verdict would die with it: retry once it finishes, HIMMEL-5071).
+   Left open, the wrapped session is idle-compacted at full cost.
+   **Before you re-dispatch any judge the predecessor asked**, read the
+   HANDOFF's open judge calls and each qid's `verdicts/<qid>/` file: a written
+   verdict is the answer; only a qid with no file and no running child is
+   re-asked.
 10. **Start the event waiter now** (HIMMEL-3509; it replaces the `tick` and
     `telegram` Monitor loops). Loops are pure code, never model turns: a
     `Monitor` arm is capped at 30 min, and every expiry woke this full-context
@@ -550,6 +556,10 @@ never act on them.
   `answer: <verdict line>` · `flipped: y|n`. Write `prior:` before you ask —
   a prior recorded afterwards measures nothing. This makes M3 (judge flip
   rate) countable by `grep`; keep the field names exactly as written here.
+- **Every judge call persists its verdict, trust path or not** (HIMMEL-5071):
+  `bash scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head>
+  --pr <n> --evidence-file <path>` writes `verdicts/<qid>/`. A verdict that
+  lives only in your context dies with it; the file is what a successor reads.
 
 ## Handing over
 
@@ -602,7 +612,12 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    did not quote back named, and why (step 9) — and it is the only
    confirmation that the successor actually launched and completed ACTION
    ZERO; releasing on the `touch` alone leaves an unattended fleet if the arm
-   failed.
+   failed. Then wrap with **one** command, which writes `WRAPPED` and releases
+   the lock:
+   `bash scripts/handover/console/console.sh wrap "{{STATE_DIR}}/{{SESSION_NAME}}.md" <release-token> '<one line>'`.
+   It refuses (exit 4, nothing written) while any subagent of yours, a judge
+   call above all, is still running (HIMMEL-5071): wait for its result, persist
+   it with `write-verdict.sh`, then re-run. Never wrap around it by hand.
 
 Write every bullet below with
 `bash scripts/handover/console-kit/append-results.sh <doc> '<text>'`. A bullet

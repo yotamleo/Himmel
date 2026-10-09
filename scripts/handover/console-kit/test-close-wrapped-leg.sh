@@ -193,6 +193,12 @@ exit "${CWL_REAP_STUB_RC:-0}"
 STUB
 chmod +x "$REAP_STUB"
 
+# Stub live-subagents.sh (HIMMEL-5071): "none running", and it logs nothing,
+# so every case's CALLS count is unchanged; case 25b runs the real one.
+LSA_STUB="$W/bin/live-subagents-stub.sh"
+printf '#!/usr/bin/env bash\necho live-subagents=0\n' > "$LSA_STUB"
+chmod +x "$LSA_STUB"
+
 DOC="$W/HIMMEL-9-N1-demo-2026-01-01-RESUME.md"
 SESSION_NAME="HIMMEL-9-N1-demo-2026-01-01"
 WT="$W/wt/one"
@@ -232,6 +238,7 @@ run() { # run <doc> - runs the script under test with every stub wired
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
         END_SESSION_WIKI_BIN="${CWL_ESW_BIN:-/bin/true}" \
         CLOSE_WRAPPED_LEG_PROJECTS_DIR="${CWL_PROJECTS_DIR:-$W/no-such-projects-dir}" \
+        LIVE_SUBAGENTS_BIN="${CWL_LIVE_SUBAGENTS_BIN:-$LSA_STUB}" \
         bash "$SCRIPT" "$@"
 }
 reset_calls() { : > "$CALLS"; : > "$CALLS.reap"; }
@@ -1085,6 +1092,56 @@ rc=0; out=$(run --console "$CDOC" 2>&1) || rc=$?
 unset CWL_SUBTREE_MODE
 check "console: a live non-harness child -> rc 6" "$rc" "6"
 not_contains "console: withheld -> nothing signalled" "$(cat "$CALLS")" "kill"
+
+# --- 25b. live in-process subagents (HIMMEL-5071) ----------------------------
+# The REAL live-subagents.sh over a fake predecessor: its sessions/<pid>.json
+# names a session whose transcript launched one judge child with no completion
+# notice -> exit 7, nothing signalled, in both forms. The parent's enqueue of
+# the child's <task-notification> lands -> the close proceeds.
+LSA_SID="11111111-2222-3333-4444-555555555555"
+LSA_PROJ="$W/lsa-projects"
+LSA_SUB="$LSA_PROJ/-fake/$LSA_SID/subagents"
+mkdir -p "$LSA_SUB" "$W/sessions"
+printf '{"type":"user","timestamp":"2026-10-09T00:00:00.000Z"}\n' > "$LSA_PROJ/-fake/$LSA_SID.jsonl"
+printf '{"agentType":"console-judge","description":"Judge j2212a","toolUseId":"toolu_J","requestShape":"background"}\n' > "$LSA_SUB/agent-aj1.meta.json"
+printf '{"type":"assistant","timestamp":"2026-10-09T00:01:00.000Z"}\n' > "$LSA_SUB/agent-aj1.jsonl"
+printf '{"pid":230,"sessionId":"%s"}\n' "$LSA_SID" > "$W/sessions/230.json"
+printf '{"pid":240,"sessionId":"%s"}\n' "$LSA_SID" > "$W/sessions/240.json"
+mkcmdline 240 claude -n "$SESSION_NAME" work
+pgrep_x_stub 230 231 240
+lsa_run() {
+    CWL_LIVE_SUBAGENTS_BIN="$HERE/live-subagents.sh" CWL_PROJECTS_DIR="$LSA_PROJ" \
+        LEG_DIGEST_STEP_BIN="$W/no-such-digest-step.sh" run "$@"
+}
+
+reset_calls
+rc=0; out=$(lsa_run --console "$CDOC" 2>&1) || rc=$?
+check "subagents: console with a live judge child -> rc 7" "$rc" "7"
+contains "subagents: console refusal names the child" "$out" "LIVE-SUBAGENT aj1 console-judge Judge j2212a"
+not_contains "subagents: console refusal -> nothing signalled" "$(cat "$CALLS")" "kill"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(lsa_run "$DOC" 2>&1) || rc=$?
+check "subagents: leg with a live child -> rc 7" "$rc" "7"
+not_contains "subagents: leg refusal -> nothing signalled" "$(cat "$CALLS")" "kill"
+
+rm -f "$W/sessions/230.json"
+reset_calls
+rc=0; out=$(lsa_run --console "$CDOC" 2>&1) || rc=$?
+check "subagents: no session id for the pid (cannot prove idle) -> rc 7" "$rc" "7"
+printf '{"pid":230,"sessionId":"%s"}\n' "$LSA_SID" > "$W/sessions/230.json"
+
+jq -nc '{type:"queue-operation",operation:"enqueue",timestamp:"2026-10-09T00:01:00.010Z",
+    content:"<task-notification>\n<task-id>aj1</task-id>\n<tool-use-id>toolu_J</tool-use-id>\n<status>completed</status>"}' >> "$LSA_PROJ/-fake/$LSA_SID.jsonl"
+reset_calls
+rc=0; out=$(lsa_run --console "$CDOC" 2>&1) || rc=$?
+check "subagents: console child finished -> rc 0" "$rc" "0"
+exact_count "subagents: console child finished -> TERM sent" "$(cat "$CALLS")" "kill -TERM 230" "1"
+reset_calls
+rc=0; out=$(lsa_run "$DOC" 2>&1) || rc=$?
+check "subagents: leg child finished -> rc 0" "$rc" "0"
+exact_count "subagents: leg child finished -> TERM sent" "$(cat "$CALLS")" "kill -TERM 240" "1"
+rm -f "$W/sessions/230.json" "$W/sessions/240.json"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
 post_handovers=absent
