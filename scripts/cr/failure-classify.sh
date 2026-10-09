@@ -2,7 +2,7 @@
 # scripts/cr/failure-classify.sh — single-source CR critic failure classifier
 # (HIMMEL-1176). Exposes classify_failure <rc> [out_file] [err_file], which
 # echoes exactly ONE reason class to stdout: timeout, quota-5h, quota-long,
-# rate-limit, auth, http-4xx, http-5xx, malformed-output, empty-response, or
+# rate-limit, auth, http-4xx, http-5xx, upstream-error, malformed-output, empty-response, or
 # generic-rc-N (N = the literal rc). Also owns is_quota_exhaustion — moved
 # here from critic-panel.sh's former _is_quota_exhaustion (HIMMEL-729) so the
 # quota-exhaustion signature table lives in exactly ONE place; critic-panel.sh
@@ -46,7 +46,7 @@ is_quota_exhaustion() {
 #
 # Precedence (first match wins):
 #   timeout > usage-error > quota-5h > quota-long > rate-limit > auth >
-#   http-4xx > http-5xx > malformed-output > empty-response > generic-rc-N
+#   http-4xx > http-5xx > upstream-error > malformed-output > empty-response > generic-rc-N
 #
 # HIMMEL-729 pairing rule preserved: both quota buckets are checked BEFORE
 # auth, so a bare AccessDenied/401/403 classifies auth, while the SAME text
@@ -132,6 +132,12 @@ $(cat "$_cf_err" 2>/dev/null)"
     # reference can never match.
     if _cf_has '(^|[^0-9-])4[0-9][0-9]([^0-9]|$)'; then echo http-4xx; return 0; fi
     if _cf_has '(^|[^0-9-])5[0-9][0-9]([^0-9]|$)'; then echo http-5xx; return 0; fi
+
+    # HIMMEL-2399: critic-first-pass.sh's "upstream error" marker — the provider
+    # answered with an error body (overload, outage), not a review. Checked
+    # AFTER the status/quota/auth buckets so a finer class in the vendor's own
+    # text still wins; it only replaces what would have read as malformed-output.
+    if _cf_has 'upstream error'; then echo upstream-error; return 0; fi
 
     # critic-first-pass.sh's own malformed-output fail-open marker.
     if _cf_has 'malformed output'; then echo malformed-output; return 0; fi

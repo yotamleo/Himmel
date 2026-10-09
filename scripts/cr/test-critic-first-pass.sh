@@ -877,4 +877,29 @@ S_HEAD="7777777777777777777777777777777777777777"
 s_out_bad="$(printf '%s' "$DIFF" | CR_LEDGER="/proc/no-such-dir/ledger.jsonl" CR_TARGET_HEAD="$S_HEAD" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex 2>/dev/null)"; s_rc_bad2=$?
 check "unwritable ledger dir: rc 0 and stdout intact" "$s_rc_bad2:$(grepq "$s_out_bad" -F '## Suggestions (0 found)' && echo y || echo n)" "0:y"
 
+# HIMMEL-2399: three non-review responses must land in three DIFFERENT reason
+# classes end to end (cfp stderr -> failure-classify.sh), not all in
+# malformed-output. A single fixture would pass against the old behaviour.
+. "$HERE/failure-classify.sh"
+cls_run() {  # $1 = stub body; echoes "<rc>|<reason>|<last stderr line>"
+    printf '%s\n' "$1" > "$tmp/stub-cls.txt"
+    cat > "$tmp/stub.py" <<'PY'
+import os,sys
+sys.stdout.write(open(os.environ["STUB_BODY"]).read())
+PY
+    printf '%s' "$DIFF" | STUB_BODY="$tmp/stub-cls.txt" HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug codex >"$tmp/cls.out" 2>"$tmp/cls.err"
+    _cls_rc=$?
+    echo "$_cls_rc|$(classify_failure "$_cls_rc" "$tmp/cls.out" "$tmp/cls.err")|$(tail -n 1 "$tmp/cls.err")"
+}
+cls_up="$(cls_run 'API call failed after 3 retries: Our servers are currently overloaded. Please try again later.')"
+cls_empty="$(cls_run '')"
+cls_mal="$(cls_run 'The change looks reasonable to me overall, though I would double check the loop bound before merging this and consider adding a test for the empty input case.')"
+check "overload string -> upstream-error" "$(printf '%s' "$cls_up" | cut -d'|' -f1,2)" "1|upstream-error"
+check "overload: vendor first line is the last stderr line" "$(printf '%s' "$cls_up" | cut -d'|' -f3-)" "critic-first-pass.sh: raw tail: API call failed after 3 retries: Our servers are currently overloaded. Please try again later."
+cls_run 'API call failed after 3 retries: Our servers are currently overloaded. Please try again later.' >/dev/null
+check "overload: operator message names the only-lane-down case" "$(grep -c 'only configured cross-model lane, the lane is down: retry when it recovers' "$tmp/cls.err")" "1"
+check "empty response -> empty-response" "$(printf '%s' "$cls_empty" | cut -d'|' -f1,2)" "1|empty-response"
+check "genuine review lacking headings -> malformed-output" "$(printf '%s' "$cls_mal" | cut -d'|' -f1,2)" "1|malformed-output"
+check "the three fixtures land in three different classes" "$(printf '%s\n' "$cls_up" "$cls_empty" "$cls_mal" | cut -d'|' -f2 | sort -u | wc -l | tr -d '[:space:]')" "3"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi
