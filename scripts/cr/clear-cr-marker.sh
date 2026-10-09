@@ -953,7 +953,7 @@ unadjudicated_count=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.o
 # broken pass, and the node throw leaves this EMPTY, which gate 4d refuses.
 missing_sweep=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s).missingSweep;if(Array.isArray(m))console.log("ok "+m.join(" "));})' 2>/dev/null)
 # HIMMEL-1932: a recorded panel certify refusal at this head.
-certify_refused=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).certifyRefused?1:0))' 2>/dev/null)
+certify_refused=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).certifyRefused?1:0)))' 2>/dev/null)
 # HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility (see gate 3b below).
 floor_fallback_eligible=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).floorFallbackEligible?1:0)))' 2>/dev/null)
 exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).exhaustedLanes||[]).join(" ")))' 2>/dev/null)
