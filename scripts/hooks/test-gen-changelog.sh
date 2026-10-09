@@ -384,6 +384,40 @@ run_test "HIMMEL-2376: an interrupted run leaves no merge-base sentinel behind" 
   ! ls "$TMPDIR"/gen-changelog-mb-err.* >/dev/null 2>&1
 '
 
+# HIMMEL-2379: bash defers a trapped signal while it waits on a synchronous
+# child, so a git that never returns kept the script alive and leaked its temp
+# files despite the HIMMEL-2376 trap. The stand-in child is UNBOUNDED (it blocks
+# until killed, never a finite sleep), so a pass cannot be a lucky timeout; the
+# stub is always killed on the way out and every wait here is bounded.
+run_test "HIMMEL-2379: TERM while git hangs exits promptly and removes the temp files" '
+  setup_slow_merge_base && cd "$R" || exit 1;
+  export TMPDIR="$R/tmp";
+  echo stale > "$R/CHANGELOG.md";
+  {
+    printf "#!/usr/bin/env bash\n";
+    printf "for a in \"\$@\"; do [ \"\$a\" = \"--date=short\" ] && { echo \$\$ > \"%s/stub.pid\"; exec sleep 86400; }; done\n" "$R";
+    printf "exec %s \"\$@\"\n" "$(command -v git)";
+  } > "$R/shim/git";
+  PATH="$R/shim:$PATH" bash "$GEN" --check >/dev/null 2>&1 &
+  pid=$!;
+  found=0;
+  for _ in $(seq 1 60); do
+    if [ -s "$R/stub.pid" ] && ls "$TMPDIR"/gen-changelog.* >/dev/null 2>&1; then found=1; break; fi;
+    sleep 0.1;
+  done;
+  stub=$(cat "$R/stub.pid" 2>/dev/null);
+  if [ "$found" -ne 1 ]; then kill "$pid" $stub 2>/dev/null; exit 1; fi;
+  kill -TERM "$pid" 2>/dev/null;
+  gone=0;
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null; then gone=1; break; fi;
+    sleep 0.1;
+  done;
+  [ -n "$stub" ] && kill -KILL $stub 2>/dev/null;
+  [ "$gone" -eq 1 ] || { kill -KILL "$pid" 2>/dev/null; exit 1; };
+  ! ls "$TMPDIR"/gen-changelog.* >/dev/null 2>&1
+'
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

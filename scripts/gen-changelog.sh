@@ -31,9 +31,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # make `rm` parse the generated path as an option and leak both files --
 # a cleanup that silently fails to clean is the defect this ticket fixes
 # (codex-1, CR round 1).
+#
+# Bash also DEFERS a trapped signal while it waits on a synchronous child, so a
+# wedged `git` kept the script alive and the temp files leaked despite the traps
+# above (HIMMEL-2379). generate() therefore runs in the background and the main
+# shell only `wait`s on it -- `wait` is interrupted by a trapped signal at once --
+# and the EXIT trap kills that job (and its current child) before removing files.
 tmp=""
 mb_err_file=""
-trap 'rm -f -- "$tmp" "$mb_err_file"' EXIT
+gen_pid=""
+trap '[ -z "$gen_pid" ] || { pkill -TERM -P "$gen_pid" 2>/dev/null || true; kill "$gen_pid" 2>/dev/null || true; }; rm -f -- "$tmp" "$mb_err_file"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 # shellcheck disable=SC1091
@@ -93,11 +100,8 @@ generate() {
     # Sentinel for a real `git merge-base` error (see below): the tag filter
     # runs inside a process-substitution pipeline, so a plain `exit` there
     # only kills that subshell, not this script -- the sentinel file is how
-    # the failure is carried back out to fail generation for real.
-    mb_err_file="$(mktemp "${TMPDIR:-/tmp}/gen-changelog-mb-err.XXXXXX")" || {
-        echo "gen-changelog: mktemp failed" >&2
-        exit 1
-    }
+    # the failure is carried back out to fail generation for real. The file is
+    # created by run_generate (below) so the main shell's trap can remove it.
     # Order by ANCESTRY (commit count via `git rev-list --count`), newest
     # first — NOT creatordate: a backfilled annotated tag on an older commit
     # can carry a newer creatordate than a tag on a later commit, which would
@@ -204,6 +208,25 @@ generate() {
     return 0
 }
 
+# run_generate <outfile> — generate > <outfile> as a background job the main
+# shell waits on, so INT/TERM reach the trap immediately (HIMMEL-2379). The
+# sentinel is created here, not in generate(), because generate() now runs in a
+# subshell whose variable assignments never reach the main shell's trap. `wait`
+# returns generate's exit status, so `set -e` fails the script exactly as the
+# foreground call did.
+run_generate() {
+    mb_err_file="$(mktemp "${TMPDIR:-/tmp}/gen-changelog-mb-err.XXXXXX")" || {
+        echo "gen-changelog: mktemp failed" >&2
+        exit 1
+    }
+    local rc=0
+    generate > "$1" &
+    gen_pid=$!
+    wait "$gen_pid" || rc=$?
+    gen_pid=""
+    return "$rc"
+}
+
 if [ "${1:-}" = "--check" ]; then
     if [ ! -f "$OUT" ]; then
         echo "STALE gen-changelog: CHANGELOG.md is missing — run scripts/gen-changelog.sh"
@@ -216,7 +239,7 @@ if [ "${1:-}" = "--check" ]; then
         echo "gen-changelog: mktemp failed" >&2
         exit 1
     }
-    generate > "$tmp"
+    run_generate "$tmp"
     if cmp -s "$tmp" "$OUT"; then
         echo "OK gen-changelog: CHANGELOG.md is current"
         exit 0
@@ -241,4 +264,4 @@ if [ "${1:-}" = "--check" ]; then
     exit 1
 fi
 
-generate > "$OUT"
+run_generate "$OUT"
