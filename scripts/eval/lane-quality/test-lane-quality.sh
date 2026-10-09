@@ -168,22 +168,31 @@ check "new tasks pass acceptance end to end" '[ "$(jq -s "map(.accept_ok) | all"
 
 # HIMMEL-4986: --lane api routes the agent through scripts/api-lane/claude-api.sh with a
 # hard $1 cap in code, no judge, and no subscription OAuth token in the launcher's env.
-# HIMMEL-5069 R4: the api lane takes its launcher from the repo tree only (LQ_LANE_BIN is ignored),
-# so the fake launcher stands at the path run.sh derives from LQ_REPO.
-mkdir -p "$TMP/repo/scripts/api-lane"
-cat >"$TMP/repo/scripts/api-lane/claude-api.sh" <<'FAKE'
+# HIMMEL-5069 R4 / judge B1: the api lane takes its launcher from the harness's own location ($HERE/../../api-lane),
+# never from LQ_REPO or LQ_LANE_BIN. The harness is copied into $TMP/tree so a fake launcher can stand where
+# run.sh looks, while LQ_REPO (the git repo) holds a poisoned launcher that must never run.
+TREE="$TMP/tree"; mkdir -p "$TREE/scripts/eval" "$TREE/scripts/lib" "$TREE/scripts/api-lane"
+cp -R "$(dirname "$RUN")" "$TREE/scripts/eval/lane-quality"
+cp -R "$(dirname "$RUN")/../lib" "$TREE/scripts/eval/lib"
+cp "$(dirname "$RUN")/../../lib/native-auth-pin.sh" "$TREE/scripts/lib/native-auth-pin.sh"
+cp "$(dirname "$RUN")/../../api-lane/strip-env.sh" "$TREE/scripts/api-lane/strip-env.sh"
+RUN_API="$TREE/scripts/eval/lane-quality/run.sh"
+cat >"$TREE/scripts/api-lane/claude-api.sh" <<'FAKE'
 #!/usr/bin/env bash
 { echo "key=${ANTHROPIC_API_KEY:-}"; echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-}"; echo "job=${HIMMEL_API_JOB_ID:-}"; echo "args=$*"; } >>"$LQ_FAKE_APIENV"
 [ -z "${LQ_FAKE_API_REFUSE:-}" ] || { echo "claude-api: refused: fake refusal" >&2; exit 2; }
 exec "$LQ_CLAUDE_BIN" "$@"
 FAKE
+chmod +x "$TREE/scripts/api-lane/claude-api.sh"
+mkdir -p "$TMP/repo/scripts/api-lane"
+printf '#!/usr/bin/env bash\ntouch "%s/poison.ran"\nexit 0\n' "$TMP" >"$TMP/repo/scripts/api-lane/claude-api.sh"
 chmod +x "$TMP/repo/scripts/api-lane/claude-api.sh"
 APIENV="$TMP/api.env"; : >"$TMP/fake.log"
 api_run() { # api_run <out> <args...>: the lane env the operator would set, plus a poisoned OAuth token
   local out="$1"; shift
   HIMMEL_API_LANE=on HIMMEL_API_ACCOUNT=B HIMMEL_API_KEY_ID=key-b ANTHROPIC_API_KEY=sk-ant-dummy-0000 \
     CLAUDE_CODE_OAUTH_TOKEN=oauth-dummy LQ_FAKE_APIENV="$APIENV" \
-    bash "$RUN" run --lane api --model claude-sonnet-5-5 --out "$out" "$@"
+    bash "$RUN_API" run --lane api --model claude-sonnet-5-5 --out "$out" "$@"
 }
 api_run "$TMP/out-api0" --no-judge --max-usd 1.5 >"$TMP/api0.log" 2>&1
 rc=$?
@@ -195,7 +204,7 @@ api_run "$TMP/out-api2" --no-judge --dry-run --tasks cr-fix,class-sweep >"$TMP/a
 rc=$?
 check "api dry-run exits 0, names the cap and the command, spends nothing" '[ "$rc" -eq 0 ] && grep -q "cap 1 USD" "$TMP/api2.log" && grep -q "claude-api.sh\|claude-api" "$TMP/api2.log" && [ ! -e "$APIENV" ] && [ ! -s "$TMP/fake.log" ] && [ ! -e "$TMP/out-api2/runs.jsonl" ]'
 check "api dry-run never prints the key" '! grep -q "sk-ant-dummy" "$TMP/api2.log"'
-HIMMEL_API_LANE='' bash "$RUN" run --lane api --model m --no-judge --dry-run --out "$TMP/out-api3" >"$TMP/api3.log" 2>&1
+HIMMEL_API_LANE='' bash "$RUN_API" run --lane api --model m --no-judge --dry-run --out "$TMP/out-api3" >"$TMP/api3.log" 2>&1
 rc=$?
 check "api dry-run refuses while the lane is OFF" '[ "$rc" -ne 0 ] && grep -q "OFF" "$TMP/api3.log"'
 api_run "$TMP/out-api4" --no-judge --tasks cr-fix,class-sweep,shell-red-green >"$TMP/api4.log" 2>&1
@@ -219,11 +228,21 @@ ACCENV="$TMP/accept.env"; rm -f "$ACCENV" "$APIENV"
 LQ_FAKE_ACCEPTENV="$ACCENV" api_run "$TMP/out-api7" --no-judge --tasks cr-fix >"$TMP/api7.log" 2>&1
 check "acceptance code ran (the env dump exists)" '[ -s "$ACCENV" ]'
 check "acceptance runs without ANTHROPIC_API_KEY and the lane selectors" '[ -s "$ACCENV" ] && ! grep -q "^ANTHROPIC_API_KEY=" "$ACCENV" && ! grep -q "^HIMMEL_API_" "$ACCENV"'
+# judge: accept.sh's direct parent (the timeout wrapper) must not carry the key either, so strip-env runs outside it.
+mkdir -p "$TMP/tbin"; REALTIMEOUT="$(command -v timeout)"
+printf '#!/usr/bin/env bash\ncase "$*" in *accept.sh*) env >"%s/timeout.env" ;; esac\nexec "%s" "$@"\n' "$TMP" "$REALTIMEOUT" >"$TMP/tbin/timeout"; chmod +x "$TMP/tbin/timeout"
+rm -f "$TMP/timeout.env"
+PATH="$TMP/tbin:$PATH" api_run "$TMP/out-api7b" --no-judge --tasks cr-fix >"$TMP/api7b.log" 2>&1
+check "accept.sh's timeout parent carries no API key or lane selector" '[ -s "$TMP/timeout.env" ] && ! grep -q "^ANTHROPIC_API_KEY=" "$TMP/timeout.env" && ! grep -q "^HIMMEL_API_" "$TMP/timeout.env"'
 # HIMMEL-5069 R4: LQ_LANE_BIN must not replace the launcher on the api lane.
 printf '#!/usr/bin/env bash\ntouch "%s/poison.ran"\nexit 0\n' "$TMP" >"$TMP/bin/poison"; chmod +x "$TMP/bin/poison"
 rm -f "$APIENV" "$TMP/poison.ran"
 LQ_LANE_BIN="$TMP/bin/poison" api_run "$TMP/out-api8" --no-judge --tasks cr-fix >"$TMP/api8.log" 2>&1
 check "LQ_LANE_BIN does not replace the api launcher" '[ ! -e "$TMP/poison.ran" ] && [ -s "$APIENV" ]'
+# judge B1: LQ_REPO pointing at a tree with its own launcher must not run that launcher.
+rm -f "$APIENV" "$TMP/poison.ran"
+api_run "$TMP/out-api9" --no-judge --tasks cr-fix >"$TMP/api9.log" 2>&1
+check "LQ_REPO's launcher never runs on the api lane" '[ ! -e "$TMP/poison.ran" ] && [ -s "$APIENV" ]'
 
 # HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
 printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"

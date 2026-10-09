@@ -199,6 +199,19 @@ test('unverified completion keeps the full reservation as unknown', () => {
   assert.equal(error.status().reserved_usd, '0.100000');
 });
 
+test('judge: bypass flags in any spelling and caller-supplied tool/settings/mcp flags are refused', () => {
+  const f = fixture();
+  const flags = ['--dangerously-skip-permissions=true', '--dangerously-skip-permissions=anything', '--allow-dangerously-skip-permissions=false',
+    '--allowedTools', '--allowedTools=Bash', '--allowed-tools', '--allowed-tools=Bash', '--settings', '--settings={}', '--mcp-config', '--mcp-config=x.json'];
+  for (const flag of flags) {
+    const r = f.run([...f.good, flag, ...(flag.includes('=') ? [] : ['x'])]);
+    assert.equal(r.status, 2, flag);
+    assert.match(r.stderr, /not allowed/, flag);
+  }
+  assert.equal(f.called(), false);
+  assert.equal(f.status().reserved_usd, '0.000000');
+});
+
 test('an argument terminator is refused so the enforced options stay options', () => {
   const f = fixture();
   const r = f.run(['-p', '--', 'x', '--model', 'm', '--permission-mode', 'plan', '--max-budget-usd', '0.10']);

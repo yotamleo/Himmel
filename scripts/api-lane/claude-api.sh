@@ -40,6 +40,10 @@ while [ "$#" -gt 0 ]; do
     --) refuse "the -- argument terminator would turn the enforced options into positionals" ;;
     --bg|--background|--cloud|--daemon|--dangerously-skip-permissions|--allow-dangerously-skip-permissions) # t13b-ok: refuses the flag, starts no service
       refuse "flag $a is not allowed on the api lane" ;;
+    # any spelling of a bypass flag (=true, =anything), and every caller-supplied tool list, settings or MCP
+    # source: the launcher's own --allowedTools is the only one claude may see.
+    --dangerously-skip-permissions=*|--allow-dangerously-skip-permissions=*|--allowedTools|--allowedTools=*|--allowed-tools|--allowed-tools=*|--settings|--settings=*|--mcp-config|--mcp-config=*)
+      refuse "flag ${a%%=*} is not allowed on the api lane" ;;
     --permission-mode|--model|--max-budget-usd|--output-format)
       [ "$#" -gt 0 ] || refuse "$a needs a value"
       val="$1"; shift ;;
@@ -85,8 +89,9 @@ BANK_VERDICT="$(env -u CLAUDE_CODE_OAUTH_TOKEN CADENCE_BANK_LANE=api CADENCE_BAN
 [ "$BANK_VERDICT" = "PROCEED" ] || refuse "api bank gate said $BANK_VERDICT"
 
 # HIMMEL-5073: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (what keeps the key out of Bash-tool children) forces
-# permission mode "default", which in -p denies Edit/Write/Bash unless declared here. The scrub is the bwrap
-# sandbox, so it cannot be dropped; this allowance is the fixture-work tool set, and the sandbox bounds Bash.
+# permission mode "default" whatever --permission-mode a caller passes (the eval passes auto), and in -p that
+# denies Edit/Write/Bash unless declared here. The scrub is the bwrap sandbox, so it cannot be dropped; this
+# allowance is the fixture-work tool set, the sandbox bounds Bash, and callers cannot add to or replace it.
 ALLOWED_TOOLS="Read,Edit,Write,Glob,Grep,Bash"
 
 OUT="$(mktemp "${TMPDIR:-/tmp}/claude-api-out.XXXXXX")" || refuse "no scratch file"
