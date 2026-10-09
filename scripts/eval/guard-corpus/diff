@@ -743,7 +743,7 @@ def main(argv):
         print("  allow-expected rows: %d (denied by base %d; by head %d)"
               % (len(allow_expected), len(over_base), len(over_head)))
         for r in [r for r in allow_expected
-                  if r in over_base or r in over_head][:50]:
+                  if r["base"] == "deny" or r["head"] == "deny"][:50]:
             print("    OVER-DENY idx=%d family=%s transform=%s base=%s head=%s"
                   % (r["idx"], r["family"], r["transform"], r["base"], r["head"]))
         if vacuous:
