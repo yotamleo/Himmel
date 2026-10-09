@@ -1658,6 +1658,214 @@ for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
     assert_allow "4442 control: relieved ls, no function [$pre]" "$(j "$pre ls /r/w/docs/*.md")"
 done
 
+# HIMMEL-4454 (judge J1871 on #1871): a definition built at run time (eval, or
+# a here-string / here-doc / process substitution fed to `.` or source) is
+# invisible to the text scan above, so it shadowed a relief name and kept relief.
+for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
+    assert_deny "4454 eval-defined shadow [$pre]" "$(j "eval 'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 eval with a \$var body [$pre]" "$(j "d='ls () { bash \"\$@\"; }'; eval \"\$d\"; $pre ls $GP")"
+    assert_deny "4454 . /dev/stdin here-string [$pre]" "$(j ". /dev/stdin <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 source /dev/stdin here-string [$pre]" "$(j "source /dev/stdin <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 source process substitution [$pre]" "$(j "source <(echo 'ls () { bash \"\$@\"; }'); $pre ls $GP")"
+    assert_deny "4454 . /dev/stdin here-doc [$pre]" "$(j ". /dev/stdin <<'EOT'
+ls () { bash \"\$@\"; }
+EOT
+$pre ls $GP")"
+    assert_deny "4454 source /dev/fd/0 here-string [$pre]" "$(j "source /dev/fd/0 <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 . /dev/stdin after a keyword [$pre]" "$(j "if true; then . /dev/stdin <<<'ls () { bash \"\$@\"; }'; fi; $pre ls $GP")"
+    assert_deny "4454 negated eval [$pre]" "$(j "! eval 'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 coproc eval [$pre]" "$(j "coproc eval 'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 negated . /dev/stdin [$pre]" "$(j "! . /dev/stdin <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 source a plain file [$pre]" "$(j "source /tmp/shadow.sh; $pre ls $GP")"
+    assert_deny "4454 . a plain file [$pre]" "$(j ". /tmp/shadow.sh; $pre ls $GP")"
+    assert_allow "4454 control: a quoted 'eval' is not a word [$pre]" "$(j "$pre ls /r/w/docs/*.md | grep 'eval'")"
+    assert_allow "4454 control: evaluate/medieval are other words [$pre]" "$(j "evaluate=1; medieval=1; $pre ls /r/w/docs/*.md")"
+done
+
+# HIMMEL-4454 (judge j2236a NO-GO): the run-time definers must be refused in ANY
+# command position (after if/while/until/case arms, assignment and redirect
+# prefixes, precommand options), however the command word is spelled (quoted,
+# escaped, expanded), and through the other run-time hooks (trap DEBUG/ERR/
+# ZERR/RETURN, mapfile/readarray -C, zsh emulate -c). Each was run under bash
+# and zsh and defined the shadow.
+# shellcheck disable=SC2016 # SH is probe text, not an expansion
+SH='ls () { bash "$@"; }'
+for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
+    while IFS= read -r form; do
+        [ -n "$form" ] || continue
+        assert_deny "4454b $form [$pre]" "$(j "${form//@@/$SH}; $pre ls $GP")"
+    done <<'FORMS'
+if eval '@@'; then :; fi
+while eval '@@'; do break; done
+until eval '@@'; do break; done
+case x in x) eval '@@';; esac
+a=1 eval '@@'
+</dev/null eval '@@'
+2>/dev/null eval '@@'
+time -p eval '@@'
+command -p eval '@@'
+builtin -- eval '@@'
+repeat 1 eval '@@'
+if . /dev/stdin <<<'@@'; then :; fi
+a=1 . /dev/stdin <<<'@@'
+</dev/null . /dev/stdin <<<'@@'
+command -p . /dev/stdin <<<'@@'
+case x in x) . /dev/stdin <<<'@@';; esac
+\eval '@@'
+"eval" '@@'
+$'eval' '@@'
+ev\al '@@'
+"e"val '@@'
+${x:-eval} '@@'
+x=eval; $x '@@'
+y=al; ev${y} '@@'
+{,eval} '@@'
+"." /dev/stdin <<<'@@'
+'.' /dev/stdin <<<'@@'
+\. /dev/stdin <<<'@@'
+$'.' /dev/stdin <<<'@@'
+${x:-.} /dev/stdin <<<'@@'
+"source" /dev/stdin <<<'@@'
+so\urce /dev/stdin <<<'@@'
+trap '@@' DEBUG
+trap '@@' ERR
+trap '@@' ZERR
+trap '@@' RETURN
+mapfile -C '@@' -c 1 a </dev/null
+readarray -C '@@' -c 1 a </dev/null
+emulate zsh -c '@@'
+0<&0 ev\al '@@'
+2>&1 ev\al '@@'
+>&/dev/null ev\al '@@'
+&>/dev/null ev\al '@@'
+<&- ev\al '@@'
+>&2 . /dev/stdin <<<'@@'
+if [[ -n x ]] then "eval" '@@'; fi
+if [[ -n x ]] then $'.' /dev/stdin <<<'@@'; fi
+while [[ -n x ]] do \eval '@@'; break; done
+until [[ -z x ]] do ev\al '@@'; break; done
+if [[ -n x ]] then trap '@@' DEBUG; :; fi
+coproc N { \eval '@@'; }
+coproc N { "eval" '@@'; }
+coproc N { $'.' /dev/stdin <<<'@@'; }
+if [[ -n x ]] eval '@@'
+if [[ -n x ]] { \eval '@@' }
+while [[ -n x ]] { \eval '@@'; break }
+until [[ -z x ]] { \eval '@@'; break }
+{ :; } always { \eval '@@'; }
+if [[ -n x ]] then . /dev/stdin <<<'@@'; fi
+elif [[ -n x ]] { \eval '@@' }
+if (( 1 )) then \eval '@@'; fi
+for i in 1; do \eval '@@'; done
+select i in 1; do \eval '@@'; break; done
+foreach i (1) \eval '@@' end
+f() { \eval '@@'; }
+function f { \eval '@@'; }
+! \eval '@@'
+d="$(true)" $(echo eval) '@@'
+d="$(true)" \eval '@@'
+"$(echo eval)" '@@'
+d="$(true)" "eval" '@@'
+d="$(true)" "$(echo eval)" '@@'
+echo "$(true)" ; d="$(true)" ev\al '@@'
+FORMS
+    assert_allow "4454b control: quoted command substitution assigned [$pre]" "$(j "d=\"\$(git rev-parse --show-toplevel)\"; $pre ls /r/w/docs/*.md")"
+    assert_allow "4454b control: quoted wc substitution assigned [$pre]" "$(j "n=\"\$(wc -l < a)\"; $pre ls /r/w/docs/*.md")"
+    assert_allow "4454b control: two quoted substitutions as arguments [$pre]" "$(j "echo \"\$(date)\" \"\$(pwd)\"; $pre ls /r/w/docs/*.md")"
+    assert_allow "4454b control: trap on EXIT is not a run-time definer [$pre]" "$(j "trap 'echo bye' EXIT; $pre ls /r/w/docs/*.md")"
+    assert_allow "4454b control: mapfile without -C [$pre]" "$(j "mapfile -t a </dev/null; $pre ls /r/w/docs/*.md")"
+    # Judge j2236f: the whole ALLOW set of the j2236c forms (81 distinct forms), pinned so
+    # it is reviewable in the diff. env, nice and nohup execvp() their operand, and eval,
+    # source, ., trap, mapfile, readarray and emulate are shell builtins with no executable
+    # on PATH, so none of these runs the quoted text and the shadow is never defined.
+    while IFS= read -r form; do
+        [ -n "$form" ] || continue
+        assert_allow "4454b wrapper-exec ALLOW set $form [$pre]" "$(j "${form//@@/$SH}; $pre ls $GP")"
+    done <<'FORMS'
+env "." /dev/stdin <<<'@@'
+env "e"val '@@'
+env "eval" '@@'
+env "source" /dev/stdin <<<'@@'
+env $'.' /dev/stdin <<<'@@'
+env $'eval' '@@'
+env ${x:-.} /dev/stdin <<<'@@'
+env ${x:-eval} '@@'
+env '.' /dev/stdin <<<'@@'
+env . /dev/stdin <<<'@@'
+env \. /dev/stdin <<<'@@'
+env \eval '@@'
+env e''val '@@'
+env emulate sh -c '@@'
+env emulate zsh -c '@@'
+env ev\al '@@'
+env eval '@@'
+env mapfile -C '@@' -c 1 a <<<x
+env readarray -C '@@' -c 1 a <<<x
+env so\urce /dev/stdin <<<'@@'
+env trap '@@' DEBUG; :
+env trap '@@' ERR; false
+env trap '@@' ZERR; false
+env {,eval} '@@'
+nice "." /dev/stdin <<<'@@'
+nice "e"val '@@'
+nice "eval" '@@'
+nice "source" /dev/stdin <<<'@@'
+nice $'.' /dev/stdin <<<'@@'
+nice $'eval' '@@'
+nice ${x:-.} /dev/stdin <<<'@@'
+nice ${x:-eval} '@@'
+nice '.' /dev/stdin <<<'@@'
+nice . /dev/stdin <<<'@@'
+nice \. /dev/stdin <<<'@@'
+nice \eval '@@'
+nice e''val '@@'
+nice emulate sh -c '@@'
+nice emulate zsh -c '@@'
+nice ev\al '@@'
+nice eval '@@'
+nice mapfile -C '@@' -c 1 a <<<x
+nice readarray -C '@@' -c 1 a <<<x
+nice so\urce /dev/stdin <<<'@@'
+nice trap '@@' DEBUG; :
+nice trap '@@' ERR; false
+nice trap '@@' ZERR; false
+nice {,eval} '@@'
+nohup "." /dev/stdin <<<'@@'
+nohup "e"val '@@'
+nohup "eval" '@@'
+nohup "source" /dev/stdin <<<'@@'
+nohup $'.' /dev/stdin <<<'@@'
+nohup $'eval' '@@'
+nohup ${x:-.} /dev/stdin <<<'@@'
+nohup ${x:-eval} '@@'
+nohup '.' /dev/stdin <<<'@@'
+nohup . /dev/stdin <<<'@@'
+nohup \. /dev/stdin <<<'@@'
+nohup \eval '@@'
+nohup e''val '@@'
+nohup emulate sh -c '@@'
+nohup emulate zsh -c '@@'
+nohup ev\al '@@'
+nohup eval '@@'
+nohup mapfile -C '@@' -c 1 a <<<x
+nohup readarray -C '@@' -c 1 a <<<x
+nohup so\urce /dev/stdin <<<'@@'
+nohup trap '@@' DEBUG; :
+nohup trap '@@' ERR; false
+nohup trap '@@' ZERR; false
+nohup {,eval} '@@'
+x=.; env $x /dev/stdin <<<'@@'
+x=.; nice $x /dev/stdin <<<'@@'
+x=.; nohup $x /dev/stdin <<<'@@'
+x=eval; env $x '@@'
+x=eval; nice $x '@@'
+x=eval; nohup $x '@@'
+y=al; env ev${y} '@@'
+y=al; nice ev${y} '@@'
+y=al; nohup ev${y} '@@'
+FORMS
+done
+
 # HIMMEL-4157 (judge J1685 NO-GO): the relief pass was super-linear -- per
 # redirect it walked every stage, forking per token expansion. 200 redirects
 # took 13 s against a 15 s hook budget; a 10 KB line of quoted stages 5 s.

@@ -1219,7 +1219,7 @@ pobf_relief() {
     local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' ap wr=0
     local PX p tl rd=0 ea sa eo=${2-} z
     local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO XP ED
-    local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' TAB=$'\t'
+    local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' T3=$'\003' T5=$'\005' TAB=$'\t'
     # Each scan cuts at the first special char with a glob (the prefix up to
     # the first char of the set), not a ^(..)(.*)$ regex, and reads a long
     # line or text 256 chars at a time (rest, the tail in tl): the regex
@@ -1290,7 +1290,7 @@ pobf_relief() {
                         # A lone trailing backslash: no relief (it looped).
                         '\') return 1 ;;
                         '\'*) body="$body${rest:0:2}"; rest=${rest#??} ;;
-                        '$('*) pobf_tok; md="${md}C"; F="$F \$("; rest=${rest#??} ;;
+                        '$('*) pobf_tok; md="${md}C"; F="$F$T3\$("; rest=${rest#??} ;;
                         "$BQ"*) pobf_tok; md="${md}B"; F="$F $BQ"; rest=${rest#?} ;;
                         *) body="$body${rest:0:1}"; rest=${rest#?} ;;
                     esac
@@ -1317,7 +1317,7 @@ pobf_relief() {
                 '('*) case "$q" in C|P) md="${md}P" ;; esac; F="$F("; rest=${rest#?} ;;
                 ')'*)
                     F="$F)"; rest=${rest#?}
-                    case "$q" in C|P) md=${md%?}; case "$md" in *D) F="$F " ;; esac ;; esac ;;
+                    case "$q" in C|P) md=${md%?}; case "$md" in *D) F="$F$T5" ;; esac ;; esac ;;
                 "$BQ"*)
                     F="$F$BQ"; rest=${rest#?}
                     if [ "$q" = B ]; then
@@ -1343,12 +1343,96 @@ pobf_relief() {
     done <<< "$t"
     [ "$md" = U ] && [ "$hi" = "$hn" ] || return 1
     case "$F" in *'<('*|*'>('*) return 1 ;; esac
+    # FM keeps the markers for a $( opening inside double quotes (T3) and the
+    # ) closing it (T5); everything after the scan reads F with them as blanks.
+    local FM=$F
+    F=${F//$T3/ }; F=${F//$T5/ }
     # No relief (HIMMEL-4442) on an unquoted empty paren pair, on any unquoted
     # word functions, dis_functions, aliases, dis_aliases, galiases,
     # dis_galiases, saliases, dis_saliases, commands, BASH_ALIASES, BASH_CMDS,
     # fpath, FPATH, enable or autoload (delimited by a non-identifier char each
     # side, after quote removal), or on set followed by -A or +A.
-    # Runtime-built definitions (eval, here-string, source) are HIMMEL-4454's.
+    # No relief (HIMMEL-4454) on a definition built at run time, which the text
+    # scan above cannot see: an eval command word, or a source / command-word
+    # `.`, whatever it reads (a file, stdin, a here-string or here-doc).
+    # Process substitution is refused above.
+    local re_cp="(^|[;&|({!${NL}]|(^|[[:blank:]])(then|do|else|elif|builtin|command|exec|time|coproc|noglob|nocorrect|eval)[[:blank:]])[[:blank:]]*"
+    local re_ev="${re_cp}eval([^[:alnum:]_]|\$)"
+    local re_sr="(^|[^[:alnum:]_.])source([^[:alnum:]_]|\$)|${re_cp}\\.[[:blank:]]"
+    [[ $F =~ $re_ev ]] && return 1
+    [[ $F =~ $re_sr ]] && return 1
+    # The same, structurally: split F at ; & | ( ) and backticks (a newline
+    # already ends a line), skip what can precede a command word (keywords,
+    # their options, assignments, redirects), and refuse relief when the
+    # command word is not a plain literal (a quote token, a backslash, a $ or
+    # a brace) or is eval, source, `.`, a DEBUG/ERR/ZERR/RETURN trap, a
+    # mapfile / readarray -C callback or a zsh emulate -c.
+    local re_op="${T3}\\\$[[:blank:]]*\$"
+    local sp=0
+    local -a stk
+    local re_dp='(^|[^$])\(\('
+    [[ $F =~ $re_dp ]] && return 1
+    local re_rd='^[0-9]*(<<<|<>|>>|>\||&>|<|>)(.*)$'
+    local re_tr='(^|[^[:alnum:]_])(DEBUG|ERR|ZERR|RETURN)([^[:alnum:]_]|$)'
+    local re_mc='[[:blank:]]-[[:alnum:]]*C'
+    local re_ec='[[:blank:]]-[[:alnum:]]*c'
+    # Backticks pair up (an escaped one is not a delimiter): the text after a
+    # closing one continues the same command, so its first line is no stage.
+    local cw sk bj skf G sg
+    local -a bqs
+    G=${FM//\\$BQ/$'\004'}
+    IFS=$BQ read -r -d '' -a bqs <<< "$G" || :
+    for bj in "${!bqs[@]}"; do
+        skf=0; [ "$bj" -gt 0 ] && [ $((bj % 2)) = 0 ] && skf=1
+        # >&, <& and &> are redirects, not a stage break: fold them first.
+        sg=${bqs[bj]//>&/>}; sg=${sg//<&/<}; sg=${sg//&>/>}
+        while IFS= read -r L; do
+            [ "$skf" = 1 ] && { skf=0; continue; }
+            cw=''; sk=0
+            # A line led by T5 is the text after the ) closing a "$( ): it
+            # continues the command that opened it (stk holds that command's
+            # word, empty while only assignments precede), so it is no stage.
+            if [[ $L == "$T5"* ]]; then
+                [ "$sp" -gt 0 ] || return 1
+                sp=$((sp - 1)); cw=${stk[sp]}; L=${L#?}
+                case "$L" in
+                    ''|[[:blank:]]*) ;;
+                    *[[:blank:]]*) L=${L#*[[:blank:]]} ;;
+                    *) L='' ;;
+                esac
+            fi
+            # Fail closed: any reserved word or compound opener, in any
+            # position, means a compound command whose real command word this
+            # scan does not model (a [[ test, a coproc name, zsh `always`).
+            for w in $L; do
+                case "$w" in
+                    '[['|if|then|elif|else|fi|while|until|do|done|for|select|case|'esac'|in|function|coproc|time|'!'|'{'|'}'|always|foreach|repeat) return 1 ;;
+                esac
+            done
+            for w in $L; do
+                [ -n "$cw" ] && break
+                [ "$sk" = 1 ] && { sk=0; continue; }
+                case "$w" in
+                    if|then|do|else|elif|while|until|'!'|'{'|'}'|time|coproc|nocorrect|noglob|builtin|command|exec|-*) continue ;;
+                    repeat) sk=1; continue ;;
+                esac
+                if [[ $w =~ $re_rd ]]; then [ -z "${BASH_REMATCH[2]}" ] && sk=1; continue; fi
+                [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]] && continue
+                cw=$w; break
+            done
+            case "$cw" in
+                '') ;;
+                *"$T1"*|*"$T2"*|*\\*|*\$*|*\{*|*\}*) return 1 ;;
+                eval|source|.) return 1 ;;
+                trap) [[ $L =~ $re_tr ]] && return 1 ;;
+                mapfile|readarray) [[ $L =~ $re_mc ]] && return 1 ;;
+                emulate) [[ $L =~ $re_ec ]] && return 1 ;;
+            esac
+            # A line ending in the T3 $ of a "$( ) opening: remember its command.
+            if [[ $L =~ $re_op ]]; then stk[sp]=$cw; sp=$((sp + 1)); fi
+        done <<< "${sg//[;&|()]/$NL}"
+    done
+    [ "$sp" = 0 ] || return 1
     [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
     F=${F//[0-9]>&[0-9]/ }
