@@ -1220,6 +1220,12 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" FU_CLASS="$fu_class
       dup=(priorAvail.reason||"")===(e.REASON||"") && (priorAvail.detail||"")===(e.DETAIL||"");
     } else if(priorAvail.status==="unavailable"&&e.STATUS==="ok"){
       dup=false;
+    } else if(e.STATUS==="unavailable"&&String(e.REASON||"").trim().toLowerCase()==="certify-refused"){
+      // HIMMEL-5110: a panel certify refusal (critic-panel.sh exit 6) is a
+      // deliberate fail-closed hold, not a transient failure. An earlier ok at
+      // this (head, model) must never swallow it: the gate would not see the
+      // refusal while panel-first-pass.sh read rc 0 as "recorded".
+      dup=false;
     } else {
       process.stderr.write("ledger-append.sh: avail record for "+e.MODEL+" at head "
         +String(e.HEAD_).slice(0,8)+" would DOWNGRADE status "+priorAvail.status+"->"+e.STATUS

@@ -180,7 +180,14 @@ PINABORTRETRY
                 fi
             fi
             if [ "$panel_rc" -ne 0 ]; then
-                echo "docs-audit cross-model critic unavailable (all critics failed) - record any panel-availability unavailable rows; under CR_REQUIRE_CROSS_MODEL the marker will stay closed until a non-Claude critic records avail ok" >&2
+                if [ "$panel_rc" -eq 6 ]; then
+                    # HIMMEL-5110: exit 6 is the panel's deliberate certify
+                    # refusal (HIMMEL-1932), recorded on the ledger; not a
+                    # failed panel.
+                    echo "docs-audit critic panel REFUSED to certify this run (exit 6: the citation-guard digest could not be computed - fix sha256sum/shasum); the CR marker stays held at this SHA until the panel is re-run on a new HEAD" >&2
+                else
+                    echo "docs-audit cross-model critic unavailable (all critics failed) - record any panel-availability unavailable rows; under CR_REQUIRE_CROSS_MODEL the marker will stay closed until a non-Claude critic records avail ok" >&2
+                fi
                 docs_audit_panel_findings=""
             fi
         fi

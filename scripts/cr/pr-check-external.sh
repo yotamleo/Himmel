@@ -197,7 +197,13 @@ grep '^panel-availability:' "$panel_err" >&2 || true
 
 # GATE 1: panel non-zero exit -> FAIL.
 if [ "$panel_rc" -ne 0 ]; then
-    echo "pr-check-external: FAIL - critic panel exited $panel_rc (all critics failed?)" >&2
+    if [ "$panel_rc" -eq 6 ]; then
+        # HIMMEL-5110: exit 6 is the panel's deliberate certify refusal, not a
+        # failed panel (HIMMEL-1932); the gate holds this SHA closed.
+        echo "pr-check-external: FAIL - critic panel REFUSED to certify this run (exit 6: the citation-guard digest could not be computed - fix sha256sum/shasum); the CR marker stays held at this SHA until the panel is re-run on a new HEAD" >&2
+    else
+        echo "pr-check-external: FAIL - critic panel exited $panel_rc (all critics failed?)" >&2
+    fi
     exit 1
 fi
 

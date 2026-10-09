@@ -953,7 +953,9 @@ unadjudicated_count=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.o
 # broken pass, and the node throw leaves this EMPTY, which gate 4d refuses.
 missing_sweep=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s).missingSweep;if(Array.isArray(m))console.log("ok "+m.join(" "));})' 2>/dev/null)
 # HIMMEL-1932: a recorded panel certify refusal at this head.
-certify_refused=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).certifyRefused?1:0)))' 2>/dev/null)
+# HIMMEL-5110: fail CLOSED like missing_sweep above. Only a boolean prints; a
+# node failure or a verdict without the key leaves this EMPTY, which gate 2b refuses.
+certify_refused=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s).certifyRefused;if(typeof c==="boolean")console.log(c?"1":"0");})' 2>/dev/null)
 # HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility (see gate 3b below).
 floor_fallback_eligible=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).floorFallbackEligible?1:0)))' 2>/dev/null)
 exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).exhaustedLanes||[]).join(" ")))' 2>/dev/null)
@@ -1034,7 +1036,12 @@ fi
 # that evidence never reached the ledger). Another lane's avail ok must not
 # stand in for it. The hold is per SHA: fix the digest tooling and re-run the
 # panel at a new head (any commit).
-if [ "${certify_refused:-0}" = "1" ]; then
+if [ "$certify_refused" != "0" ] && [ "$certify_refused" != "1" ]; then
+    echo "clear-cr-marker: could not read the panel certify-refused flag from the ledger verdict — refusing (an unknown refusal state is not a clean one). Inspect $ledger." >&2
+    audit "REFUSED reason=certify-refused-unreadable branch=$branch sha=$tip"
+    exit 14
+fi
+if [ "$certify_refused" = "1" ]; then
     echo "clear-cr-marker: the critic panel recorded certify-refused at ${tip:0:8} (it could not certify the run and its rejected blocking evidence never reached the ledger) — another lane's 'avail ... ok' does not clear that. Fix the digest tooling (sha256sum/shasum) and re-run /pr-check on a new HEAD." >&2
     audit "REFUSED reason=panel-certify-refused branch=$branch sha=$tip"
     exit 14

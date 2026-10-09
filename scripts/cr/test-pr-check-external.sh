@@ -132,6 +132,17 @@ else
 fi
 if [ -z "$(meta_verdict "$sd/meta.json")" ]; then ok "T4 no verdict on empty diff"; else bad "T4: verdict should not be written on empty diff"; fi
 
+# --- T4b: HIMMEL-5110 panel exit 6 = certify refusal, not "all critics failed" -
+sd="$tmp/s4b"; new_session "$sd"
+err6="$(cd "$repo" && FAKE_OUT="" FAKE_ERR="$CODEX_OK_ERR" FAKE_RC=6 \
+    bash "$SCRIPT" --branch glm/x --session-dir "$sd" --base main 2>&1 >/dev/null)"
+case "$err6" in
+    *"REFUSED to certify this run (exit 6"*) ok "T4b exit 6 is reported as a certify refusal" ;;
+    *) bad "T4b: exit 6 message wrong (got: $err6)" ;;
+esac
+case "$err6" in *"all critics failed"*) bad "T4b: exit 6 must not read as all critics failed" ;; *) ok "T4b exit 6 is not 'all critics failed'" ;; esac
+if [ -z "$(meta_verdict "$sd/meta.json")" ]; then ok "T4b no verdict on a refusal"; else bad "T4b: verdict should not be written"; fi
+
 # --- T5: CR_PROFILE=none -> refuse (exit 2) ----------------------------------
 sd="$tmp/s5"; new_session "$sd"
 rc=0
