@@ -242,6 +242,25 @@ else
     echo "SKIP 4576 B1 under bash < 4.4 (set HIMMEL_TEST_OLD_BASH)"
 fi
 
+# --- HIMMEL-5101: the path prefix stops at an open paren (linear on a `(` run) ---
+# Every `(` is a CMDPOS anchor; a prefix that crosses `(` rescans the whole run
+# from each one (quadratic), and a timed-out PreToolUse hook does not deny.
+# shellcheck disable=SC2046 # one word per repeat is the point
+printf -v pad_o '(%.0s' $(seq 1 20000)
+t0=$SECONDS
+assert_rc 'open-paren run x20000 then git stash drop (linear)' 2 "$(run_case "$(j_bash "echo hi$pad_o; git stash drop")")"
+if [ $((SECONDS - t0)) -gt 2 ]; then
+    echo "FAIL open-paren run x20000 took $((SECONDS - t0))s (budget 2s)"; FAILED=$((FAILED + 1)); fi
+# A `(` or `)` inside the path must still reach the program name.
+assert_rc 'path with (b) then git stash drop'         2 "$(run_case "$(j_bash '/tmp/a(b)/git stash drop')")"
+assert_rc 'quoted path with (b) then git stash drop'  2 "$(run_case "$(j_bash '"/tmp/a(b)/git" stash drop')")"
+assert_rc 'path with ) then git stash drop'           2 "$(run_case "$(j_bash '/tmp/a)/git stash drop')")"
+assert_rc 'path with )) then git stash drop'          2 "$(run_case "$(j_bash '/tmp/a))/git stash drop')")"
+assert_rc 'path with ){ then git stash drop'          2 "$(run_case "$(j_bash '/tmp/a){/git stash drop')")"
+assert_rc 'c: path with (x86) then git stash drop'    2 "$(run_case "$(j_bash 'c:/p(x86)/git stash drop')")"
+assert_rc 'sudo path with (b) then git stash drop'    2 "$(run_case "$(j_bash 'sudo /tmp/a(b)/git stash drop')")"
+assert_rc 'path with (b) then git stash list allowed' 0 "$(run_case "$(j_bash '/tmp/a(b)/git stash list')")"
+
 # --- BYPASS case ---
 assert_rc "GIT_STASH_OK bypass"       0 "$(run_case "$(j_bash 'git stash drop')" "GIT_STASH_OK=1")"
 

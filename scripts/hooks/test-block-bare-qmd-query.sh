@@ -966,6 +966,26 @@ case "$msg" in
     *) echo "FAIL deny text does not name qmd-bounded.sh: $msg"; FAILED=$((FAILED + 1)) ;;
 esac
 
+# --- HIMMEL-5101: the path prefix stops at an open paren (linear on a `(` run) ---
+# Every `(` is a CMDPOS anchor; a prefix that crosses `(` rescans the whole run
+# from each one (quadratic), and a timed-out PreToolUse hook does not deny.
+# shellcheck disable=SC2046 # one word per repeat is the point
+printf -v pad_o '(%.0s' $(seq 1 16000)
+t0=$SECONDS
+deny "echo hi$pad_o; qmd query x"
+if [ $((SECONDS - t0)) -gt 2 ]; then
+    echo "FAIL open-paren run x16000 took $((SECONDS - t0))s (budget 2s)"; FAILED=$((FAILED + 1)); fi
+# A `(` or `)` inside the path must still reach the program name.
+deny '/tmp/a(b)/qmd query x'
+deny '"/tmp/a(b)/qmd" query x'
+deny '/tmp/a)/qmd query x'
+deny '/tmp/a))/qmd query x'
+deny '/tmp/a){/qmd query x'
+deny 'c:/p(x86)/qmd query x'
+deny 'sudo /tmp/a(b)/qmd query x'
+deny 'node /tmp/a(b)/qmd query x'
+allow '/tmp/a(b)/qmd status'
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0
