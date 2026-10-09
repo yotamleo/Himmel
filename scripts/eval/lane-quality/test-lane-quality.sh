@@ -69,7 +69,10 @@ case "$prompt" in
 esac
 bash "$LQ_FAKE_RUN" materialize "$t" "$PWD" --reference >/dev/null
 # HIMMEL-5069 R3: the candidate script dumps its env when acceptance runs it.
-[ -z "${LQ_FAKE_ACCEPTENV:-}" ] || sed -i "1a env >\"$LQ_FAKE_ACCEPTENV\"" lq-work/cleanup-old.sh
+if [ -n "${LQ_FAKE_ACCEPTENV:-}" ]; then
+  { head -n 1 lq-work/cleanup-old.sh; echo "env >\"$LQ_FAKE_ACCEPTENV\""; tail -n +2 lq-work/cleanup-old.sh; } >lq-work/cleanup-old.new
+  mv lq-work/cleanup-old.new lq-work/cleanup-old.sh
+fi
 # Misbehaviour knobs: a candidate that hangs, a commit outside lq-work/, and a
 # bank that runs dry during the agent call.
 [ -z "${LQ_FAKE_HANG:-}" ] || printf '#!/usr/bin/env bash\nsleep 10\n' >lq-work/semver-cmp.sh
