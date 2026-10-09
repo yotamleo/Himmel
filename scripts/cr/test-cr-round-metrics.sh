@@ -100,4 +100,17 @@ check "amend after --now ignored" "$(q findings.by_verdict.disproved)" "undef"
 CR_LEDGER="$L" bash "$CM" --now not-a-date --known "$K" > "$tmp/bad.out" 2>&1
 check "invalid --now exits 2" "$?" "2"
 
+# unreadable ledger (a directory) is an error, not an empty report
+CR_LEDGER="$tmp" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" > "$tmp/d.out" 2>&1
+check "unreadable ledger exits 2" "$?" "2"
+
+# a JSON null line is skipped like a malformed line
+{ echo null; echo 42; cat "$L"; } > "$tmp/nulls.jsonl"
+json="$(CR_LEDGER="$tmp/nulls.jsonl" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" | grep -m1 '^{')"
+check "null record skipped" "$(q findings.total)" "8"
+
+# huge --days is a usage error, not a crash
+CR_LEDGER="$L" bash "$CM" --now 2026-10-09T00:00:00Z --days 99999999999 --known "$K" > "$tmp/h.out" 2>&1
+check "huge --days exits 2" "$?" "2"
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

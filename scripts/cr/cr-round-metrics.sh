@@ -47,13 +47,16 @@ const e = process.env;
 const now = e.NOW ? Date.parse(e.NOW) : Date.now();
 if (!Number.isFinite(now)) { console.error("cr-round-metrics.sh: --now is not a valid timestamp"); process.exit(2); }
 const since = now - Number(e.DAYS) * 86400000;
+if (!Number.isFinite(since) || Number.isNaN(new Date(since).getTime())) { console.error("cr-round-metrics.sh: --days is out of range"); process.exit(2); }
 
-// A missing or empty ledger is a valid zero-result report (same JSON shape).
+// A missing or empty ledger is a valid zero-result report (same JSON shape); other read errors are not.
 let raw = "";
-try { raw = fs.readFileSync(e.LEDGER, "utf8"); } catch (_) { /* absent ledger = no rows */ }
+try { raw = fs.readFileSync(e.LEDGER, "utf8"); } catch (err) {
+  if (!err || err.code !== "ENOENT") { console.error("cr-round-metrics.sh: cannot read ledger: " + (err && err.code)); process.exit(2); }
+}
 const records = [];
 for (const l of raw.split("\n").filter(Boolean)) {
-  try { records.push(JSON.parse(l)); } catch (_) { /* skip malformed */ }
+  try { const r = JSON.parse(l); if (r && typeof r === "object") records.push(r); } catch (_) { /* skip malformed */ }
 }
 
 // Keyword classes, first match wins. Order puts the specific shapes before the broad ones.
