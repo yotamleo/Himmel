@@ -567,6 +567,12 @@ EOF_SNAP
             fi
             word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
             [ -n "$word" ] || { bad=1; break; }
+            # HIMMEL-4984: the same bytes the GO is judged on also veto, so a
+            # NO-GO that lands after the veto scan above still blocks the round.
+            if [ "$word" = "NO-GO $want" ]; then
+                echo "review-round: ${f#"$dir"/} rules NO-GO for $want - the scope round is refused (HIMMEL-4984)" >&2
+                exit 8
+            fi
             # HIMMEL-4984: signed by write-verdict.sh, or the qid is disqualified.
             go_verdict_mac_ok_text "$snap" "$scope" "$qid" "$name" || { bad=1; break; }
             if [ -n "$hit" ] || [ "$word" != "GO $want" ]; then continue; fi

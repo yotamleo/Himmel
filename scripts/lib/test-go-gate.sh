@@ -313,6 +313,13 @@ printf 'mac: %s\n' "$(HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac s q n < "$
 snap_ok() { HOME="$PINHOME" bash -c '. "$1"; go_verdict_snapshot "$2" || exit 3; case "$4" in edit) GO_VERDICT_SNAP=${GO_VERDICT_SNAP/body/BODY} ;; esac; go_verdict_mac_ok_text "$GO_VERDICT_SNAP" s q n' _ "$GO_GATE_SRC" "$SREC" x "${1:-}"; }
 rc=0; snap_ok >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 0 ] || fail "6e: a signed record's snapshot did not verify (rc=$rc)"
 rc=0; snap_ok edit >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail "6e: an edited snapshot verified"
+# 6f. A NUL byte would drop out of the shell variable and leave the mac valid over
+# different bytes, so a signed record with one inserted is refused.
+NREC="$ROOT/snap-record-nul.md"
+{ head -n 2 "$SREC"; printf 'body\0 line\n'; tail -n +4 "$SREC"; } > "$NREC"
+rc=0; HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac_ok "$2" s q n' _ "$GO_GATE_SRC" "$NREC" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "6f: a record with an inserted NUL byte verified"
+rc=0; HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac_ok "$2" s q n' _ "$GO_GATE_SRC" "$SREC" >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 0 ] || fail "6f: the clean record stopped verifying"
 rc=0; HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac_ok "$2" s q n' _ "$GO_GATE_SRC" "$SREC" >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 0 ] || fail "6e: go_verdict_mac_ok disagrees with the snapshot check"
 
 if [ "$FAIL" -eq 0 ]; then

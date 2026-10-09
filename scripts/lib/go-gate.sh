@@ -455,8 +455,21 @@ go_verdict_mac_ok() {
 # verifies the mac and parses its fields from this one copy, so a rewrite
 # between the two reads cannot make a verified mac vouch for different bytes.
 go_verdict_snapshot() {
-    GO_VERDICT_SNAP=$(cat "$1" 2>/dev/null; printf x) || return 1
-    GO_VERDICT_SNAP=${GO_VERDICT_SNAP%x}
+    local tmp size kept
+    GO_VERDICT_SNAP=""
+    tmp=$(mktemp "${TMPDIR:-/tmp}/go-verdict-snap.XXXXXX") || return 1
+    # One read of the shared file into a private copy. A NUL byte would vanish
+    # in the shell variable and leave a mac valid over different bytes, so a
+    # record holding one is refused.
+    if cat "$1" > "$tmp" 2>/dev/null; then
+        size=$(wc -c < "$tmp" | tr -d ' ')
+        kept=$(tr -d '\000' < "$tmp" | wc -c | tr -d ' ')
+        if [ "$size" = "$kept" ]; then
+            GO_VERDICT_SNAP=$(cat "$tmp"; printf x)
+            GO_VERDICT_SNAP=${GO_VERDICT_SNAP%x}
+        fi
+    fi
+    rm -f "$tmp"
     [ -n "$GO_VERDICT_SNAP" ]
 }
 
