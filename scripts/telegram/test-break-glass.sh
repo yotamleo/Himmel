@@ -97,12 +97,14 @@ echo dirty >> "$PRIMARY/scripts/hooks/h.sh"
 bg repin-hooks - - >/dev/null; assert_rc "R2 a primary with tracked changes is left alone" 21 "$?"
 git -C "$PRIMARY" checkout -q -- scripts/hooks/h.sh
 touch "$PRIMARY/untracked-note"
+mkdir -p "$TMP/hooks"
 # shellcheck disable=SC2016 # the hook expands these at run time, not here
-printf '#!/usr/bin/env bash\necho "other=${OTHER_GUARD_OK:-unset} token=${TELEGRAM_BOT_TOKEN:-unset}" > "%s"\n' "$TMP/hookenv" > "$PRIMARY/.git/hooks/post-merge"
-chmod +x "$PRIMARY/.git/hooks/post-merge"
+printf '#!/usr/bin/env bash\necho "other=${OTHER_GUARD_OK:-unset} token=${TELEGRAM_BOT_TOKEN:-unset}" > "%s"\n' "$TMP/hookenv" > "$TMP/hooks/post-merge"
+chmod +x "$TMP/hooks/post-merge"
+git -C "$PRIMARY" config core.hooksPath "$TMP/hooks" # a repo-local path outranks a runner's global one
 out=$(bg repin-hooks - -); rc=$?
 assert_contains "R7 repin-hooks scrubs *_OK and the bot token before git runs" "other=unset token=unset" "$(cat "$TMP/hookenv" 2>/dev/null)"
-rm -f "$PRIMARY/.git/hooks/post-merge"
+git -C "$PRIMARY" config --unset core.hooksPath
 assert_rc "R3 a clean primary (untracked files allowed) fast-forwards" 0 "$rc"
 assert_contains "R4 it prints the new primary head" "primary=$TIP" "$out"
 assert_contains "R5 the hooks on disk are the origin tip's" "v2" "$(cat "$PRIMARY/scripts/hooks/h.sh")"
