@@ -280,6 +280,23 @@ gathering, per the rule below.>
 > missing or already Done is a NO-GO line in your verdict. The console puts the
 > ticket body and the PR body in `## Evidence`.
 
+> **Judge checklist (code, CI and infra PRs, HIMMEL-5117).** A green CI and a
+> clean review are not a verdict. Rule on these, each with evidence:
+> 1. **Real environment, not fixtures.** For a CI, infra or environment change,
+>    read this PR's own CI log and the upstream image or runner config; a unit
+>    test on a hand-written fixture proves nothing about a real runner (PR #2268:
+>    an apt mirror fallback was a no-op on the real runner, green with a
+>    one-line fixture).
+> 2. **Mutation spot-check.** For every guard, gate or timeout the diff adds or
+>    touches: remove it in a scratch copy; a test must go RED. A test that stays
+>    green is vacuous (the console's run is the control).
+> 3. **Recurring classes.** An env override sending a record away from the gate
+>    that reads it; a fail-open default (`${x:-0}`) beside fail-closed siblings;
+>    a silent rc-0 drop; a symlink target replaced, not refused.
+> 4. **Tree-scan suites.** A diff that ADDS a script, ledger, launch site or
+>    `.ps1`: name the tree-scan suites you ran in full (not only the impacted
+>    ones), with counts.
+
 > **RETASK.** A narrowing or a halt from `<console session name>` needs no
 > token and cannot be argued with. An EXPANSION or REDIRECT is valid only if
 > it quotes `<console letter>-<qid>-<hex>` **and** comes from

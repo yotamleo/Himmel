@@ -35,7 +35,7 @@ export WT_LOG="$WORK/wt.log" GEN_BRIEFS_WORKTREE_CMD="$WORK/wt.sh"
 cat > "$WORK/legs.json" <<'EOF'
 [
  {"label":"N901","keys":["HIMMEL-9001"],"slug":"plain-fix","branch":"fix/himmel-9001-plain-fix","title":"a plain fix","desc":"fix the plain thing","why":"it is broken","prior":"HIMMEL-9000 (the earlier fix). Source: `git log -3 -- scripts/x`.","scope":"`scripts/x/`","scope_short":"scripts/x","commit":"fix(x): [HIMMEL-9001] fix the plain thing"},
- {"label":"N902","keys":["HIMMEL-9002","HIMMEL-9003"],"slug":"hook-fix","branch":"fix/himmel-9002-hook-fix","title":"a hook fix","desc":"fix the hook thing","why":"the hook is broken","prior":"none found (qmd jira-himmel hook thing)","scope":"`scripts/hooks/h.sh`","scope_short":"h.sh","hook":true,"judge":true,"commit":"fix(hooks): [HIMMEL-9002] fix the hook","extra":"GREEN controls stay."}
+ {"label":"N902","keys":["HIMMEL-9002","HIMMEL-9003"],"slug":"hook-fix","branch":"fix/himmel-9002-hook-fix","title":"a hook fix","desc":"fix the hook thing","why":"the hook is broken","prior":"none found (qmd jira-himmel hook thing)","scope":"`scripts/hooks/h.sh`","scope_short":"h.sh","hook":true,"judge":true,"env":true,"commit":"fix(hooks): [HIMMEL-9002] fix the hook","extra":"GREEN controls stay."}
 ]
 EOF
 
@@ -62,6 +62,9 @@ has "a hook leg's brief says it is launched with the bypass" "$b2" "hook-integri
 lacks "a plain leg's brief does not" "$b1" "hook-integrity bypass flag"
 has "a judge leg's brief announces the opus judge" "$b2" "console runs an opus judge"
 has "the other leg's scope is listed under 'other live legs'" "$b1" "N902 (h.sh)"
+# HIMMEL-5117: a leg flagged for CI, infra or the environment gets a RED-first line requiring a real-environment fixture.
+has "a flagged leg's brief requires a fixture copied from the real environment" "$b2" "copied from the real environment"
+lacks "an unflagged leg's brief does not" "$b1" "copied from the real environment"
 
 l1="$(cat "$BUCKET/launch-N901.sh" 2>/dev/null)"; l2="$(cat "$BUCKET/launch-N902.sh" 2>/dev/null)"
 lacks "a plain leg's launcher has NO bypass export" "$l1" "HIMMEL_HOOK_INTEGRITY_BYPASS_OK"
