@@ -71,7 +71,7 @@
 #     rendered children drop `if`/`then`, so a `-c` payload is a residual here.
 #     A gate on one physical line and a command on the NEXT is also a residual.
 #   * Everything else is untouched: `git log | tail`, a bare `tail -f file`, and
-#     the CORRECT shape `gate > out 2>&1; tail out` (no pipe) all pass.
+#     the CORRECT shape `gate > out 2>&1; echo "RC=$?"; tail out` all pass.
 #   * Fail OPEN (exit 0) on anything unevaluable — missing jq, empty or
 #     unparseable stdin, a non-Bash tool, a command containing an UNQUOTED
 #     heredoc (`<<`), whose body text a scanner this flat cannot tell from syntax
