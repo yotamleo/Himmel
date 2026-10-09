@@ -57,6 +57,17 @@
 #       scripts/handover/pr-merge.sh, and scripts/<dir>/test-*.sh.
 #     A backslash-separated Windows path is a documented miss — nothing here
 #     writes one, and a miss forfeits guidance only.
+#   * HIMMEL-2082: ALSO DENY a registered gate followed by a later segment on the
+#     same logical line (`gate; echo done`, `gate && x`, `gate || x`): a gate must
+#     be the final segment so the task exit status is the gate's (twice a
+#     background check-ci.sh exit 3 was reported as exit 0). Allowed: the gate as
+#     the last segment, a gate followed only by a redirect, a later segment that
+#     reads `$?`/PIPESTATUS (the prescribed `gate > f 2>&1; echo "RC=$?"` shape),
+#     a later segment that is itself a gate, a gate that is an
+#     `if`/`elif`/`while`/`until` condition, and closing keywords (`done`, `fi`).
+#     Checked on the ORIGINAL text only (GUARD_UNWRAP_DEPTH=0): guard_unwrap's
+#     rendered children drop `if`/`then`, so a `-c` payload is a residual here.
+#     A gate on one physical line and a command on the NEXT is also a residual.
 #   * Everything else is untouched: `git log | tail`, a bare `tail -f file`, and
 #     the CORRECT shape `gate > out 2>&1; tail out` (no pipe) all pass.
 #   * Fail OPEN (exit 0) on anything unevaluable — missing jq, empty or
@@ -209,6 +220,7 @@ TAB=$'\t'
 MARK='#tail-pipe-ok:'      # the opt-out, reduced to one operator-free token
 HEREDOC_MARK='HEREDOCSEEN' # an UNQUOTED `<<`; the guard withdraws on it
 offender=""
+kind=pipe     # pipe: gate | tail/head; trailing: gate followed by a later segment (HIMMEL-2082)
 
 # Cost bound. The normaliser below is a character walk, and bash string slicing
 # turns it superlinear on large inputs — measured on Git Bash: ~0.55s at 8KB but
@@ -754,6 +766,74 @@ stage_mentions_gate() {
     return 1
 }
 
+# stmt_runs_gate STMT -- 0 when any pipeline stage of STMT runs a registered
+# gate at command position. Unlike stage_invokes_gate it does not fall back to
+# "a redirect plus a gate-looking word", so a READ of a gate script that
+# carries a redirect (`cat scripts/check-ci.sh > x`) is not a gate run.
+stmt_runs_gate() {
+    local rest=$1 st prog
+    while :; do
+        st=${rest%%|*}; st=${st#&}
+        prog=$(invoked_program "$st")
+        if [ -n "$prog" ] && [ "$prog" != "$ENV_SPLIT_SENTINEL" ] \
+            && printf '%s' "$prog" | grep -qE "$GATE_RE"; then
+            return 0
+        fi
+        case "$rest" in *'|'*) rest=${rest#*|} ;; *) return 1 ;; esac
+    done
+}
+
+# scan_trailing STMTS -- HIMMEL-2082. 0 (and sets offender/kind) when a gate
+# statement is followed by a later segment, so the command's exit status is the
+# later segment's and not the gate's. Not a trailing segment: a closing keyword
+# (`done`, `fi`, `}`), a later segment that is itself a gate, or one that reads
+# `$?`/PIPESTATUS (the prescribed `gate > f 2>&1; echo "RC=$?"` shape). A gate
+# that is an `if`/`elif`/`while`/`until` condition is consumed by the shell.
+# Scope is one logical line: a gate on one physical line and a command on the
+# next is a residual (the substitution bodies normalise() lifts onto their own
+# lines make "the next line" ambiguous).
+scan_trailing() {
+    local stmt st w only_close n i j later later_gates later_status
+    local -a S
+    S=()
+    while IFS= read -r stmt; do
+        st=${stmt#"${stmt%%[![:space:]]*}"}
+        st=${st%"${st##*[![:space:]]}"}
+        [ -n "$st" ] || continue
+        only_close=1
+        for w in $st; do
+            case $w in done | fi | 'esac' | '}' | ')') ;; *) only_close=0 ;; esac
+        done
+        [ "$only_close" = 1 ] && continue
+        S[${#S[@]}]=$st
+    done <<EOF
+$1
+EOF
+    n=${#S[@]}
+    i=0
+    while [ "$((i + 1))" -lt "$n" ]; do
+        st=${S[i]}
+        case $st in 'if '* | 'elif '* | 'while '* | 'until '*) i=$((i + 1)); continue ;; esac
+        if stmt_runs_gate "$st"; then
+            later_gates=1; later_status=0
+            j=$((i + 1))
+            while [ "$j" -lt "$n" ]; do
+                later=${S[j]}
+                stmt_runs_gate "$later" || later_gates=0
+                # shellcheck disable=SC2016 # a literal `$?` is what is looked for
+                case $later in *'$?'* | *'${?}'* | *PIPESTATUS*) later_status=1 ;; esac
+                j=$((j + 1))
+            done
+            if [ "$later_gates" = 0 ] && [ "$later_status" = 0 ]; then
+                offender=$st; kind=trailing
+                return 0
+            fi
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
+
 scan_line() {
     local line=$1 stmts pipeline first last stages
     # The opt-out survived normalisation only if it was a real shell comment.
@@ -765,6 +845,11 @@ scan_line() {
     stmts=${line//&&/$NL}
     stmts=${stmts//||/$NL}
     stmts=${stmts//;/$NL}
+
+    # HIMMEL-2082: a gate followed by a later segment loses its status too.
+    # Original text only: guard_unwrap's rendered children drop the `if`/`then`
+    # keywords, so a gate that is a condition would read as a bare gate there.
+    [ "${GUARD_UNWRAP_DEPTH:-0}" = 0 ] && scan_trailing "$stmts" && return 0
 
     while IFS= read -r pipeline; do
         case "$pipeline" in *'|'*) ;; *) continue ;; esac
@@ -838,6 +923,17 @@ EOF
 [ -z "$offender" ] && [ -n "$logical" ] && scan_line "$logical"
 
 [ -n "$offender" ] || exit 0
+
+if [ "$kind" = trailing ]; then
+    printf '%s\n' \
+      "block-tail-pipe-on-gates: DENIED — a gate must be the final segment so the task exit status is the gate's. A later \`;\`/\`&&\`/\`||\` segment replaces \$?, so a failing gate (e.g. check-ci.sh exit 3) is reported as the later command's exit 0 (HIMMEL-2082)." \
+      "Offending segment:" \
+      "    $(printf '%s' "$offender" | sed 's/^[[:space:]]*//')" \
+      "Make the gate the LAST segment, or capture its status in the same command:" \
+      "    <gate> > <file> 2>&1; echo \"RC=\$?\"; tail -80 <file>" \
+      "If the exit code genuinely does not matter here, add a same-line marker: \`# tail-pipe-ok: <reason>\`." >&2
+    exit 2
+fi
 
 # printf, not echo: echo joins its arguments with a space, which would leave a
 # stray space at the head of every continuation line in this multi-line message.

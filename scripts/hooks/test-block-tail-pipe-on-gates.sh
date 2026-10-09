@@ -129,7 +129,7 @@ fi
 
 # --- ALLOW: the correct shape, and everything unregistered ------------------
 allow "redirect-then-tail (the prescribed shape)" \
-      'bash scripts/cr/clear-cr-marker.sh x > /tmp/o 2>&1; tail /tmp/o'
+      'bash scripts/cr/clear-cr-marker.sh x > /tmp/o 2>&1; echo "RC=$?"; tail /tmp/o'
 allow "git log | tail" 'git log | tail'
 allow "unregistered script piped to tail" 'bash scripts/lib/forge.sh | tail -20'
 allow "bare tail -f" 'tail -f somefile'
@@ -930,6 +930,40 @@ cp "$HOOK" "$nolib/block-tail-pipe-on-gates.sh"
 res=$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-tail-pipe-on-gates.sh" >/dev/null 2>&1; echo $?)
 if [ "$res" = 2 ]; then pass "4438 missing guard-unwrap lib denies"; else fail "4438 missing guard-unwrap lib denies — rc=$res"; fi
 rm -rf "$nolib"
+
+# --- HIMMEL-2082: a gate must be the FINAL segment -------------------------
+# `gate; echo done` makes the task's exit status echo's, not the gate's: twice a
+# background check-ci.sh exit 3 was reported as exit 0 and a PR with a Major
+# finding nearly merged.
+deny "2082 check-ci ; echo" 'bash scripts/check-ci.sh 12 --max-wait 600; echo done'
+deny "2082 check-ci && echo" 'bash scripts/check-ci.sh 12 && echo ok'
+deny "2082 check-ci || echo" 'bash scripts/check-ci.sh 12 || echo bad'
+deny "2082 merge-on-green ; echo" 'bash scripts/handover/merge-on-green.sh; echo done'
+deny "2082 run-shell-tests ; echo" 'bash scripts/ci/run-shell-tests.sh scripts/hooks; echo done'
+deny "2082 test-*.sh suite ; echo" 'bash scripts/hooks/test-block-tail-pipe-on-gates.sh; echo done'
+deny "2082 gate redirected ; echo" 'bash scripts/check-ci.sh 12 > out.txt 2>&1; echo done'
+deny "2082 cd && gate ; echo" 'cd /repo && bash scripts/check-ci.sh 12; echo done'
+deny "2082 gate in a subshell ; echo" '(bash scripts/check-ci.sh 12; echo done)'
+# shellcheck disable=SC2016 # the payload is data for the hook, not for this shell
+deny "2082 gate in a command substitution ; echo" 'RC=$(bash scripts/check-ci.sh 12; echo done)'
+deny "2082 gate ; two more segments" 'bash scripts/check-ci.sh 12; echo a; echo b'
+deny "2082 absolute-path gate ; echo" 'bash /home/x/himmel/scripts/check-ci.sh 12; echo done'
+res=$(run_hook "$(j_bash 'bash scripts/check-ci.sh 12; echo done')")
+case $res in
+    *"gate must be the final segment"*) pass "2082 deny text names the rule" ;;
+    *) fail "2082 deny text names the rule: ${res#*|}" ;;
+esac
+allow "2082 allow: gate as the last segment" 'cd /repo && bash scripts/check-ci.sh 12'
+allow "2082 allow: gate then only a redirect" 'bash scripts/check-ci.sh 12 > out.txt 2>&1'
+allow "2082 allow: gate alone" 'bash scripts/check-ci.sh 12 --max-wait 600'
+allow "2082 allow: status captured with \$?" 'bash scripts/check-ci.sh 12 > out.txt 2>&1; echo "RC=$?"; tail -80 out.txt'
+allow "2082 allow: gate as an if condition" 'if bash scripts/check-ci.sh 12; then echo ok; fi'
+# shellcheck disable=SC2016 # the payload is data for the hook, not for this shell
+allow "2082 allow: gate as the last command of a loop body" 'for p in 1 2; do bash scripts/check-ci.sh $p; done'
+allow "2082 allow: a READ of the gate script" 'grep -n x scripts/check-ci.sh; echo done'
+allow "2082 allow: gate chained into a gate" 'bash scripts/ci/run-shell-tests.sh scripts/hooks && bash scripts/check-ci.sh 12'
+allow "2082 allow: same-line marker" 'bash scripts/check-ci.sh 12; echo done # tail-pipe-ok: exit irrelevant'
+allow "2082 allow: gate quoted as data" 'echo "bash scripts/check-ci.sh 12; echo done"'
 
 if [ "$FAILED" -eq 0 ]; then
     echo "OK block-tail-pipe-on-gates: all cases passed"
