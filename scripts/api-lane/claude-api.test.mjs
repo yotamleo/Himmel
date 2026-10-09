@@ -253,6 +253,36 @@ test('HIMMEL-5093: --effort, in both spellings, and the positional prompt still 
   }
 });
 
+test('HIMMEL-5097: --model and --permission-mode refuse dash-led values and the mode is an allowlist, in both spellings', () => {
+  const f = fixture();
+  const without = (flag) => f.good.filter((_, i, a) => a[i] !== flag && a[i - 1] !== flag);
+  const cases = [
+    [['--model', '--anything'], /--model/], [['--model=--anything'], /--model/], [['--model', '-x'], /--model/],
+    [['--permission-mode', '--dangerously-skip-permissions'], /permission mode/], [['--permission-mode=-x'], /permission mode/],
+    [['--permission-mode', 'BypassPermissions'], /permission mode/], [['--permission-mode=BYPASSPERMISSIONS'], /permission mode/],
+    [['--permission-mode', 'bypass_permissions'], /permission mode/], [['--permission-mode', 'nonsense'], /permission mode/],
+  ];
+  for (const [flag, re] of cases) {
+    const r = f.run([...without(flag[0].split('=')[0]), ...flag]);
+    assert.equal(r.status, 2, flag.join(' '));
+    assert.match(r.stderr, re, flag.join(' '));
+  }
+  assert.equal(f.called(), false);
+  assert.equal(f.status().reserved_usd, '0.000000');
+  for (const mode of ['default', 'plan', 'acceptEdits', 'dontAsk', 'auto']) {
+    const ok = fixture();
+    assert.equal(ok.run([...without('--permission-mode'), `--permission-mode=${mode}`]).status, 0, mode);
+  }
+});
+
+test('HIMMEL-5097: the exact argv shape scripts/eval/lane-quality/run.sh sends still passes', () => {
+  const f = fixture();
+  const r = f.run(['-p', 'do the task', '--model', 'claude-haiku-5-5', '--permission-mode', 'auto', '--output-format', 'json',
+    '--max-budget-usd', '0.10', '--effort', 'high']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(readFileSync(f.paths.env, 'utf8'), /--permission-mode auto/);
+});
+
 test('an argument terminator is refused so the enforced options stay options', () => {
   const f = fixture();
   const r = f.run(['-p', '--', 'x', '--model', 'm', '--permission-mode', 'plan', '--max-budget-usd', '0.10']);
