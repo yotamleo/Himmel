@@ -228,7 +228,7 @@ grep -q "nft list table inet himmel_egress" "$TMP/log/ssh.argv" 2>/dev/null || b
 reset_log
 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
 for r in '10\.0\.0\.0/8' '172\.16\.0\.0/12' '192\.168\.0\.0/16' '169\.254\.0\.0/16' '100\.64\.0\.0/10'; do
-    if grep -q -- "$r" "$TMP/log/ssh.argv" 2>/dev/null; then ok "egress check requires reject of $r"; else bad "egress check ignores $r"; fi
+    if grep -qF -- "[{ ,]${r}[ ,}]" "$TMP/log/ssh.argv" 2>/dev/null; then ok "egress check requires reject of $r"; else bad "egress check ignores $r"; fi
 done
 
 echo "T4i R5: off during the job wait deregisters the idle runner promptly"

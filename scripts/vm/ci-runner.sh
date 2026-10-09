@@ -159,7 +159,8 @@ one_job() {
     # Every private-range reject must be loaded, not just the LAN one (HIMMEL-5070).
     local r chk="sudo nft list table inet himmel_egress | grep -q 'hook output'"
     for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do  # leak-allow: private-lan-ip egress filter ranges
-        chk="$chk && sudo nft list table inet himmel_egress | grep -q '$r.*reject'"
+        # Anchored on the set delimiters so a range cannot match a longer one it is a suffix of.
+        chk="$chk && sudo nft list table inet himmel_egress | grep -qE '[{ ,]${r//./\\.}[ ,}].*reject'"
     done
     vm_ssh "$chk" \
         || die "the himmel_egress nft table is not loaded in $CLONE_NAME — not minting a runner"
