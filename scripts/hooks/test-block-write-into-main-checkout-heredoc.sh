@@ -343,13 +343,17 @@ echo "== HIMMEL-4397: a large heredoc commit message stays linear =="
 # loaded), never an idle one. Each shape: verdict ALLOW (worktree cwd) in both
 # lanes, direct-exec inside the budget.
 _big=$(head -c 10000 /dev/zero | tr '\0' x | fold -w 78)
+_now_us() { # EPOCHREALTIME is bash 5+; bash 3.2 falls back to whole seconds
+    if [ -n "${EPOCHREALTIME:-}" ]; then local t="${EPOCHREALTIME/[.,]/}"; printf '%s' "$t"
+    else printf '%s' "$(( $(date +%s) * 1000000 ))"; fi
+}
 _perf_row() { # label first-body-line opener
     local cmd j t0 t1 got
     cmd=$(printf 'git commit -m "$(cat %s\n%s\n\n%s\nEOF\n)"' "$3" "$2" "$_big")
     j="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .),\"cwd\":\"$_WR\"}}"
-    t0=${EPOCHREALTIME/[.,]/}
+    t0=$(_now_us)
     got=$(_run "$DIRECT" "$j")
-    t1=${EPOCHREALTIME/[.,]/}
+    t1=$(_now_us)
     if [ "$got" = allow ] && [ $(( (t1 - t0) / 1000 )) -lt 6000 ]; then ok "$1 (direct-exec, $(( (t1 - t0) / 1000 )) ms)"
     else bad "$1 (direct-exec) — expected allow under 6000 ms, got $got in $(( (t1 - t0) / 1000 )) ms"; fi
     got=$(_run "$FENCE" "$j")
