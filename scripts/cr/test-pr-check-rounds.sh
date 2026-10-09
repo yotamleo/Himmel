@@ -96,15 +96,20 @@ STUB
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+# HIMMEL-4632: review-round.sh resolves the branch's PR by --head to bind a
+# judge record (`--json number`; clear-cr-marker asks for number,headRefOid).
+if [ "${1:-}" = pr ] && [ "${2:-}" = list ] && [ "${3:-}" = --head ]; then
+    for arg in "$@"; do
+        if [ "$arg" = number ]; then
+            [ "${GH_PR_RC:-0}" = 0 ] || exit "$GH_PR_RC"
+            printf '%s\n' "${GH_PR_NUMBER:-1}"
+            exit 0
+        fi
+    done
+fi
 for arg in "$@"; do
     [ "$arg" = "--head" ] && exit 0
 done
-# HIMMEL-4632: review-round.sh resolves the branch's PR to bind a judge record.
-if [ "${1:-}" = pr ] && [ "${2:-}" = view ]; then
-    [ "${GH_PR_RC:-0}" = 0 ] || exit "$GH_PR_RC"
-    printf '%s\n' "${GH_PR_NUMBER:-1}"
-    exit 0
-fi
 printf 'unexpected gh invocation\n' >&2
 exit 1
 STUB
@@ -1122,13 +1127,43 @@ for pb_case in pb-accept pb-branch-ok pb-go pb-other-head pb-other-pr pb-no-pr-l
     pb_rc=0
     pb_out="$(GH_PR_RC="$pb_gh" start_round "$cap_fix_head" clean "$pb_case")" || pb_rc=$?
     assert_eq "$pb_rc" "$pb_want" "$pb_case"
-    [ "$pb_case" != pb-gh-fails ] || assert_has "$pb_out" "cannot resolve the PR for $pb_case" "pb-gh-fails names the unresolved PR"
+    [ "$pb_case" != pb-gh-fails ] || assert_has "$pb_out" "cannot resolve the one open PR for $pb_case" "pb-gh-fails names the unresolved PR"
     if [ "$pb_want" = 8 ]; then
         assert_eq "$(cat "$git_dir/cr-review-rounds/$pb_case.round")" "3" "$pb_case leaves counter unchanged"
         [ -e "$git_dir/cr-review-rounds/$pb_case.verdicts" ] && fail "$pb_case consumed a record it refused"
     else
         assert_has "$(cat "$git_dir/cr-review-rounds/$pb_case.delta")" "verdict:$pb_case" "$pb_case delta names the record"
     fi
+done
+# The binding only chooses which record BUYS the round: an unbound NO-GO at
+# the last head still feeds the HIMMEL-4885 class veto, so a repeated class
+# refuses even when an unsettled round-3 finding would admit the fix trigger.
+pb_anc="$(git -C "$repo" rev-parse main)"
+for pb_case in pv-bound pv-gh-fails pv-no-pr-line pv-other-pr pv-other-branch; do
+    three_rounds "$pb_case" suggestion
+    pb_r3="$cap_r3_head"
+    fix_commit "$pb_case"
+    pb_pr=1 pb_branch="" pb_gh=0
+    case "$pb_case" in
+        pv-gh-fails) pb_gh=1 ;;
+        pv-other-pr) pb_pr=2 ;;
+        pv-other-branch) pb_branch=some-other-branch ;;
+    esac
+    for pb_head in "$pb_anc" "$pb_r3"; do
+        env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_RELAY CLAUDE_CODE_SESSION_ID=judge-sess-4632 \
+            bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$pb_case" NO-GO "$pb_head" \
+            --pr "$pb_pr" ${pb_branch:+--branch "$pb_branch"} --evidence-file "$jev/judge-evidence.md" \
+            >/dev/null 2>"$tmp/judge-$pb_case.err" || fail "judge writes $pb_case"
+    done
+    if [ "$pb_case" = pv-no-pr-line ]; then
+        sed -i.bak '/^pr: /d' "$vscope/$pb_case/judge.md" "$vscope/$pb_case/judge-$pb_r3.md"
+        rm -f "$vscope/$pb_case/"*.bak
+    fi
+    pb_rc=0
+    pb_out="$(GH_PR_RC="$pb_gh" start_round "$cap_fix_head" clean "$pb_case")" || pb_rc=$?
+    assert_eq "$pb_rc" "8" "$pb_case repeated class refuses the delta round"
+    assert_has "$pb_out" "repeated NO-GO class tool-defaults" "$pb_case names the repeated class"
+    assert_eq "$(cat "$git_dir/cr-review-rounds/$pb_case.round")" "3" "$pb_case leaves counter unchanged"
 done
 
 # HIMMEL-4885: real writer records on two reviewed heads must not buy

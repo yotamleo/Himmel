@@ -331,7 +331,11 @@ judge_nogo_record() (
     # HIMMEL-4632: a record binds to this branch's PR - its `pr:` line (line
     # 10, write-verdict.sh's fixed place) must name the PR gh resolves for the
     # branch, and a `branch:` line (line 11, optional) must name the branch.
-    # No pr: line, or no resolvable PR, binds nothing.
+    # No pr: line, or no resolvable PR, binds nothing. The binding only picks
+    # which records BUY the round: every NO-GO for the head still feeds the
+    # HIMMEL-4885 class veto, and an unresolvable PR refuses (exit 8).
+    # The PR is resolved by --head, never `gh pr view <branch>` (a branch named
+    # 42 would resolve to PR 42), and bounded: this runs under the counter lock.
     # ponytail: the binding is a format check like the stamp (same-uid
     # ceiling above); HIMMEL-4984's record mac is checked here once it lands.
     pr_want=""
@@ -341,9 +345,13 @@ judge_nogo_record() (
         case "${2#pr: }" in *[!0-9]*) return 1 ;; esac
         case "$3" in 'branch: '*) [ "${3#branch: }" = "$branch" ] || return 1 ;; esac
         if [ -z "$pr_want" ]; then
-            pr_want="$(gh pr view "$branch" --json number -q .number 2>/dev/null)" || pr_want=""
+            # shellcheck source=scripts/lib/timeout-bin.sh
+            # shellcheck disable=SC1091
+            . "$lib/timeout-bin.sh" 2>/dev/null || _TIMEOUT_BIN=""
+            pr_want="$(${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 30} gh pr list --head "$branch" --state open \
+                --json number -q '.[].number' 2>/dev/null)" || pr_want=""
             case "$pr_want" in ''|0*|*[!0-9]*)
-                echo "review-round: cannot resolve the PR for $branch (gh pr view) - no judge NO-GO is honoured" >&2
+                echo "review-round: cannot resolve the one open PR for $branch (gh pr list --head) - no judge NO-GO is honoured" >&2
                 pr_want="-" ;;
             esac
         fi
@@ -361,7 +369,7 @@ judge_nogo_record() (
         # two branches sharing a last reviewed head cannot each spend it.
         # HIMMEL-4738: a scan that fails (rc 2) refuses the record - only rc 1
         # means "not consumed".
-        consumed=0
+        consumed=0 bound=""
         if [ -d "$git_dir/cr-review-rounds" ]; then
             scan=0
             grep -rqsF --include='*.verdicts' " $qid/" "$git_dir/cr-review-rounds" 2>/dev/null || scan=$?
@@ -398,17 +406,19 @@ judge_nogo_record() (
             fi
             word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
             [ -n "$word" ] || { bad=1; break; }
-            if [ -z "$hit" ] && [ "$word" = "NO-GO $want" ] && record_binds "$l9" "$l10" "$l11"; then
-                hit="$qid/$name"
+            if [ "$word" = "NO-GO $want" ]; then
+                [ -n "$hit" ] || hit="$qid/$name"
+                if [ -z "$bound" ] && record_binds "$l9" "$l10" "$l11"; then bound="$qid/$name"; fi
             fi
         done
         if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then
             check_hits="${check_hits:+$check_hits }$hit"
-            if [ "$consumed" -eq 0 ]; then hits="${hits:+$hits }$hit"; fi
+            if [ "$consumed" -eq 0 ] && [ -n "$bound" ]; then hits="${hits:+$hits }$bound"; fi
         fi
     done
     [ -n "$check_hits" ] || exit 1
     judge_class_check "$check_hits" "$want" || exit 8
+    [ "$pr_want" != "-" ] || exit 8
     [ -n "$hits" ] || exit 1
     printf '%s\n' "$hits"
 )
