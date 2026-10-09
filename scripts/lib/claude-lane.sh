@@ -38,15 +38,19 @@ _CLAUDE_LANE_DIR="${BASH_SOURCE[0]%/*}"
 # `conditional` counts as refused: no condition can be verified for a whole
 # review pack. For openrouter it also exports CLAUDE_OPENROUTER_CWD=<reviewed
 # repo> so the launcher classifies the repo, not the scratch cwd.
-# ponytail: a repo in none of those corpora is not gated here (as in
-# scripts/hermes/egress-gate.sh); claude-openrouter still refuses it as unknown.
+# A repo in none of those corpora is himmel-code only when it lies under this
+# checkout (as claude-openrouter classifies); any other repo is unclassified and
+# refused, since the matrix default for an unclassified corpus is deny.
+# ponytail: himmel-code means "under this lib's own checkout"; a review of another
+# himmel checkout or worktree outside it is refused, add a git-common-dir match if
+# that is ever needed.
 # ponytail: only hermes-critic.sh and claude-floor-review.sh gate; the shared
 # headless launcher scripts/lib/claude-headless.sh resolves the lane but does not,
 # so a new caller of it would be ungated - move this call into it when a third
 # review site appears.
 claude_lane_egress() {
   local dir="${1:?claude_lane_egress: reviewed repo required}" lane="${HIMMEL_CLAUDE_LANE:-native}"
-  local prov corpus="" d prev list line v lroot="" hroot hd out verdict
+  local prov corpus="" d prev list line v lroot="" hroot hd out verdict root
   case "$lane" in
     native) return 0 ;;
     openrouter) prov=openrouter ;;
@@ -92,16 +96,28 @@ claude_lane_egress() {
     fi
     # HIMMEL-4420: handover_root reads only the live env, so a .env-only HANDOVER_DIR
     # is loaded from himmel's own primary checkout (cwd = this lib, never the reviewed repo).
-    hd="$(cd "$_CLAUDE_LANE_DIR" 2>/dev/null || exit 1; { . ./load-dotenv.sh && load_dotenv HANDOVER_DIR; } >/dev/null 2>&1; . ./handover-path.sh 2>/dev/null && handover_root 2>/dev/null)" || hd=""
+    # A HANDOVER_DIR set from ANY source (live env or .env) that handover_root cannot
+    # resolve exits 4 in the subshell: refuse, never read it as "no handover root".
+    hd="$(cd "$_CLAUDE_LANE_DIR" 2>/dev/null || exit 1; { . ./load-dotenv.sh && load_dotenv HANDOVER_DIR; } >/dev/null 2>&1; . ./handover-path.sh 2>/dev/null || exit 1
+      if [ -n "${HANDOVER_DIR:-}" ]; then handover_root 2>/dev/null || exit 4; else handover_root 2>/dev/null || true; fi)" || {
+      echo "claude-lane: REFUSED - the handover root cannot be resolved (HANDOVER_DIR set but not a usable directory, or the lib is unreadable; fail closed)" >&2; return 3; }
     hroot=""
     if [ -n "$hd" ]; then
       hroot="$(cd -P "$hd" 2>/dev/null && pwd -P)" || {
         echo "claude-lane: REFUSED - the handover root \"$hd\" cannot be resolved (fail closed)" >&2; return 3; }
-    elif [ -n "${HANDOVER_DIR:-}" ]; then
-      echo "claude-lane: REFUSED - HANDOVER_DIR is set but the handover root cannot be resolved (fail closed)" >&2; return 3
     fi
     if [ -n "$hroot" ] && [ "${corpus#luna-}" = "$corpus" ]; then
       case "$dir/" in "$hroot/"*) corpus=handover-state ;; esac
+    fi
+  fi
+  if [ -z "$corpus" ]; then
+    # positive himmel-code classification (as claude-openrouter does); anything else is
+    # unclassified, and the matrix default for an unclassified corpus is deny
+    root="$(cd -P "$_CLAUDE_LANE_DIR/../.." 2>/dev/null && pwd -P)" || root=""
+    if [ -n "$root" ]; then case "$dir/" in "$root/"*) corpus=himmel-code ;; esac; fi
+    if [ -z "$corpus" ]; then
+      echo "claude-lane: REFUSED - the reviewed repo is in no known corpus (not under ${root:-the himmel checkout}); the egress matrix denies an unclassified corpus, so the $lane lane would send the review pack somewhere unvetted" >&2
+      return 3
     fi
   fi
   if [ -n "$corpus" ]; then

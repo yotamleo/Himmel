@@ -133,8 +133,10 @@ launcher runs) unless `scripts/guardrails/egress-matrix.json` says `allow` for
 that lane's provider (`openrouter`; `openai-codex` for claudex) at purpose
 inference for that corpus; `conditional` counts as refused. For openrouter it
 exports `CLAUDE_OPENROUTER_CWD=<reviewed repo>`, so a himmel checkout classifies
-as himmel-code instead of corpus=unknown. A repo outside every gated corpus is
-not gated there, and `claude-openrouter` still refuses it as unknown. Native is
+as himmel-code instead of corpus=unknown. A repo under this checkout and in no
+other corpus is himmel-code; any other repo is unclassified and refused (the
+matrix default for an unclassified corpus is deny). A `HANDOVER_DIR` set from
+any source (live env or `.env`) that does not resolve also refuses. Native is
 untouched. Vault content stays native. Wired today: the `claude-headless.sh` chokepoint (used by the CR
 floor reviewer; `HIMMEL_CLAUDE_BIN` still wins, for tests) and the
 `hermes-critic.sh --route claude` pass. Other sites are follow-up.

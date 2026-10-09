@@ -61,7 +61,10 @@ r="$(egress claudex "$W/hand/sub")"; case "$r" in 3\|\|*handover-state*) r=ok;; 
 check "claudex + handover-state repo refused (conditional)" ok "$r"
 r="$(egress openrouter "$REPO")";    check "openrouter + himmel repo: allowed, launcher cwd = reviewed repo" "0|$REPO|" "$r"
 r="$(egress claudex "$REPO")";       check "claudex + himmel repo: allowed"     "0||" "$r"
-r="$(egress claudex "$W/plain")";    check "claudex + unclassified repo: allowed" "0||" "$r"
+r="$(egress claudex "$W/plain")";    case "$r" in 3\|\|*"no known corpus"*) r=ok;; esac
+check "claudex + unclassified repo refused (matrix default deny)" ok "$r"
+r="$(egress openrouter "$W/plain")"; case "$r" in 3\|\|*"no known corpus"*) r=ok;; esac
+check "openrouter + unclassified repo refused" ok "$r"
 mkdir -p "$W/real/x" "$W/cfg2"; ln -s "$W/real" "$W/link"; echo "$W/link" > "$W/cfg2/phi-roots"
 cp "$W/cfg2/phi-roots" "$W/cfg/phi-roots"
 r="$(egress openrouter "$W/real/x")"; case "$r" in 3\|\|*salus*) r=ok;; esac
@@ -70,10 +73,28 @@ printf '/\n' > "$W/cfg/phi-roots"
 r="$(egress openrouter "$W/plain")"; case "$r" in 3\|\|*salus*) r=ok;; esac
 check "phi-roots entry of / covers every repo" ok "$r"
 rm -f "$W/cfg/phi-roots"
-# shellcheck disable=SC2031 # the vars are set in a subshell on purpose
+# shellcheck disable=SC2030,SC2031 # the vars are set in a subshell on purpose
 r="$( ( export HANDOVER_DIR="$W/gone"; export HIMMEL_CLAUDE_LANE=claudex CLAUDE_GLM_CONFIG_DIR="$W/cfg"; claude_lane_egress "$W/plain" 2>&1 >/dev/null ) )"
 case "$r" in *handover*fail\ closed*) r=ok;; esac
 check "configured but unresolvable handover root refused" ok "$r"
+# A HANDOVER_DIR that only a .env supplies (quoted value, or a stale path) is still
+# "set": a private copy of the lib reads <copy>/.env, never the real checkout's.
+mkdir -p "$W/tree/scripts/lib"
+cp "$REPO/scripts/lib/claude-lane.sh" "$REPO/scripts/lib/load-dotenv.sh" "$REPO/scripts/lib/handover-path.sh" "$W/tree/scripts/lib/"
+envonly() { # <.env line> -> prints "rc|stderr-first-line" for claudex reviewing the handover fixture
+  printf '%s\n' "$1" > "$W/tree/.env"
+  # shellcheck disable=SC2031 # the vars are set in a subshell on purpose
+  ( unset HANDOVER_DIR LUNA_VAULT LUNA_VAULT_PATH; export HIMMEL_CLAUDE_LANE=claudex CLAUDE_GLM_CONFIG_DIR="$W/cfg"
+    # shellcheck disable=SC1091
+    . "$W/tree/scripts/lib/claude-lane.sh"
+    claude_lane_egress "$W/hand" 2>"$W/egress.err"; rc=$?
+    echo "$rc|$(head -1 "$W/egress.err")" )
+}
+r="$(envonly "HANDOVER_DIR=\"$W/hand\"")"; case "$r" in 3\|*handover*fail\ closed*) r=ok;; esac
+check ".env-only quoted HANDOVER_DIR (quotes kept, unresolvable) refused" ok "$r"
+r="$(envonly "HANDOVER_DIR=$W/gone")";     case "$r" in 3\|*handover*fail\ closed*) r=ok;; esac
+check ".env-only stale HANDOVER_DIR refused" ok "$r"
+rm -f "$W/tree/.env"
 r="$(egress openrouter "$W/nope")";  case "$r" in 3\|*) r=ok;; esac
 check "unresolvable reviewed repo refused (fail closed)" ok "$r"
 
