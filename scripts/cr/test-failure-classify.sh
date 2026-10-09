@@ -248,4 +248,20 @@ check "44: a real 429 on another line still classifies beside a Raw output path"
 critic-first-pass.sh: invoke failed (rc=1) — fail-open, proceed claude-only. Raw output: /tmp/cfp-raw.a123bc')" \
     "rate-limit"
 
+# ── HIMMEL-2399: critic-first-pass.sh's "upstream error" marker (a vendor error
+# body, not a review) is its own class, apart from malformed-output. The finer
+# classes still win when the vendor text carries a status/quota/auth signal.
+check "45: upstream error marker + vendor line -> upstream-error" \
+    "$(classify 1 '' 'critic-first-pass.sh: upstream error — the critic provider returned an error, not a review; fail-open. Raw output: /tmp/cfp-raw.a503bc
+critic-first-pass.sh: raw tail: API call failed after 3 retries: Our servers are currently overloaded. Please try again later.')" \
+    "upstream-error"
+check "46: upstream error marker + a real 429 line -> rate-limit (finer class wins)" \
+    "$(classify 1 '' 'critic-first-pass.sh: upstream error — the critic provider returned an error, not a review; fail-open.
+critic-first-pass.sh: raw tail: HTTP 429 Too Many Requests')" \
+    "rate-limit"
+check "47: upstream error marker + 401 line -> auth (finer class wins)" \
+    "$(classify 1 '' 'critic-first-pass.sh: upstream error — the critic provider returned an error, not a review; fail-open.
+critic-first-pass.sh: raw tail: 401 unauthorized')" \
+    "auth"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

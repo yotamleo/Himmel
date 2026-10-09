@@ -865,9 +865,39 @@ if [ "$rc" -eq 4 ]; then
     exit 4
 fi
 if [ "$rc" -ne 0 ]; then
+    # HIMMEL-2399: a short vendor error body ("API call failed after 3 retries:
+    # Our servers are currently overloaded.") has no review headings either, so
+    # the awk above rejects it and it used to be reported as "malformed output"
+    # — sending the operator to fix a prompt for an outage that clears itself.
+    # Name it apart: "upstream error" is a different marker from the malformed
+    # one, so failure-classify.sh does not file it under malformed-output. A
+    # status code / quota / auth word in the body still classifies finer there.
+    # Bounded + bullet-free so a genuine short review that merely MENTIONS a
+    # quota is not mistaken for one.
+    # ponytail: line-level shape match on a <=600-byte body; a vendor error in a
+    # wording not listed here stays malformed-output until the shape is added.
+    _cfp_up=0
+    if [ "$(printf '%s' "$raw" | wc -c | tr -d '[:space:]')" -le 600 ] \
+        && ! grep -qE '^[[:space:]]*(- \[|#{1,6} )' <<< "$raw" \
+        && grep -qiE 'API call failed|overloaded|(rate[ -]?limit|quota)[^.]{0,20}(exceeded|reached|exhausted)|too many requests|unauthori[sz]ed|try again later|service unavailable|internal server error|bad gateway|(http|status|error|code)[^0-9]{0,12}(401|403|429|5[0-9][0-9])([^0-9]|$)' <<< "$raw"; then
+        _cfp_up=1
+    fi
     # Raw-output log intentionally NOT cleaned up — it is the fail-open diagnostic artifact.
     log="$(mktemp -t cfp-raw.XXXXXX)" || log=""
-    if [ -n "$log" ]; then
+    if [ "$_cfp_up" -eq 1 ]; then
+        [ -n "$log" ] && printf '%s\n' "$raw" > "$log"
+        echo "critic-first-pass.sh: upstream error — the critic's provider returned an error, not a review; fail-open, proceed claude-only. If this is the only configured cross-model lane, the lane is down: retry when it recovers.${log:+ Raw output: $log}" >&2
+        # A status/quota/auth line later in a multiline body must still reach
+        # the classifier (it wins over upstream-error), so surface it first.
+        _cfp_first="$(printf '%s\n' "$raw" | grep -m1 -v '^[[:space:]]*$' | cut -c1-300)"
+        _cfp_sig="$(first_signal_line "$log")"
+        if [ -n "$_cfp_sig" ] && [ "$_cfp_sig" != "$_cfp_first" ]; then
+            echo "critic-first-pass.sh: raw signal: $_cfp_sig" >&2
+        fi
+        # Last stderr line = the vendor's own first line (critic-panel.sh takes
+        # the last line as the ledger detail=).
+        printf 'critic-first-pass.sh: raw tail: %s\n' "$_cfp_first" >&2
+    elif [ -n "$log" ]; then
         printf '%s\n' "$raw" > "$log"
         echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. Raw output: $log" >&2
         # HIMMEL-737: surface a bounded excerpt of the raw reply on stderr too -
