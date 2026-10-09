@@ -260,7 +260,7 @@ fi
 # (above the 200 cap of one query, spread over the paged merge days) must
 # certify clean at exit 0, not QUERY-ERROR.
 GH_STUB8B="$TMP_ROOT/gh-stub-250list.sh"
-PR_LIST_JSON8B=$(jq -nc '[range(1;251) | {number:., headRefOid:"zzz", files:[{path:"docs/unrelated.md"}]}]')
+PR_LIST_JSON8B=$(jq -nc '[range(1;251) | {number:., headRefOid:"zzz", files:[{path:(if . == 250 then "scripts/hooks/x.sh" else "docs/unrelated.md" end)}]}]')
 cat > "$GH_STUB8B" <<STUB
 #!/usr/bin/env bash
 case "\$* " in
@@ -276,6 +276,7 @@ case "\$* " in
         done
         idx=\$(python3 -c 'import datetime,sys; print(datetime.date.fromisoformat(sys.argv[1]).toordinal() % 30)' "\$day")
         echo '$PR_LIST_JSON8B' | jq -c "[.[] | select(.number % 30 == \$idx)] | .[:\$lim]" ;;
+    *"pr view 250"*"comments"*) echo '{"comments":[]}' ;;
     *) echo "stub: unhandled gh args: \$*" >&2; exit 99 ;;
 esac
 STUB
@@ -285,8 +286,9 @@ echo "TEST: 250 merged PRs in the window certify clean (no QUERY-ERROR)"
 out=$(GH_CMD="$GH_STUB8B" "$BASE_STATUS" scripts/hooks 2>"$TMP_ROOT/err9b")
 rc=$?
 err=$(cat "$TMP_ROOT/err9b")
-if [ "$rc" -eq 0 ] && [ -z "$out" ] && ! grep -qF "QUERY-ERROR" <<< "$err"; then
-    pass "250-PR window certifies clean"
+m250=$(printf '%s\n' "$out" | grep -F "PENDING PR 250")
+if [ "$rc" -eq 0 ] && [ -n "$m250" ] && ! grep -qF "QUERY-ERROR" <<< "$err"; then
+    pass "250-PR window certifies without QUERY-ERROR and the paged fence-matching PR reaches evaluation"
 else
     fail "250-PR window" "rc=$rc out='$out' err='$err'"
 fi

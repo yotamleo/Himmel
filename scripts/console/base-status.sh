@@ -107,8 +107,8 @@ default_branch=$(_gh repo view --json defaultBranchRef --jq '.defaultBranchRef.n
 # LOOKBACK_DAYS window scopes the query to "recent merge traffic" (this
 # ticket's actual concern) instead of cumulative repo history; PR_LIST_LIMIT
 # stays as a safety net that only fires on a genuinely exceptional volume
-# (>1000 merges to $default_branch within the window), not as the everyday
-# case. python3 mirrors the portable date-math convention used elsewhere in
+# (a single merge day reaching the cap, see the paging note below), not as
+# the everyday case. python3 mirrors the portable date-math convention used elsewhere in
 # this codebase (e.g. arm-resume.sh's _epoch_hhmm) since GNU `date -d` and
 # BSD `date -v` are not compatible; when python3 is unavailable, fall back
 # to an unscoped query rather than fail-closed on a working host.
@@ -126,10 +126,9 @@ LOOKBACK_DAYS="${BASE_STATUS_LOOKBACK_DAYS:-30}"
 # and matched locally against every fence. A day that itself reaches the cap
 # (or any page that fails) still refuses to certify. python3-less hosts fall
 # back to the single unscoped query.
-LOOKBACK_DAYS="${BASE_STATUS_LOOKBACK_DAYS:-30}"
 PR_LIST_LIMIT=200
 slice_days=$(python3 -c \
-    'import datetime,sys; t=datetime.date.today(); print("\n".join((t - datetime.timedelta(days=d)).isoformat() for d in range(int(sys.argv[1]), -1, -1)))' \
+    'import datetime,sys; t=datetime.datetime.now(datetime.timezone.utc).date(); print("\n".join((t - datetime.timedelta(days=d)).isoformat() for d in range(int(sys.argv[1]), -1, -1)))' \
     "$LOOKBACK_DAYS" 2>/dev/null)
 if [ -z "$slice_days" ]; then
     echo "base-status: could not compute the ${LOOKBACK_DAYS}-day lookback dates (python3 missing?) — falling back to an unscoped merged-PR query, limit $PR_LIST_LIMIT" >&2
