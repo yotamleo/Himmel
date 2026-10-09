@@ -27,6 +27,9 @@ T_PLAIN="${APT_T_PLAIN:-120}"
 T_ALT="${APT_T_ALT:-180}"
 
 mkdir -p "$ARCHIVES/partial"
+# root apt leaves partial/ owned by _apt (0700): the unprivileged cache save
+# could not read it, so drop partial/ and lock on every exit path.
+trap '$SUDO rm -rf "$ARCHIVES/partial" "$ARCHIVES/lock"' EXIT
 opts=(-y --no-install-recommends -o DPkg::Lock::Timeout=60 -o "Dir::Cache::archives=$ARCHIVES")
 
 primary=""
@@ -55,7 +58,7 @@ fi
 echo "apt-install: $primary failed or stalled, switching to $ALT"
 for f in $SOURCES; do
   [ -f "$f" ] || continue
-  $SUDO sed -i "s#//$primary#//$ALT#g" "$f"
+  $SUDO sed -i "s#//${primary//./\\.}#//$ALT#g" "$f"
 done
 if apt "$T_ALT" update -o Acquire::Retries=1 -o DPkg::Lock::Timeout=60 \
    && apt "$T_ALT" install "${opts[@]}" "$@"; then

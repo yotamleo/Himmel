@@ -73,6 +73,8 @@ out="$(env APT_GET="$TMP/apt-get" APT_SUDO= APT_ARCHIVES="$TMP/c1/archives" \
 run_case c2 STUB_PRIMARY_OK=1
 [ "$rc" -eq 0 ] && ! grep -q -- '--no-download' <<<"$log" && grep -q primary.example <<<"$src" \
   && ok "cache miss + healthy primary: plain install, mirror untouched" || bad "healthy primary (rc=$rc)"
+[ ! -e "$TMP/c2/archives/partial" ] \
+  && ok "partial/ is removed on exit so the cache save can read the directory" || bad "partial/ left behind"
 
 # 3. primary fails fast: switches to the alt mirror, refreshes, installs.
 run_case c3
