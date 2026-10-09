@@ -228,12 +228,11 @@ unmarked=""
 while IFS= read -r ts; do
   [ -n "$ts" ] || continue
   grep -qx '# selector: tree-scan' "$SRC_ROOT/$ts" && continue
-  if grep -vE '^[[:space:]]*#' "$SRC_ROOT/$ts" \
+  walks=$(grep -vE '^[[:space:]]*#' "$SRC_ROOT/$ts" \
        | grep -E '(ls-files|ls-tree|find )' \
        | grep -vE 'ls-files -s|--error-unmatch' \
-       | grep -qE '\$\{?(REPO|REPO_ROOT|SRC_ROOT)\}?|, *repo\b'; then
-    unmarked="$unmarked $ts"
-  fi
+       | grep -E '\$\{?(REPO|REPO_ROOT|SRC_ROOT)\}?|, *repo\b' || true)
+  if [ -n "$walks" ]; then unmarked="$unmarked $ts"; fi
 done < <(git -C "$SRC_ROOT" ls-files -- 'scripts/**/test-*.sh' 'scripts/test-*.sh' \
            'templates/**/test-*.sh' 'marketplace/**/test-*.sh')
 if [ -z "$unmarked" ]; then
