@@ -658,6 +658,20 @@ change docs/scan-31/new.sh
 out="$(run_is "$range")"
 if ! grepq "$out" 'test-lint-fail-open'; then pass "a new file outside every scan root does not list the scanning suite"; else fail "scan root over-selected: $out"; fi
 
+# --- 31b. HIMMEL-5039: the wired-hook resolution sweep reads every hook script,
+# its libs and the two wiring files without naming any of them, so a change to
+# any of those lists it. ------------------------------------------------------
+mkf scripts/hooks/test-wired-hooks-integrity-resolution.sh 'echo sweep'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: wired-hook sweep fixture"
+mkdir -p "$FX/.claude" "$FX/.codex"
+mkdir -p "$FX/scripts/guardrails" "$FX/scripts/handover"
+for f in scripts/hooks/some-guard.sh scripts/lib/some-lib.sh scripts/guardrails/lib.sh scripts/handover/queue-lock.sh .claude/settings.json .codex/hooks.json; do
+  change "$f"
+  out="$(run_is "$range")"
+  if grepq "$out" '^scripts/hooks/test-wired-hooks-integrity-resolution\.sh$'; then pass "$f -> test-wired-hooks-integrity-resolution.sh (scan root)"; else fail "wired-hook sweep not selected for $f: $out"; fi
+done
+
 # --- 32. HIMMEL-4323: npm-licenses row (RED control) and the veto rows. -----
 NPM=scripts/hooks/test-check-npm-licenses\\.sh
 PCR=scripts/cr/test-pr-check-run\\.sh
