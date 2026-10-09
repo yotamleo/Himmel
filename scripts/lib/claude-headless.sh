@@ -202,25 +202,49 @@ lock_is_stale() {
   [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null
 }
 # HIMMEL-2196: removal of a stale lock is serialized by a reclaim-intent lock
-# (a sibling dir) and re-verified under it, so a reclaimer that lost the race
-# cannot delete the lock a winner just re-acquired. Contended -> do nothing;
-# the caller keeps polling.
+# and re-verified under it, so a reclaimer that lost the race cannot delete the
+# lock a winner just re-acquired. Contended -> do nothing; the caller keeps
+# polling. With flock(1) the intent lock is a kernel lock on a sibling file:
+# the kernel drops it when the holder dies by any path, so nothing is ever
+# stolen. Without flock (macOS) it is a sibling dir, below.
+# HIMMEL_HEADLESS_NO_FLOCK=1 forces the dir fallback (tests).
+reclaim_use_flock() {
+  [ -z "${HIMMEL_HEADLESS_NO_FLOCK:-}" ] && command -v flock >/dev/null 2>&1
+}
+# Drop the marker dir only while it still names this process (the exit trap and
+# the normal path both use this; a steal may have replaced it).
+reclaim_marker_release() {
+  if [ "$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -rf "$RECLAIM_LOCK" 2>/dev/null || true
+  fi
+}
 reclaim_stale_lock() {
+  if reclaim_use_flock; then
+    # Subshell: fd 9 (the lock) dies with it and never reaches the claude
+    # launch; the EXIT trap is not inherited by a subshell.
+    (
+      flock -n 9 || exit 0
+      if [ -d "$ADMISSION_LOCK" ] && lock_is_stale; then
+        seam reclaim-prerm
+        echo "claude-headless.sh: admission lock held by dead/unrecorded pid — reclaiming stale lock" >&2
+        rm -rf "$ADMISSION_LOCK" 2>/dev/null || true
+      fi
+    ) 9>"$ADMISSION_LOCK.flock" 2>/dev/null
+    return 0
+  fi
   mkdir "$RECLAIM_LOCK" 2>/dev/null || return 0
   printf '%s' "$$" > "$RECLAIM_LOCK/pid" 2>/dev/null || true
   # Re-check we still own the marker after the (slow) staleness read: a steal
   # may have displaced it, in which case we must not delete the lock.
   if [ -d "$ADMISSION_LOCK" ] && lock_is_stale && [ "$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
+    seam reclaim-prerm
     echo "claude-headless.sh: admission lock held by dead/unrecorded pid — reclaiming stale lock" >&2
     rm -rf "$ADMISSION_LOCK" 2>/dev/null || true
   fi
-  # Only drop the marker if it is still ours (a steal may have replaced it).
-  if [ "$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
-    rm -rf "$RECLAIM_LOCK" 2>/dev/null || true
-  fi
+  reclaim_marker_release
 }
-# A reclaimer that died holding the reclaim lock would block every future
-# reclaim. Take it by atomic rename (only one mover wins), and put it back if
+# Dir fallback only (no flock): a reclaimer SIGKILLed while holding the marker
+# would block every future reclaim. Take it by atomic rename (only one mover wins), and put it back if
 # what was moved is not the dead/empty owner we observed.
 steal_stale_reclaim_lock() {
   local seen moved="$RECLAIM_LOCK.dead.$$"
@@ -236,11 +260,16 @@ steal_stale_reclaim_lock() {
   if [ "$(cat "$moved/pid" 2>/dev/null || true)" = "$seen" ]; then
     rm -rf "$moved" 2>/dev/null || true
   else
-    # ponytail: a mismatch means the marker was replaced between the read and
-    # the rename; restore only into an empty slot (mv onto an existing dir
-    # would nest), and the check-then-mv gap stays open — a second steal
-    # racing a third reclaimer inside that gap loses one marker, upgrade path
-    # is a flock-style owner file once a portable one exists (HIMMEL-5107).
+    # ponytail: dir fallback only (flock absent). Between the pid read and the
+    # rename a live reclaimer may take the marker we then move; while it is out
+    # of the slot a third process can take the slot and be admitted, and the
+    # first reclaimer then deletes that lock too — two admitted at cap-1, after
+    # three preemptions inside the steal window. Restore only into an empty
+    # slot (mv onto an existing dir would nest). Upgrade path: a kernel lock
+    # without flock(1), or require flock on macOS (HIMMEL-5107). Also open
+    # there: an owner pid still empty after 0.2s counts as dead, and
+    # HIMMEL_HEADLESS_SEAM_DIR / _NO_FLOCK are not in chokepoints.json
+    # seam_env_vars.
     if [ -e "$RECLAIM_LOCK" ]; then
       rm -rf "$moved" 2>/dev/null || true
     else
@@ -323,6 +352,7 @@ finalize_on_exit() {
   local rc="${1:-${FINAL_RC:-$?}}" _leaked_pid
   [ -n "$FINAL_RC" ] || FINAL_RC="$rc"
   lock_release
+  reclaim_marker_release
   if [ -n "${_LAUNCHED_CLAUDE_PID:-}" ] && kill -0 "$_LAUNCHED_CLAUDE_PID" 2>/dev/null; then
     kill_tree "$_LAUNCHED_CLAUDE_PID"
   else
