@@ -565,7 +565,7 @@ MENTION_RE='^(curl|wget|tar|bsdtar|unzip|cpio|7z|7za|7zr|ed|ex|vi|vim|nvim|view|
 EXTRACT_WORD_RE='(^|[^A-Za-z0-9_.-])(tar|gtar|bsdtar|unzip|cpio|bsdcpio|7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar|tarfile|zipfile)([^A-Za-z0-9_.-]|$)'
 EXTRACT_CMD_RE='^(tar|gtar|bsdtar|unzip|cpio|bsdcpio|7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar)$'
 # Commands that only name a tool (install it, look it up, print it): not wrappers.
-NOSCAN_RE='^(apt|apt-get|aptitude|apt-cache|dnf|yum|zypper|apk|brew|pacman|pip[0-9.]*|pipx|npm|npx|yarn|pnpm|cargo|gem|which|whereis|type|man|info|help|whatis|apropos|tldr|echo|printf|git|gh)$'
+NOSCAN_RE='^(apt|apt-get|aptitude|apt-cache|dnf|yum|zypper|apk|brew|pacman|pip[0-9.]*|pipx|cargo|gem|which|whereis|type|man|info|help|whatis|apropos|tldr|echo|printf|git|gh)$'
 
 _lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 _base() { local b="${1%/}"; printf '%s' "${b##*/}"; }
@@ -1437,7 +1437,7 @@ check_extract_coarse() {
             dpkg|dpkg-deb)
                 case "$a" in
                     -x|--extract|--vextract) mode=1 ;;
-                    -X|-R|--raw-extract) [ "$c" = dpkg-deb ] && mode=1 ;;
+                    -X|-R|--raw-extract) mode=1 ;;
                     -*) ;;
                     *) ops+=("$a") ;;
                 esac ;;
