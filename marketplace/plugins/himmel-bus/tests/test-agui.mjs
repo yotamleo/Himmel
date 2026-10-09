@@ -42,6 +42,21 @@ test('T8.2 a nonce straddling byte 120 is redacted before the clip', async t => 
   assert.doesNotMatch(text, /BP-X|1234abcd|R-[0-9a-f]{4}|pid909|x8664/);
 });
 
+test('T8.2b a token cut by the 119-char clip is redacted first, not fragmented', async t => {
+  const { store, agui, root } = await fixture(t);
+  // Clip-then-redact would leave "BP-X" / "R-0123456789ab": the cut drops the token below its pattern minimum.
+  await store.append(root, 'leg', rec({ b: 'x'.repeat(110) + ' BP-X-1234abcd tail' }));
+  await store.append(root, 'leg', rec({ b: 'x'.repeat(104) + ' R-' + '0123456789abcdef'.repeat(2) + ' tail' }));
+  const text = JSON.stringify(await collect(agui, root));
+  assert.doesNotMatch(text, /BP-X|R-0123/);
+});
+
+test('a key never leaves a tail behind a nonce-shaped cut', async t => {
+  const { store, agui, root } = await fixture(t);
+  await store.append(root, 'leg', rec({ b: 'sk-ant-api03-short-QQ-zz-abcdef12-REMAININGKEYMATERIAL12345' }));
+  assert.doesNotMatch(JSON.stringify(await collect(agui, root)), /REMAININGKEY/);
+});
+
 test('T8.3 no body key and no string over 200 chars under /bus/', async t => {
   const { store, agui, root } = await fixture(t);
   await store.append(root, 'leg', rec({ b: 'y'.repeat(5000), s: 'z'.repeat(300) }));

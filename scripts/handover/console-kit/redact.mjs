@@ -9,10 +9,12 @@
 // (`cachyos-x8664-pid909468`), key-shaped strings and a `token \`...\`` span are
 // replaced. Console letters run A-Z then AA-ZZ. Runs BEFORE escaping and BEFORE
 // any clip: a clip that cuts a token in half leaves a fragment no pattern matches.
+// The key pattern runs first: a dashed key body can contain a nonce-shaped run, and
+// cutting it there would leave the rest of the key behind.
 export const redact = (s) => s
+    .replace(/\b(?:sk-|ghp_|gho_|github_pat_|xox[a-z]-|AKIA)[A-Za-z0-9_-]{16,}/g, '[key]')
     .replace(/\b[A-Z]{1,2}-[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{6,}\b/g, '[nonce]')
     .replace(/\bR-[0-9a-f]{16,}/g, '[nonce]')
     .replace(/\b[A-Za-z0-9_]+-[A-Za-z0-9_]+-pid\d+\b/g, '[lock]')
     .replace(/\bpid\d{4,}\b/g, '[pid]')
-    .replace(/\b(?:sk-|ghp_|gho_|github_pat_|xox[a-z]-|AKIA)[A-Za-z0-9_-]{16,}/g, '[key]')
     .replace(/\b(tokens?|nonces?)(\s*[:=]?\s*)`[^`]*`/gi, '$1$2[redacted]');
