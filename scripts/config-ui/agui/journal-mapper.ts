@@ -25,6 +25,9 @@
 //   API error record           → RUN_ERROR
 //   a prompt while a run is open → RUN_FINISHED (no outcome) for the old run first
 //   critic-panel report result → STATE_SNAPSHOT { review }
+//   a bus delivery (isMeta)    → STATE_DELTA add /bus/msgs/<n>/delivered (HIMMEL-4835; <n> is the recipient's
+//     sequence number, the one id the delivery text carries); mcp__himmel-bus__send and its plugin-prefixed
+//     form both appear as mcp__himmel-bus__send
 //   a verdict-recording Bash   → STATE_DELTA, once its result comes back without error:
 //     write-verdicts.sh (its --from-file is the text an earlier successful
 //     Write left at that path) or ledger-append.sh finding/amend rows
@@ -98,6 +101,11 @@ const DENIED = /^(PreToolUse|PermissionRequest):\w+ hook error|permission to use
 export const SUITE =/quiet-run\.sh suite|\bbun test\b|run-shell-tests\.sh|\btest-[\w.-]+\.sh\b|\bplaywright test\b|\bpytest\b|\bnpm (run )?test\b/;
 // A status line that leads with BLOCKED: a message, or a Results bullet ("- 12:00 BLOCKED ...").
 const BLOCKED = /^\s*(?:-\s+(?:\d\d:\d\d\s+)?)?BLOCKED\b/m;
+// HIMMEL-4835: the bus delivery hook's header lines (every body line is `| `-prefixed, so none can forge one) and
+// the two names the send tool goes by (bare, and the plugin-prefixed form).
+const BUS_HEADER = /^bus #(\d+) (?:data )?from /gm;
+const BUS_SEND = /^mcp__(?:plugin_himmel-bus_)?himmel-bus__send$/;
+const busDeliveries = (text: string) => [...text.matchAll(BUS_HEADER)].map((m) => Number(m[1]));
 
 const roleOfName = (name: string): AgentRole =>
   /-console$/.test(name) ? "console" : /judge/i.test(name) ? "judge" : /(^|-)N\d+(-|$)/.test(name) ? "leg" : "agent";
@@ -254,7 +262,12 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     }
     const text = blocks.filter((b) => b.type === "text").map((b) => str(b.text) ?? "").join("\n");
     if (rec.isMeta === true || !text) {
-      stats.ignored++;
+      const delivered = rec.isMeta === true ? busDeliveries(text) : [];
+      if (delivered.length) {
+        ensureRun(rec, out);
+        const ts = epochMs(rec);
+        if (ts.timestamp !== undefined) out.push({ type: "STATE_DELTA", delta: delivered.map((n) => ({ op: "add", path: `/bus/msgs/${n}/delivered`, value: ts.timestamp! })), ...ts });
+      } else stats.ignored++;
       return true;
     }
     if (rec.isSidechain === true) { // a subagent's brief: never a run boundary
@@ -365,7 +378,7 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
       } else if (block.type === "tool_use" && str(block.id) && str(block.name)) {
         ensureRun(rec, out);
         const toolCallId = str(block.id)!;
-        const toolCallName = str(block.name)!;
+        const toolCallName = BUS_SEND.test(str(block.name)!) ? "mcp__himmel-bus__send" : str(block.name)!;
         // The text the same API message streamed before this call, if any.
         const parentMessageId = messageId ? firstText.get(messageId) : undefined;
         const ts = epochMs(rec);
