@@ -67,6 +67,11 @@ RUNNER_SUBCMD = ("npm", "pnpm", "yarn", "bun", "go", "cargo", "make")
 # HIMMEL-4698: quiet-run.sh's one-line outcome (OK ... "(" / ERR ... "exit=N"); a
 # refusal ("ERR quiet-run: ...") or a kill ("... killed by ...") matches neither.
 QUIET_RUN_LINE_RE = re.compile(r"^(OK|ERR) quiet-run ([^\s:]\S*)(?: exit=\d+| \()", re.M)
+# HIMMEL-5023: output that reports failures. The suites here print `  FAIL ...` per case and
+# `<n> passed, <m> failed` (also `RESULT(S): ...`); `0 failed` is green.
+# ponytail: line-shape heuristic, a suite printing neither shape and exiting 0 still reads as passing, upgrade by
+# having suites print a quiet-run OK/ERR line (HIMMEL-4698) or by parsing the runner's own summary.
+OUTPUT_FAIL_RE = re.compile(r"^\s*FAIL\b|\b[1-9]\d* failed\b", re.M)
 WRAPPERS = ("env", "time", "sudo", "command", "exec", "nice", "nohup")
 # Setup whose failure a test's RED is not mistaken for, in `cd d && test`.
 SETUP_CMDS = ("cd", "pushd", "export", "source", ".", "set", "umask")
@@ -355,6 +360,8 @@ def score_calls(calls, texts, report=None):
                 if len(ms) != int(n or 1):
                     continue  # refused, killed or a wrapped run skipped: no outcome to credit
                 passed, t = "ERR" not in ms, (t[0], "pass+fail")
+            elif t and passed and OUTPUT_FAIL_RE.search(c["result"]["text"]):  # exit 0 hid a RED (HIMMEL-5023)
+                passed, t = False, (t[0], "pass+fail")
             if t and ((passed and t[1]) or t[1] == "pass+fail"):
                 runs.append((c["pos"], t[0], passed))
     writes = [(c["pos"], p) for c in calls for p in [_written_path(c)] if p]
