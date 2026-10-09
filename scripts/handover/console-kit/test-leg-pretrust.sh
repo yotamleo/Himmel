@@ -253,20 +253,24 @@ check "11i the swap really happened in every trial" "$swapped" "5"
 # 11j (judge j2228c) continuous flip: the config flips between a file and a symlink the whole
 # time after the sidecar appears, so a second lstat/realpath in the node write can land on the
 # link. A single swap (11i) cannot see that; the victim must stay byte-identical in every trial.
-flipper='const fs=require("fs"),[cfg,vic,sc,stop]=process.argv.slice(1),d=require("path").dirname(cfg),L=d+"/.swapL",R=d+"/.swapR",t0=Date.now();
+flipper='const fs=require("fs"),[cfg,vic,sc,stop,cnt]=process.argv.slice(1),d=require("path").dirname(cfg),L=d+"/.swapL",R=d+"/.swapR",t0=Date.now();let n=0;
 while(!fs.existsSync(sc)){if(Date.now()-t0>4000||fs.existsSync(stop))process.exit(0);}
-while(Date.now()-t0<4000&&!fs.existsSync(stop)){try{fs.unlinkSync(L)}catch(e){}fs.symlinkSync(vic,L);fs.renameSync(L,cfg);fs.writeFileSync(R,"{ }");fs.renameSync(R,cfg);}'
-flipbad=0
+while(Date.now()-t0<4000&&!fs.existsSync(stop)){try{fs.unlinkSync(L)}catch(e){}fs.symlinkSync(vic,L);fs.renameSync(L,cfg);fs.writeFileSync(R,"{ }");fs.renameSync(R,cfg);n++;}
+fs.appendFileSync(cnt,n+"\n");'
+flipbad=0; flipcnt="$tmp/flipcount"; rm -f "$flipcnt"
 for t in $(seq 1 800); do
   rm -rf "$jc" "$vic"; mkdir -p "$jc" "$vic"
   printf '%s' '{"keep":"me"}' > "$vic/v.json"; printf 'precious\n' > "$vic/v.txt"; want="$(vsum)"
   printf '%s' '{ }' > "$jc/.claude.json"
-  node -e "$flipper" "$jc/.claude.json" "$vic/v.json" "$jc/.claude.json.leg-pretrust.owner" "$jc/stop" & apid=$!
+  node -e "$flipper" "$jc/.claude.json" "$vic/v.json" "$jc/.claude.json.leg-pretrust.owner" "$jc/stop" "$flipcnt" & apid=$!
   LEG_PRETRUST_CONFIG="$jc/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || true
   : > "$jc/stop"; wait "$apid" 2>/dev/null
   [ "$(vsum)" = "$want" ] || flipbad=$((flipbad + 1))
 done
 check "11j continuous flip: victim written in 0 of 800 trials" "$flipbad" "0"
+# a flipper that never started (or never saw the sidecar) must fail the row, not pass it vacuously
+echo "flips: trials with a flip $(awk '$1 > 0' "$flipcnt" 2>/dev/null | wc -l), total flips $(awk '{s += $1} END {print s + 0}' "$flipcnt" 2>/dev/null)"
+check "11j the flipper flipped in at least 95 percent of trials" "$([ "$(awk '$1 > 0' "$flipcnt" 2>/dev/null | wc -l)" -ge 760 ] && echo yes || echo no)" "yes"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASS - test-leg-pretrust.sh"; exit 0; fi
