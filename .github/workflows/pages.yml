@@ -1,0 +1,45 @@
+name: Pages
+
+# HIMMEL-5075: the Pages source is build_type=workflow (was a legacy branch
+# build of main:/docs, which redeployed the site on EVERY push to main - about
+# 30 deployments in 12 h). This workflow deploys only when docs/** changes, or
+# on demand via `gh workflow run pages.yml`. Static suite:
+# scripts/ci/test-pages-workflow.sh.
+#
+# docs/ is uploaded as-is. The legacy build ran Jekyll, but docs/.nojekyll
+# turned it off, so the served bytes are identical: no build step is needed.
+#
+# The workflow is deliberately NOT named `CI`: scripts/handover/console-kit/
+# cut-tag.sh reads the commit's workflow run named exactly `CI`.
+on:
+  push:
+    branches: [main]
+    paths: ['docs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  # Never cancel a RUNNING deploy (a half-published site); a newer queued run
+  # replaces an older still-pending one.
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v5

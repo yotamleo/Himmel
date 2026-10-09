@@ -83,12 +83,14 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 The public repo serves this folder as a static site at
 `https://yotamleo.github.io/Himmel/<path under docs/>`.
 
-- **Source.** Pages is set to "Deploy from a branch": branch `main`, folder
-  `/docs` (a legacy branch build — there is no Pages workflow in
-  `.github/workflows/`). Publishing is merging to `main`; GitHub rebuilds
-  within a minute or two. Read the live settings and the last build with
-  `gh api repos/yotamleo/Himmel/pages` and
-  `gh api repos/yotamleo/Himmel/pages/builds/latest`.
+- **Source.** Pages is set to "GitHub Actions" (`build_type=workflow`), and
+  `.github/workflows/pages.yml` uploads `docs/` and deploys it. It runs only
+  when a push to `main` changes `docs/**`, or on demand with
+  `gh workflow run pages.yml`; a push that touches nothing under `docs/` does
+  not redeploy. Publishing is merging a `docs/` change to `main`; the deploy
+  takes a minute or two. Read the live settings with
+  `gh api repos/yotamleo/Himmel/pages` and the runs with
+  `gh run list --workflow pages.yml`.
 - **What is served.** Every file under `docs/`, byte for byte, and nothing
   outside it (the root `README.md`, `scripts/` and the rest are not on the
   site). `docs/.nojekyll` turns Jekyll off, so there is no build step and no
@@ -103,7 +105,7 @@ The public repo serves this folder as a static site at
   resolves every link on the trail page, confirms every detail chip has its
   panel, and pins the claims that have drifted before (cadence count, lanes
   menu, plugin provenance) to the tree.
-- **Check after.** Once the build shows `built`,
+- **Check after.** Once the `Pages` run succeeds,
   `curl -s https://yotamleo.github.io/Himmel/adoption-trail.html | cmp - docs/adoption-trail.html`
   prints nothing when the live page matches your checkout.
 
