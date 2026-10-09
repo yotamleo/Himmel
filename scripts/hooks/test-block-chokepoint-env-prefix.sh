@@ -1765,6 +1765,9 @@ function f { \eval '@@'; }
 d="$(true)" $(echo eval) '@@'
 d="$(true)" \eval '@@'
 "$(echo eval)" '@@'
+d="$(true)" "eval" '@@'
+d="$(true)" "$(echo eval)" '@@'
+echo "$(true)" ; d="$(true)" ev\al '@@'
 FORMS
     assert_allow "4454b control: quoted command substitution assigned [$pre]" "$(j "d=\"\$(git rev-parse --show-toplevel)\"; $pre ls /r/w/docs/*.md")"
     assert_allow "4454b control: quoted wc substitution assigned [$pre]" "$(j "n=\"\$(wc -l < a)\"; $pre ls /r/w/docs/*.md")"

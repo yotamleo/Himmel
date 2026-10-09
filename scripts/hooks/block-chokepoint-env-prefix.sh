@@ -1367,7 +1367,9 @@ pobf_relief() {
     # command word is not a plain literal (a quote token, a backslash, a $ or
     # a brace) or is eval, source, `.`, a DEBUG/ERR/ZERR/RETURN trap, a
     # mapfile / readarray -C callback or a zsh emulate -c.
-    local re_cn="^(.*)$T5(([$T1$T2$TAB 0-9]|$T3\\\$)*)(.*)\$"
+    local re_op="${T3}\\\$[[:blank:]]*\$"
+    local sp=0
+    local -a stk
     local re_dp='(^|[^$])\(\('
     [[ $F =~ $re_dp ]] && return 1
     local re_rd='^[0-9]*(<<<|<>|>>|>\||&>|<|>)(.*)$'
@@ -1384,15 +1386,21 @@ pobf_relief() {
         skf=0; [ "$bj" -gt 0 ] && [ $((bj % 2)) = 0 ] && skf=1
         # >&, <& and &> are redirects, not a stage break: fold them first.
         sg=${bqs[bj]//>&/>}; sg=${sg//<&/<}; sg=${sg//&>/>}
-        # The text after the ) closing a "$( ) only when it is nothing but
-        # quote tokens, digits and a following $ continues the outer command's
-        # arguments, so it is no stage; anything else stays and is scanned.
-        while [[ $sg == *"$T5"* ]] && [[ $sg =~ $re_cn ]]; do
-            sg="${BASH_REMATCH[1]}${BASH_REMATCH[4]}"
-        done
         while IFS= read -r L; do
             [ "$skf" = 1 ] && { skf=0; continue; }
             cw=''; sk=0
+            # A line led by T5 is the text after the ) closing a "$( ): it
+            # continues the command that opened it (stk holds that command's
+            # word, empty while only assignments precede), so it is no stage.
+            if [[ $L == "$T5"* ]]; then
+                [ "$sp" -gt 0 ] || return 1
+                sp=$((sp - 1)); cw=${stk[sp]}; L=${L#?}
+                case "$L" in
+                    ''|[[:blank:]]*) ;;
+                    *[[:blank:]]*) L=${L#*[[:blank:]]} ;;
+                    *) L='' ;;
+                esac
+            fi
             # Fail closed: any reserved word or compound opener, in any
             # position, means a compound command whose real command word this
             # scan does not model (a [[ test, a coproc name, zsh `always`).
@@ -1402,6 +1410,7 @@ pobf_relief() {
                 esac
             done
             for w in $L; do
+                [ -n "$cw" ] && break
                 [ "$sk" = 1 ] && { sk=0; continue; }
                 case "$w" in
                     if|then|do|else|elif|while|until|'!'|'{'|'}'|time|coproc|nocorrect|noglob|builtin|command|exec|-*) continue ;;
@@ -1419,8 +1428,11 @@ pobf_relief() {
                 mapfile|readarray) [[ $L =~ $re_mc ]] && return 1 ;;
                 emulate) [[ $L =~ $re_ec ]] && return 1 ;;
             esac
+            # A line ending in the T3 $ of a "$( ) opening: remember its command.
+            if [[ $L =~ $re_op ]]; then stk[sp]=$cw; sp=$((sp + 1)); fi
         done <<< "${sg//[;&|()]/$NL}"
     done
+    [ "$sp" = 0 ] || return 1
     [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
     F=${F//[0-9]>&[0-9]/ }
