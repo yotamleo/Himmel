@@ -67,6 +67,16 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 
 node_bin=$(command -v node)
 
+# HIMMEL-2635: a bare `git worktree add` dying under `set -e` (git's fatal exit
+# is 128) ended the suite with rc=128 and no message after the earlier cases had
+# printed ok. Name the case, git's rc and its stderr instead. No retry: a retry
+# would hide the very fault this exists to show.
+wt_add() {
+  local _wt="$1" _case="$2" _out _rc=0
+  _out=$(git -C "$repo_root" worktree add --detach "$_wt" HEAD 2>&1) || _rc=$?
+  [ "$_rc" -eq 0 ] || fail "$_case: git worktree add failed (rc=$_rc): $_out"
+}
+
 # shellcheck source=lib/hermetic-path.sh
 # shellcheck disable=SC1091
 . "$repo_root/scripts/lib/hermetic-path.sh"
@@ -368,7 +378,7 @@ echo "ok: caseF project-scope residue (fixture-owned pre-wired only at <fixture>
 # fake $HOME (user scope) stays clean throughout. Post-fix this must be
 # SILENT.
 gWt="$work/caseG-selfwt"
-git -C "$repo_root" worktree add --detach "$gWt" HEAD >/dev/null
+wt_add "$gWt" caseG
 build_fixture "$gWt"
 mkdir -p "$gWt/.claude"
 cat > "$gWt/.claude/settings.json" <<'JSON'
@@ -400,7 +410,7 @@ echo "ok: caseG self-checkout project-scope residue -> no false WARN (HIMMEL-245
 # manifest, no hand-written settings.json in the worktree); only the fake
 # $HOME carries the residue key.
 hWt="$work/caseH-selfwt"
-git -C "$repo_root" worktree add --detach "$hWt" HEAD >/dev/null
+wt_add "$hWt" caseH
 build_fixture "$hWt"
 stubH="$work/caseH"; mkdir -p "$stubH"
 cH=$(build_path "$stubH" bash git jq python3 npm node)
