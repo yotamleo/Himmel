@@ -52,6 +52,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitClean } from '../../lanes/git-clean.mjs';
 import { readToolHealth } from '../../eval/leg-digest/tool-health.mjs';
+import { redact } from './redact.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -84,15 +85,8 @@ const repo = resolve(opt.repo || join(HERE, '..', '..', '..'));
 const outPath = resolve(opt.out || join(bucket, 'console-board.html'));
 
 // ---------------------------------------------------------------- redaction
-// Nonces (`V-N255-93f72f64`, `AA-N1-abcdef12`, or a leg stem
-// `V-HIMMEL-3340-N1-alpha-cafe0123`), lock tokens (`cachyos-x8664-pid909468`)
-// and a `token \`...\`` span never reach a published page. Console letters run
-// A-Z then AA-ZZ. Runs BEFORE escaping.
-const redact = (s) => s
-    .replace(/\b[A-Z]{1,2}-[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{6,}\b/g, '[nonce]')
-    .replace(/\b[A-Za-z0-9_]+-[A-Za-z0-9_]+-pid\d+\b/g, '[lock]')
-    .replace(/\bpid\d{4,}\b/g, '[pid]')
-    .replace(/\b(tokens?|nonces?)(\s*[:=]?\s*)`[^`]*`/gi, '$1$2[redacted]');
+// Nonces, lock tokens and `token \`...\`` spans never reach a published page;
+// the patterns live in redact.mjs (shared with himmel-bus lib/agui.mjs). Runs BEFORE escaping.
 const esc = (s) => String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');

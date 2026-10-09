@@ -6,7 +6,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test tests/test-store.mjs tests/test-identity.mjs tests/test-server.mjs && bash tests/test-lint.sh"
+    "test": "node --test tests/test-store.mjs tests/test-identity.mjs tests/test-server.mjs tests/test-agui.mjs && bash tests/test-lint.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
