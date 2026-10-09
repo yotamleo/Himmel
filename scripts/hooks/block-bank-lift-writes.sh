@@ -54,6 +54,17 @@
 # judged as the lift; upgrade path is the operator-owned lift above.
 # ponytail: the PowerShell tool is not wired, Windows is parked under
 # HIMMEL-4102 — wire it when Windows legs resume.
+# ponytail: HIMMEL-5094 extraction ceilings, none visible to a text layer
+# (each needs a runtime or filesystem view; upgrade path is a sandbox that
+# mounts HOME read-only for agent shells): (a) an archive MEMBER that is a
+# symlink, or a git clone carrying a link, then a second extraction through it
+# in a LATER command; (b) data piped into a shell (`echo '…' | bash`), whose
+# text arrives on a pipe the tokenizer does not join to the reader; (c) a
+# variable command word with a variable destination when the command names
+# neither an archive tool nor a HOME spelling; (d) an interpreter script FILE,
+# or inline code calling tarfile.extractall; (e) dpkg --root/--instdir, 7z
+# @listfile and ar --plugin, whose targets sit in a file or a plugin; (f) eval
+# nesting past depth 4 where no archive tool and HOME spelling remain to read.
 #
 # Hook I/O: JSON on stdin; exit 0 = allow, exit 2 = block (stderr shown).
 # Platform guard: bash 3.2-safe (no mapfile, no associative arrays).
@@ -549,6 +560,13 @@ SHELL_RE='^(bash|sh|zsh|dash|ksh|mksh|yash|ash|fish|rbash)$'
 READ_RE='^(cat|jq|grep|egrep|fgrep|rg|head|tail|less|more|wc|stat|ls|file|diff|cmp|md5sum|sha1sum|sha256sum|readlink|realpath)$'
 MENTION_RE='^(curl|wget|tar|bsdtar|unzip|cpio|7z|7za|7zr|ed|ex|vi|vim|nvim|view|nano|pico|emacs|emacsclient|mcedit|joe|micro|helix|hx|kak|ssh|scp|sftp|rclone|aria2c|gunzip|bunzip2|xz|unxz|zstd|unzstd|gzip|bzip2|split|csplit)$'
 
+# HIMMEL-5094: archive tools (and the python modules that extract), as a word
+# anywhere in a text and as a command word.
+EXTRACT_WORD_RE='(^|[^A-Za-z0-9_.-])(tar|gtar|bsdtar|unzip|cpio|bsdcpio|7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar|tarfile|zipfile)([^A-Za-z0-9_.-]|$)'
+EXTRACT_CMD_RE='^(tar|gtar|bsdtar|unzip|cpio|bsdcpio|7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar)$'
+# Commands that only name a tool (install it, look it up, print it): not wrappers.
+NOSCAN_RE='^(apt|apt-get|aptitude|apt-cache|dnf|yum|zypper|apk|brew|pacman|pip[0-9.]*|pipx|npm|npx|yarn|pnpm|cargo|gem|which|whereis|type|man|info|help|whatis|apropos|tldr|echo|printf|git|gh)$'
+
 _lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 _base() { local b="${1%/}"; printf '%s' "${b##*/}"; }
 # _lb <word>: R = the lowercased basename, forking only for an uppercase
@@ -1042,6 +1060,11 @@ analyse() {
     local text="$1" depth="$2" out line
     if [ "$depth" -gt 4 ]; then
         [ "$TEXT_MENTION" = 1 ] && deny "command nests too deep to inspect and names bank-lift"
+        # HIMMEL-5094: too deep to inspect, so an archive tool beside a HOME
+        # spelling denies.
+        if [[ "$text" =~ $EXTRACT_WORD_RE ]]; then
+            case "$text" in *'~'*|*HOME*|*/home/*|*/Users/*|*/root*) deny "command nests too deep to inspect and names an archive tool beside HOME" ;; esac
+        fi
         return 0
     fi
     out=$(printf '%s' "$text" | awk "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
@@ -1067,7 +1090,7 @@ EOF
             $'\002B\037'*) bodies="$bodies${line#$'\002B\037'}"$'\n'; continue ;;
             $'\002S\037'*) line="${line#$'\002S\037'}"; analyse "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
         esac
-        local -a tk=() args=()
+        local -a tk=() args=() rt=()
         IFS=$'\037' read -r -a tk <<<"$line"
         local i=0 t nt=${#tk[@]} fed=0
         # Redirect targets; build args without them.
@@ -1081,6 +1104,7 @@ EOF
                 $'\002R')
                     i=$((i+1)); fed=1
                     t="${tk[$i]:-}"
+                    rt+=("$t")
                     case "$(_base "$t")" in *bank*) _name_matches "$(_base "$t")" bank-lift.sh && fed=2 ;; esac
                     ;;
                 *) args+=("$t") ;;
@@ -1090,7 +1114,12 @@ EOF
         [ "${#args[@]}" -gt 0 ] || continue
         check_lift_name "${args[@]}"
         check_clause "$depth" "$fed" "${args[@]}"
-        case "$?" in 10) stdin_shell=1 ;; esac
+        case "$?" in
+            # HIMMEL-5094: a here-string (<<<) into a shell is its script text;
+            # a `< file` target analysed as text is a harmless command word.
+            10) stdin_shell=1
+                for t in ${rt[@]+"${rt[@]}"}; do analyse "$t" $((depth+1)); done ;;
+        esac
     done <<EOF
 $out
 EOF
@@ -1325,7 +1354,17 @@ check_extract() {
     # if an agent can plant the link in an earlier command.
     [ "$ksym" = 1 ] && deny "$c --keep-directory-symlink follows a directory symlink inside the destination, which can lead into HOME or ~/.himmel; drop it"
     _extract_allow "$c" "$@"
-    n=${#dests[@]}
+    _dest_verdict "$c" "$cwdchk" ${dests[@]+"${dests[@]}"}
+}
+
+# _dest_verdict <tool> <cwd-dependent 0|1> <dest...>: the destination half of
+# an extraction verdict (HIMMEL-5094 lifted it out of check_extract). With no
+# destination, or when the cwd may matter, the cwd is judged; each destination
+# is then judged against HOME, ~/.himmel and its state dir.
+_dest_verdict() {
+    local c="$1" cwdchk="$2" a k e n
+    shift 2
+    n=$#
     if [ "$n" = 0 ] || [ "$cwdchk" = 1 ]; then
         [ "$CWD_UNPROVEN" = 1 ] && deny "$c extracts into the cwd: $UNPROVEN_FIX"
         case "$(lift_ref "$CWD")" in
@@ -1334,7 +1373,7 @@ check_extract() {
         _home_anc "$CWD" && deny "$c extracts into the cwd ($CWD), an ancestor of HOME: a relative member can reach the bank lift"
         [ "$n" = 0 ] && return 0
     fi
-    for a in "${dests[@]}"; do
+    for a in "$@"; do
         # A computed destination ($D, $(...), `...`; $HOME spellings resolve)
         # cannot be shown to stay off HOME: fail closed, like an unresolved cd.
         case "$(_expand "$a")" in
@@ -1347,6 +1386,162 @@ check_extract() {
         esac
         e=$(_expand "$a")
         _home_anc "$e" && deny "$c extracts into $a, an ancestor of HOME: a relative member (home/<user>/.himmel/state/...) can reach the bank lift"
+    done
+    return 0
+}
+
+# check_extract_coarse <7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar> <args...>
+# (HIMMEL-5094) Extractors check_extract does not model option by option: find
+# the extraction mode and the destination operand/option, then judge them with
+# _dest_verdict. pax -r (no copy destination) and 7z -spf keep members' own
+# absolute names, so they deny whatever the destination.
+check_extract_coarse() {
+    local c="$1" a v ch mode=0 skip=0 first=1 rd=0 wr=0 spec=0
+    local -a dests=() ops=()
+    shift
+    for a in "$@"; do
+        if [ "$skip" = 1 ]; then skip=0; dests+=("$a"); continue; fi
+        case "$c" in
+            7z|7za|7zr|7zz)
+                case "$a" in
+                    -spf*) deny "$c -spf keeps absolute member names, so a member can land on the bank lift whatever the destination" ;;
+                    -o?*) dests+=("${a#-o}") ;;
+                    -*) ;;
+                    *) if [ "$first" = 1 ]; then case "$a" in x|e|X) mode=1 ;; esac; first=0; fi ;;
+                esac ;;
+            pax)
+                case "$a" in
+                    --) ;;
+                    -*) v="${a#-}"
+                        while [ -n "$v" ]; do
+                            ch="${v:0:1}"; v="${v:1}"
+                            case "$ch" in r) rd=1 ;; w) wr=1 ;; s) spec=1 ;; esac
+                        done ;;
+                    *) ops+=("$a") ;;
+                esac ;;
+            ar)
+                case "$a" in
+                    --output=*) dests+=("${a#*=}") ;;
+                    --output) skip=1 ;;
+                    --*) ;;
+                    *) if [ "$first" = 1 ]; then case "$a" in *x*) mode=1 ;; esac; first=0; fi ;;
+                esac ;;
+            jar)
+                case "$a" in
+                    -x|--extract) mode=1 ;;
+                    --dir=*) dests+=("${a#*=}") ;;
+                    --dir|-C) skip=1 ;;
+                    --*) ;;
+                    *) if [ "$first" = 1 ]; then case "$a" in *x*) mode=1 ;; esac; first=0; fi ;;
+                esac ;;
+            dpkg|dpkg-deb)
+                case "$a" in
+                    -x|--extract|--vextract) mode=1 ;;
+                    -X|-R|--raw-extract) [ "$c" = dpkg-deb ] && mode=1 ;;
+                    -*) ;;
+                    *) ops+=("$a") ;;
+                esac ;;
+            unar)
+                mode=1
+                case "$a" in
+                    -o|-output-directory|--output-directory) skip=1 ;;
+                    -o?*) dests+=("${a#-o}") ;;
+                esac ;;
+        esac
+    done
+    case "$c" in
+        pax)
+            [ "$rd" = 1 ] || return 0
+            EXTRACT_SEEN=1
+            [ "$spec" = 1 ] && deny "pax -s rewrites member names, which can move them into HOME or ~/.himmel"
+            [ "$wr" = 1 ] || deny "pax -r keeps members' own (absolute or ../) names, which can land on the bank lift whatever the destination; extract with tar or unzip into an absolute destination"
+            [ "${#ops[@]}" -gt 0 ] && dests+=("${ops[${#ops[@]}-1]}") ;;
+        dpkg|dpkg-deb)
+            [ "$mode" = 1 ] && [ "${#ops[@]}" -ge 2 ] || return 0
+            EXTRACT_SEEN=1
+            dests+=("${ops[1]}") ;;
+        *)
+            [ "$mode" = 1 ] || return 0
+            EXTRACT_SEEN=1 ;;
+    esac
+    _dest_verdict "$c" 0 ${dests[@]+"${dests[@]}"}
+}
+
+# check_interp_archive <args...>: `python -m tarfile|zipfile -e <archive>
+# [<dest>]` extracts like tar/unzip (HIMMEL-5094).
+check_interp_archive() {
+    local a mod="" st=0 ex=0
+    local -a ops=() dests=()
+    for a in "$@"; do
+        if [ -z "$mod" ]; then
+            if [ "$st" = 1 ]; then mod="$a"; continue; fi
+            case "$a" in -m) st=1 ;; -m?*) mod="${a#-m}" ;; esac
+            continue
+        fi
+        case "$a" in -e|--extract) ex=1 ;; -*) ;; *) ops+=("$a") ;; esac
+    done
+    case "$mod" in tarfile|zipfile) ;; *) return 0 ;; esac
+    [ "$ex" = 1 ] || return 0
+    EXTRACT_SEEN=1
+    [ "${#ops[@]}" -ge 2 ] && dests+=("${ops[1]}")
+    _dest_verdict "python -m $mod" 0 ${dests[@]+"${dests[@]}"}
+}
+
+# _homeish_word <word>: the word (or its -oVALUE / --opt=VALUE value) names
+# HOME, ~/.himmel, its state dir or the lift.
+_homeish_word() {
+    local b
+    for b in "$1" "${1#-?}" "${1#*=}"; do
+        case "$(lift_ref "$b")" in NONE) ;; *) return 0 ;; esac
+    done
+    return 1
+}
+
+# _dyn_cmd_check <command-word> <args...>: a command word held in a variable
+# or substitution cannot be read (HIMMEL-5094). It denies when an argument
+# names HOME/~/.himmel, or when an argument is computed and the command also
+# names an archive tool and a HOME spelling.
+_dyn_cmd_check() {
+    local w="$1" a dynarg=0
+    shift
+    # Cheap pre-check (no subshell): a literal command word has no $ or backtick.
+    case "$w" in *'$'*|*'`'*) ;; *) return 0 ;; esac
+    case "$(_expand "$w")" in *'$'*|*'`'*) ;; *) return 0 ;; esac
+    for a in "$@"; do
+        _homeish_word "$a" && deny "a command word held in a variable or substitution ($w) is handed HOME or ~/.himmel ($a), so it may be an extractor; name the command literally"
+        _is_dynamic "$a" && dynarg=1
+    done
+    if [ "$dynarg" = 1 ] && [[ "$CMD" =~ $EXTRACT_WORD_RE ]]; then
+        case "$CMD" in *'~'*|*HOME*|*/home/*|*/Users/*|*/root*) deny "a command word held in a variable or substitution ($w) is handed a computed argument beside an archive tool and a HOME spelling, so it may extract into HOME; name the command and destination literally" ;; esac
+    fi
+    return 0
+}
+
+# _wrapped_extract <depth> <fed> <command-word> <args...>: an UNKNOWN command
+# (strace, fakeroot, unshare, nsenter, …) may wrap an extractor. Every later
+# word that is an archive tool, with at least one argument after it, is judged
+# as if it were the command (HIMMEL-5094). Over-matches by design: it can only
+# add a deny, and only when the tool would itself deny.
+_wrapped_extract() {
+    local depth="$1" fed="$2" j k n nx
+    shift 2
+    local -a ws=("$@")
+    n=${#ws[@]}; j=1
+    while [ "$j" -lt "$n" ]; do
+        nx=$((j+1))
+        if [ "$nx" -lt "$n" ]; then
+            _lb "${ws[j]}"
+            if [[ "$R" =~ $EXTRACT_CMD_RE ]]; then
+                check_clause "$depth" "$fed" "${ws[@]:j}"
+            elif [[ "$R" =~ $INTERP_RE ]]; then
+                k=$nx
+                while [ "$k" -lt "$n" ]; do
+                    case "${ws[k]}" in tarfile|zipfile) check_clause "$depth" "$fed" "${ws[@]:j}"; break ;; esac
+                    k=$((k+1))
+                done
+            fi
+        fi
+        j=$((j+1))
     done
     return 0
 }
@@ -1383,6 +1578,8 @@ check_clause() {
         case "$w" in
             '{'|'}'|'!'|if|then|else|elif|do|while|until|fi|done|coproc|builtin|nohup|setsid|unbuffer|caffeinate)
                 shift; continue ;;
+            # HIMMEL-5094: `function NAME [()] {` — skip the keyword and name.
+            function) shift; [ $# -gt 0 ] && shift; [ "${1:-}" = '()' ] && shift; continue ;;
         esac
         if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then
             # NAME=value assignment: a value naming the lift with no command
@@ -1485,6 +1682,7 @@ check_clause() {
     [ $# -gt 0 ] || return 0
     w="$1"; shift
     _lb "$w"; cmd=$R
+    _dyn_cmd_check "$w" "$@"
 
     # xargs anywhere in the command: any word naming the lift or the state
     # dir is a write the hook cannot follow — unless the verb only reads its
@@ -1581,9 +1779,13 @@ check_clause() {
             esac
         done
         [ "$seen" = 0 ] && inline=1
+        check_interp_archive "$@"
         if [ "$inline" = 1 ]; then
             code=$(_lower "$* $CUR_BODIES")
             code="${code//\\/}"
+            # HIMMEL-5094: an interpreter one-liner that creates a link counts
+            # as a symlink creation beside any extraction in the command.
+            if [[ "$code" =~ symlink|(^|[^a-z0-9_])ln[^a-z0-9_]+(-[a-z-]*s|--sym)|mklink ]]; then SYMLINK_SEEN=1; fi
             if _code_names_lift "$code"; then
                 deny "an interpreter ($cmd) runs inline code naming the bank lift"
             fi
@@ -1641,6 +1843,11 @@ check_clause() {
         *)
             case "$cmd" in
                 tar|gtar|bsdtar|unzip|cpio) check_extract "$cmd" "$@" ;;
+                bsdcpio) check_extract cpio "$@" ;;
+                7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar) check_extract_coarse "$cmd" "$@" ;;
+                *) if ! [[ "$cmd" =~ $READ_RE ]] && ! [[ "$cmd" =~ $NOSCAN_RE ]]; then
+                       _wrapped_extract "$depth" "$fed" "$w" "$@"
+                   fi ;;
             esac
             if [[ "$cmd" =~ $MENTION_RE ]]; then
                 for a in "$@"; do
