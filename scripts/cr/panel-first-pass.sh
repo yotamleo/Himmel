@@ -224,8 +224,9 @@ PINABORT
         # panel_findings and panel_avail_lines from the first attempt, so a
         # stale first-attempt availability line can never leak into the
         # aggregate. rc=1 after the retry still degrades to claude-only,
-        # loudly (same fail-open contract as below).
-        if command -v rtk >/dev/null 2>&1; then
+        # loudly (same fail-open contract as below). Only rc=1 retries: an
+        # exit-6 refusal is not a diff problem, and a retry would overwrite it.
+        if [ "$panel_rc" -eq 1 ] && command -v rtk >/dev/null 2>&1; then
             # Same captured-base rule as the first attempt (HIMMEL-1984).
             retry_diff=$(rtk proxy git diff "$diff_range" 2>/dev/null) || retry_diff=""
             if [ -n "$retry_diff" ]; then
