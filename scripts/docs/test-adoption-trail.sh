@@ -68,10 +68,10 @@ done
 
 # shellcheck disable=SC2016  # the backticks are literal markdown in the pattern
 if grep -q -E 'http\.server' "$DOCS_README" && grep -q -E '\.nojekyll' "$DOCS_README" \
-   && grep -q -F 'branch `main`' "$DOCS_README" && grep -q -F '`/docs`' "$DOCS_README"; then
+   && grep -q -F 'pages.yml' "$DOCS_README" && grep -q -F '`docs/**`' "$DOCS_README"; then
   ok "docs/README.md documents the Pages source, static serving and local preview"
 else
-  bad "docs/README.md must name the Pages source (main + /docs), .nojekyll and a local preview (http.server)"
+  bad "docs/README.md must name the Pages source (pages.yml on docs/**), .nojekyll and a local preview (http.server)"
 fi
 
 # --- 3. CURRENCY ----------------------------------------------------------------
