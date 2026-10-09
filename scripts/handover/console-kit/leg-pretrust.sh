@@ -73,40 +73,52 @@ lock="$cfg.leg-pretrust.lock"
 waited=0
 until mkdir "$lock" 2>/dev/null; do
     if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-        rmdir "$lock" 2>/dev/null || true
+        rm -f "$lock/owner"; rmdir "$lock" 2>/dev/null || true
         continue
     fi
     waited=$((waited + 1))
     [ "$waited" -le 100 ] || { echo "leg-pretrust: lock timeout: $lock" >&2; exit 5; }
     sleep 0.1
 done
-trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+echo "$$" > "$lock/owner" 2>/dev/null || true
+# Release only a lock we still own: a reclaimed-then-retaken lock is the successor's.
+trap '[ "$(cat "$lock/owner" 2>/dev/null)" = "$$" ] && { rm -f "$lock/owner"; rmdir "$lock" 2>/dev/null; }; true' EXIT
 
 WT_KEY="$abs" WT_CONFIG="$cfg" node -e '
 const fs = require("fs");
 const p = process.env.WT_CONFIG, key = process.env.WT_KEY;
 const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-let j = {};
-try {
-    j = JSON.parse(fs.readFileSync(p, "utf8"));
-} catch (e) {
-    if (e.code !== "ENOENT") {
-        console.error("leg-pretrust: cannot use " + p + " (" + e.message + ") - refusing to overwrite");
+const sig = () => { try { const s = fs.statSync(p); return s.mtimeMs + ":" + s.size; } catch (_) { return "none"; } };
+// Live claude sessions write this file without our lock, so re-check its
+// mtime+size right before the rename and redo the read-modify-write if it moved.
+for (let attempt = 0; attempt < 5; attempt++) {
+    const before = sig();
+    let j = {};
+    try {
+        j = JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch (e) {
+        if (e.code !== "ENOENT") {
+            console.error("leg-pretrust: cannot use " + p + " (" + e.message + ") - refusing to overwrite");
+            process.exit(4);
+        }
+    }
+    if (!obj(j)) { console.error("leg-pretrust: " + p + " is not a JSON object - refusing to overwrite"); process.exit(4); }
+    if (!obj(j.projects)) j.projects = {};
+    if (!obj(j.projects[key])) j.projects[key] = {};
+    if (j.projects[key].hasTrustDialogAccepted === true) process.exit(0);
+    j.projects[key].hasTrustDialogAccepted = true;
+    const tmp = p + ".tmp-pretrust-" + process.pid;
+    try {
+        fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
+        if (sig() !== before) { fs.unlinkSync(tmp); continue; }
+        fs.renameSync(tmp, p);
+        process.exit(0);
+    } catch (e) {
+        try { fs.unlinkSync(tmp); } catch (_) {}
+        console.error("leg-pretrust: could not write " + p + ": " + e.message);
         process.exit(4);
     }
 }
-if (!obj(j)) { console.error("leg-pretrust: " + p + " is not a JSON object - refusing to overwrite"); process.exit(4); }
-if (!obj(j.projects)) j.projects = {};
-if (!obj(j.projects[key])) j.projects[key] = {};
-if (j.projects[key].hasTrustDialogAccepted === true) process.exit(0);
-j.projects[key].hasTrustDialogAccepted = true;
-const tmp = p + ".tmp-pretrust-" + process.pid;
-try {
-    fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
-    fs.renameSync(tmp, p);
-} catch (e) {
-    try { fs.unlinkSync(tmp); } catch (_) {}
-    console.error("leg-pretrust: could not write " + p + ": " + e.message);
-    process.exit(4);
-}
+console.error("leg-pretrust: " + p + " kept changing under us - gave up without writing");
+process.exit(4);
 '
