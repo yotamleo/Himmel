@@ -11,6 +11,8 @@
 #                     the launch line.
 #   console.sh next — write the successor's doc stub, write the predecessor's
 #                     HANDOFF skeleton, print the launch line.
+#   console.sh wrap — the predecessor's WRAPPED + lock release, refused while
+#                     it has live subagents (HIMMEL-5071).
 #
 # Env seams: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY (via .env, see
 # load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL,
@@ -41,7 +43,8 @@
 # / a malformed --date value; 3
 # the work dir (default or CONSOLE_WORK_DIR) exists but is a symlink, is not
 # owned by this user, is group/other-writable, or could not be created
-# (HIMMEL-2881).
+# (HIMMEL-2881); 4 `wrap` refused: this session has a live in-process
+# subagent, or live-subagents.sh could not prove it has none (HIMMEL-5071).
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+; --arm launches through
 # konsole (Linux/KDE, via headed-arm.sh), so no .ps1 twin — the Windows
@@ -88,7 +91,12 @@ usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
                        [--arm] [--dry-run] [--model <m>] [--bucket <b>]
                        [--prefix <P>] [--project <dir>] [--deadline-min <n>]
                        [--context <1m|standard>]
+       console.sh wrap <console-doc> <release-token> [<text>]
        console.sh -h|--help
+
+wrap (the predecessor's last step, run from its own session) writes the
+WRAPPED bullet and releases the lock, and refuses (exit 4, nothing written)
+while this session has a live in-process subagent (HIMMEL-5071).
 
 Consoles default to 1m. --context overrides CONSOLE_CONTEXT and the default;
 --context standard or CONSOLE_CONTEXT=standard opts down to 200000.
@@ -287,9 +295,54 @@ do_arm() {
     echo "arm-log: $log"
 }
 
+# HIMMEL-5071: the predecessor's wrap. A console run inside its own session
+# ($CLAUDE_CODE_SESSION_ID) writes WRAPPED and releases its lock only when
+# live-subagents.sh proves it has no in-process subagent still running (a judge
+# call whose verdict would otherwise die with the session); a live child, or no
+# way to tell, refuses with exit 4 and writes nothing.
+# ponytail: a console can still hand-write WRAPPED with append-results.sh and
+# release by hand; close-wrapped-leg.sh's exit 7 is the backstop that refuses to
+# TERM it then, so the child is never killed. Gate append-results.sh itself if
+# that path is seen in use.
+cmd_wrap() {
+    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+        echo "usage: console.sh wrap <console-doc> <release-token> [<text>]" >&2
+        exit 1
+    fi
+    local doc="$1" token="$2" text="${3:-handed over}" out rc=0
+    out=$(bash "$HERE/../console-kit/live-subagents.sh" 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        printf '%s\n' "$out" >&2
+        if [ "$rc" -eq 1 ]; then
+            err "wrap refused: this session has live subagents (above) - wait for their results, then re-run"
+        else
+            err "wrap refused: cannot prove this session has no live subagents (above) - run it from the console's own session"
+        fi
+        exit 4
+    fi
+    # prove the token first (heartbeat refuses a wrong one and changes nothing),
+    # so neither a wrong token nor a failed append leaves a half-done wrap
+    bash "$HERE/../queue-lock.sh" heartbeat "$doc" "$token" >/dev/null || exit 1
+    bash "$HERE/../console-kit/append-results.sh" "$doc" "WRAPPED — $text" || exit 1
+    bash "$HERE/../queue-lock.sh" release "$doc" "$token" || exit 1
+}
+
+# The HANDOFF's open-judge-calls fact (HIMMEL-5071): this session's running
+# subagents when `next` runs. Fails open to a note, like handoff-facts.sh.
+judge_calls_now() {
+    local out rc=0
+    out=$(bash "$HERE/../console-kit/live-subagents.sh" 2>&1) || rc=$?
+    case "$rc" in
+        0) echo "none running" ;;
+        1) printf '%s\n' "$out" | sed -n 's/^LIVE-SUBAGENT /- /p' ;;
+        *) echo "unavailable ($(printf '%s\n' "$out" | head -n 1))" ;;
+    esac
+}
+
 CMD="${1:-}"
 case "$CMD" in
     -h|--help) usage; exit 0 ;;
+    wrap) shift; cmd_wrap "$@"; exit 0 ;;
     new|next) shift ;;
     "") usage >&2; exit 1 ;;
     *) err "unknown command: $CMD"; usage >&2; exit 1 ;;
@@ -1431,6 +1484,7 @@ cmd_next() {
             SHIFT_SUMMARY "$(bash "$facts" summary "$predecessor_doc" --repo "$repo")" \
             QUEUE_LINE "$(bash "$facts" queue "$predecessor_doc" --repo "$repo")" \
             LAST_GO "$(bash "$facts" lastgo "$predecessor_doc" --repo "$repo")" \
+            JUDGE_CALLS "$(judge_calls_now)" \
             PREDECESSOR_LETTER "$predecessor_letter" \
             LETTER "$successor_letter" \
             PREDECESSOR "$predecessor_base" \

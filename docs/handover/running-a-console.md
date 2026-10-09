@@ -421,6 +421,28 @@ and why (ACTION ZERO step 9) — and it is the only evidence the arm actually fi
 and the successor completed ACTION ZERO; releasing on the `touch` alone leaves
 an unattended fleet if the launch failed.
 
+**Wrap only with no subagent still running** (HIMMEL-5071). An in-process
+subagent, a judge call above all, dies with its parent session and its verdict
+with it. Wrap with `console.sh wrap <your doc> <release-token> '<line>'`: it
+writes `WRAPPED` and releases the lock, and refuses (exit 4, nothing written)
+while `console-kit/live-subagents.sh` finds a running child of this session or
+cannot tell. The successor's `close-wrapped-leg.sh --console` holds the same
+line from the outside: exit 7 means the predecessor still has a live subagent;
+retry once it finishes. Every judge call persists its verdict with
+`write-verdict.sh` under `verdicts/<qid>/`, trust path or not, and the HANDOFF
+lists the open judge calls (`next` fills in the children still running), so a
+successor reads a verdict instead of re-running the judge.
+
+How a live subagent is detected from outside its session: Claude Code writes
+`<projects>/<proj>/<session>/subagents/agent-<id>.meta.json` when it launches a
+child, and appends a `queue-operation` enqueue of the child's
+`<task-notification>` (carrying `<task-id><id></task-id>`) to the parent
+transcript the moment the child stops, whether or not the parent ever reads it.
+A child with a registry entry and no later completion record is running. A
+foreground child completes with its `tool_result` instead. The process tree
+cannot see a subagent (it is not a process), and the `tasks/<id>.output` links
+outlive the child.
+
 The HANDOFF is the successor's only required read. Written properly, the succession
 does not need the predecessor's transcript at all.
 

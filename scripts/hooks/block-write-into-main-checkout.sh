@@ -996,7 +996,7 @@ _bwimc_flat_mask() {
 # `nice.exe`). `chroot [opts] DIR` and `sudo -R DIR`/`--chroot` change the
 # root: DIR lands in _BWIMC_SPROOT for the verb loop (_bwimc_root_model), and
 # chroot also chdirs to the new `/`.
-_BWIMC_ARMVERB_RE='^([^[:space:]]*/)?(sed|eval|bash|sh|zsh|dash|ksh|install|rsync|dd|cp|mv|rm|touch|ln|git)(\.exe)?$'
+_BWIMC_ARMVERB_RE='^([^[:space:]]*/)?(sed|eval|bash|sh|zsh|dash|ksh|install|rsync|dd|cp|mv|rm|touch|truncate|tar|gtar|bsdtar|ln|git)(\.exe)?$'
 # _bwimc_sp_word — trims _BWIMC_SPT's leading blanks; _BWIMC_SPW = its first
 # shell word as written ('..', "..", $'..' and backslash honoured, so
 # `exec -a "two words" touch` is three words before `touch`), _BWIMC_SPU = that
@@ -1930,7 +1930,21 @@ _bwimc_check_abs() {
     fi
     _tolower_ascii "$abs"
     lc="$_TOLOWER_OUT"
-    is_temp_or_devnull "$lc" && return 0
+    if is_temp_or_devnull "$lc"; then
+        # HIMMEL-4921 (D): the /tmp exemption is by NAME, so a link under /tmp
+        # that resolves into a protected checkout slipped through. Exempt only
+        # when the RESOLVED path is temp-ish too; entry mode (rm, ln) resolves
+        # ancestors only, since the link itself is what it touches. An
+        # unresolvable path stays exempt, as before.
+        case "$abs" in /dev/null|/dev/null/*) return 0 ;; esac
+        if [ "$mode" = entry ]; then
+            canon=$(guard_canon_path_nofollow "$abs" 2>/dev/null) || return 0
+        else
+            canon=$(guard_canon_path "$abs" 2>/dev/null) || return 0
+        fi
+        _tolower_ascii "$canon"
+        is_temp_or_devnull "$_TOLOWER_OUT" && return 0
+    fi
     case "$mode" in
         entry|both)
             canon=$(guard_canon_path_nofollow "$abs" 2>/dev/null) || canon=""
@@ -2753,6 +2767,47 @@ _bwimc_ambig_check() {
 # of its line), the second reading the scan below runs. The scanner itself
 # does not know comments, so a quote inside one (`$(echo hi # it's⏎)`) opened
 # a span that hid every later command. This is the bash/zsh `-c` reading:
+# HIMMEL-4921 (A): the shared scanner reads `"${x:-"it's"}"` wrongly. Inside a
+# double-quoted `${…}` bash opens a NEW quoted span at the inner `"`, so the
+# `'` is a literal; the scanner closes the span at that `"` and takes the `'`
+# for an opener that swallows everything after it, redirect included. This
+# adds an EXTRA reading (deny-only, like the comment-stripped one): every
+# brace-balanced `${…}` body is replaced by `p`, which keeps the quoting
+# outside it intact. No `${` or no closing brace leaves the text unchanged.
+# ponytail: braces are counted blind to quotes, so a `}` inside a quoted
+# default (`${x:-"}"}`) closes early and the tail reads as plain text, a
+# false-negative only on this extra reading; upgrade = a nested quote stack in
+# _bwimc_scan_step (HIMMEL-4921 follow-up).
+_bwimc_flatten_pe() {
+    local t="$1" o="" k=0 n=${#1} c d j q=0
+    _BWIMC_PE="$t"
+    # shellcheck disable=SC2016  # literal `${` is the glob pattern
+    case "$t" in *'${'*) ;; *) return 0 ;; esac
+    # No quote anywhere: the scanner cannot mis-pair one, so no extra reading.
+    case "$t" in *[\"\']*) ;; *) return 0 ;; esac
+    while [ "$k" -lt "$n" ]; do
+        c="${t:$k:1}"
+        if [ "$c" = "\\" ]; then o="$o${t:$k:2}"; k=$((k+2)); continue; fi
+        if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = '{' ]; then
+            d=1; j=$((k+2))
+            while [ "$j" -lt "$n" ] && [ "$d" -gt 0 ]; do
+                case "${t:$j:1}" in
+                    "\\") j=$((j+1)) ;;
+                    '"'|"'") q=1 ;;
+                    '{') d=$((d+1)) ;;
+                    '}') d=$((d-1)) ;;
+                esac
+                j=$((j+1))
+            done
+            if [ "$d" -eq 0 ]; then o="$o\${p}"; k=$j; continue; fi
+            o="$o${t:$k}"; [ "$q" = 1 ] && _BWIMC_PE="$o"; return 0
+        fi
+        o="$o$c"; k=$((k+1))
+    done
+    # A quote-free `${...}` body is read correctly already (HIMMEL-4921 perf).
+    [ "$q" = 1 ] && _BWIMC_PE="$o"
+    return 0
+}
 # a comment starts after start, blank, newline, `;&|()<>`, a `$(` or a
 # backtick, never mid-word, never inside `${…}`, `$((…))`, quotes, or right
 # after the `)`/backtick that closes a substitution (`$(true)#a` is a word).
@@ -3222,7 +3277,7 @@ _bwimc_check_interp_body() {
     case "$body" in
         *'>'*) : ;;
         *) case "$(printf '%s' "$body" | tr '[:upper:]' '[:lower:]')" in
-               *cp*|*mv*|*rm*|*touch*|*ln*|*tee*|*sed*|*install*|*rsync*|*dd*|*cd*|*pushd*|*git*|*commit*) : ;;
+               *cp*|*mv*|*rm*|*touch*|*truncate*|*tar*|*ln*|*tee*|*sed*|*install*|*rsync*|*dd*|*cd*|*pushd*|*git*|*commit*) : ;;
                *) return 0 ;;
            esac ;;
     esac
@@ -3690,6 +3745,12 @@ while IFS= read -r _bwimc_rclause; do
     done
 done < <(_bwimc_split_clauses "$_bwimc_skel" skel)
 }
+# HIMMEL-4921 (A): each reading again with its `${…}` bodies flattened.
+for _bwimc_pei in "${!_bwimc_readings[@]}"; do
+    _bwimc_flatten_pe "${_bwimc_readings[$_bwimc_pei]}"
+    [ "$_BWIMC_PE" = "${_bwimc_readings[$_bwimc_pei]}" ] \
+        || { _bwimc_readings+=("$_BWIMC_PE"); _bwimc_rmodes+=("${_bwimc_rmodes[$_bwimc_pei]}"); }
+done
 # HIMMEL-4198/4174: each reading again with `$((…))`/array values flattened
 # and continuations joined, so the verb after `x=$((1|2))` or `x=(a b)` shows.
 for _bwimc_afi in "${!_bwimc_readings[@]}"; do
@@ -6189,14 +6250,14 @@ while IFS= read -r _bwimc_clause; do
             fi
         fi
 
-    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(rm|touch)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(rm|touch|truncate)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
         # rm  -> ENTRY  (unlink removes the directory entry; the referent of a
         #                symlink operand is never touched)
         # touch -> FOLLOW (creates or timestamps the REFERENT)
         # _bwimc_mode_for_operand still forces FOLLOW for an `rm` operand that
         # has anything after the link (`<wt>/dirlink/`, `<wt>/dirlink/.`),
         # because `rm -r` there deletes through the link.
-        _bwimc_verb=$(printf '%s' "$_bwimc_clause_lc" | sed -E 's/^[[:space:]]*(rm|touch).*/\1/')
+        _bwimc_verb=$(printf '%s' "$_bwimc_clause_lc" | sed -E 's/^[[:space:]]*(rm|touch|truncate).*/\1/')
         _bwimc_mode=follow
         [ "$_bwimc_verb" = "rm" ] && _bwimc_mode=entry
         _bwimc_toks=()
@@ -6228,11 +6289,101 @@ while IFS= read -r _bwimc_clause; do
                 continue
             fi
             case "$_bwimc_t" in
+                # HIMMEL-4921 (B): truncate -s/-r take a separate VALUE (a
+                # size, a reference file that is only read), not a target.
+                -s|--size|-r|--reference)
+                    [ "$_bwimc_verb" = truncate ] && _bwimc_i=$((_bwimc_i+1)) ;;
                 -*) : ;;
                 *) _bwimc_cd_guard "$_bwimc_t" "$_bwimc_mode"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" "$_bwimc_mode" ;;
             esac
             _bwimc_i=$((_bwimc_i+1))
         done
+
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?(tar|gtar|bsdtar)(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-4921 (C): an EXTRACTING tar writes under its -C/--directory
+        # destination, which nothing checked (the fence only relieved a /tmp
+        # extract, never denied one). When the clause extracts (-x/--extract/
+        # --get, bundled `-xzf`, or old-style `xf`), every -C/--directory
+        # value is a write target (FOLLOW). A creating/listing tar only reads
+        # its -C directory and stays allowed. The archive operand (-f value)
+        # is never a destination. A dynamic value fails open on itself alone.
+        _bwimc_toks=()
+        while IFS= read -r _bwimc_t; do _bwimc_toks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_clause_sp")
+        _bwimc_x=0
+        _bwimc_dirs=()
+        _bwimc_i=1
+        while [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ]; do
+            _bwimc_t="${_bwimc_toks[$_bwimc_i]}"
+            if _bwimc_redirect_op_of "$_bwimc_t"; then
+                _bwimc_i=$(_bwimc_skip_redirect_at "$_bwimc_i")
+                continue
+            fi
+            case "$_bwimc_t" in
+                --directory)
+                    _bwimc_i=$((_bwimc_i+1))
+                    [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ] && _bwimc_dirs+=("${_bwimc_toks[$_bwimc_i]}") ;;
+                --directory=*) _bwimc_dirs+=("${_bwimc_t#--directory=}") ;;
+                --file) _bwimc_i=$((_bwimc_i+1)) ;;
+                --extract|--get) _bwimc_x=1 ;;
+                --*) : ;;
+                -?*)
+                    # short bundle: letters up to the first value-taking one
+                    # (f archive, C dir, ...); the rest of the token, or the
+                    # next token, is that option's value (never a mode letter).
+                    _bwimc_bk=1
+                    while [ "$_bwimc_bk" -lt "${#_bwimc_t}" ]; do
+                        _bwimc_bc="${_bwimc_t:$_bwimc_bk:1}"
+                        case "$_bwimc_bc" in
+                            x) _bwimc_x=1 ;;
+                            [fCbLNTXFHIKVg])
+                                _bwimc_rest="${_bwimc_t:$((_bwimc_bk+1))}"
+                                if [ -z "$_bwimc_rest" ]; then
+                                    _bwimc_i=$((_bwimc_i+1))
+                                    [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ] && _bwimc_rest="${_bwimc_toks[$_bwimc_i]}"
+                                fi
+                                [ "$_bwimc_bc" = C ] && [ -n "$_bwimc_rest" ] && _bwimc_dirs+=("$_bwimc_rest")
+                                break ;;
+                        esac
+                        _bwimc_bk=$((_bwimc_bk+1))
+                    done ;;
+                *)
+                    # old-style first operand (`tar xf a.tar`): mode letters only.
+                    # Its value-taking letters (f, C, ...) consume the following
+                    # tokens in letter order (`tar xCf DIR a.tar`).
+                    if [ "$_bwimc_i" = 1 ]; then
+                        case "$_bwimc_t" in
+                            *[!a-zA-Z]*) : ;;
+                            *)
+                                _bwimc_bk=0
+                                while [ "$_bwimc_bk" -lt "${#_bwimc_t}" ]; do
+                                    _bwimc_bc="${_bwimc_t:$_bwimc_bk:1}"
+                                    case "$_bwimc_bc" in
+                                        x) _bwimc_x=1 ;;
+                                        [fCbLNTXFHIKVg])
+                                            _bwimc_i=$((_bwimc_i+1))
+                                            if [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ]; then
+                                                [ "$_bwimc_bc" = C ] && _bwimc_dirs+=("${_bwimc_toks[$_bwimc_i]}")
+                                            fi ;;
+                                    esac
+                                    _bwimc_bk=$((_bwimc_bk+1))
+                                done ;;
+                        esac
+                    fi ;;
+            esac
+            _bwimc_i=$((_bwimc_i+1))
+        done
+        if [ "$_bwimc_x" = 1 ]; then
+            # tar applies -C cumulatively: a relative -C is joined onto the
+            # previous one, so each destination is checked as accumulated.
+            _bwimc_cum=""
+            for _bwimc_t in ${_bwimc_dirs[@]+"${_bwimc_dirs[@]}"}; do
+                case "$_bwimc_t" in
+                    /*|'~'*|'$'*) _bwimc_cum="$_bwimc_t" ;;
+                    *) if [ -n "$_bwimc_cum" ]; then _bwimc_cum="$_bwimc_cum/$_bwimc_t"; else _bwimc_cum="$_bwimc_t"; fi ;;
+                esac
+                _bwimc_cd_guard "$_bwimc_cum"; _bwimc_check_target "$_bwimc_cum" "$_bwimc_ecwd"
+            done
+        fi
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?tee(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
         # HIMMEL-4329 CR codex-2: arm (a) reads `tee` on the host only and
