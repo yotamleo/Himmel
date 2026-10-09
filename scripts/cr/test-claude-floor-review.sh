@@ -432,5 +432,15 @@ run_sut
 check "28b lone codex-adv quota -> exit 3" 3 "$RC"
 check "28b claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
 
+# 29. HIMMEL-4111: a non-native lane classifies the REVIEWED repo before any
+# spend: a salus-marked repo is refused under openrouter (exit 3, claude never
+# invoked); the same repo under the native lane is unaffected (case 1).
+mk_repo 29; row codex unavailable quota; : > "$R/.salus"
+HIMMEL_CLAUDE_LANE=openrouter run_sut
+check "29 salus repo under openrouter -> exit 3" 3 "$RC"
+check "29 claude never invoked" no "$([ -e "$REC/argv" ] && echo yes || echo no)"
+has "29 names the corpus" 'corpus "salus"' "$W/out"
+check "29 no provenance artifact" no "$([ -e "$R/.git/cr-floor/$HEAD_SHA.json" ] && echo yes || echo no)"
+
 echo "claude-floor-review: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

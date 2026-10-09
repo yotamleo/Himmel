@@ -301,8 +301,26 @@ for lane in openrouter claudex; do
     [ "$(cat "$work/lane-seen" 2>/dev/null)" = "$l" ] || fail "lane $lane: launcher $l was not used"
     cmp -s "$work/lane-argv" "$work/native-argv" || fail "lane $lane: argv differs from the native claude argv"
 done
+# HIMMEL-4111: the REVIEWED repo (not the scratch cwd) is classified before a
+# non-native lane launches: a salus-marked repo is refused under openrouter with
+# no launcher run, and a himmel-code repo hands the launcher its corpus root.
+: > "$work/lane-argv"; rm -f "$work/lane-seen"; : > "$repo/.salus"
+HIMMEL_CLAUDE_LANE=openrouter LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE="$work/lane-argv" PATH="$bindir:$PATH" \
+    bash "$mini/scripts/cr/hermes-critic.sh" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err"
+rc=$?
+rm -f "$repo/.salus"
+[ "$rc" -ne 0 ] || fail "salus repo under openrouter: expected a refusal, got rc=0"
+[ ! -e "$work/lane-seen" ] || fail "salus repo under openrouter: the launcher ran anyway"
+grep -q 'corpus "salus"' "$work/lane-err" || fail "salus repo under openrouter: stderr did not name the corpus: $(head -c 300 "$work/lane-err")"
+: > "$work/lane-argv"; rm -f "$work/lane-seen"
+# shellcheck disable=SC2016 # the stub text must keep its literal $vars
+sed -i.bak 's|^echo claude-openrouter > "\$LANE_CAPTURE"$|{ echo claude-openrouter; echo "cwd=${CLAUDE_OPENROUTER_CWD:-}"; } > "$LANE_CAPTURE"|' "$mini/scripts/claude-openrouter"
+HIMMEL_CLAUDE_LANE=openrouter LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE="$work/lane-argv" PATH="$bindir:$PATH" \
+    bash "$mini/scripts/cr/hermes-critic.sh" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err" \
+    || fail "clean repo under openrouter: critic run failed: $(head -c 400 "$work/lane-err")"
+grep -qx "cwd=$(cd -P "$repo" && pwd -P)" "$work/lane-seen" || fail "clean repo under openrouter: launcher did not get CLAUDE_OPENROUTER_CWD=<reviewed repo>: $(cat "$work/lane-seen")"
 : > "$work/claude-argv"
-HIMMEL_CLAUDE_LANE=bogus CLAUDE_ARGV_CAPTURE="$work/claude-argv" PATH="$bindir:$PATH" \
+HIMMEL_CLAUDE_LANE=bogusCLAUDE_ARGV_CAPTURE="$work/claude-argv" PATH="$bindir:$PATH" \
     bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/err8c"
 rc=$?
 [ "$rc" -ne 0 ] || fail "unknown lane: expected a refusal, got rc=0"

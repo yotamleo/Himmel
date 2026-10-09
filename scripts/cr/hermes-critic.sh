@@ -354,7 +354,9 @@ run_claude_review() {
     # HIMMEL-4082: lane seam — unset/native is plain `claude`; unknown lane refuses.
     # shellcheck source=../lib/claude-lane.sh
     # shellcheck disable=SC1091
-    if ! . "$SCRIPT_DIR/../lib/claude-lane.sh" || ! claude_lane_resolve "$SCRIPT_DIR/../.."; then
+    # HIMMEL-4111: the cwd is still the reviewed repo here; classify IT before a
+    # non-native lane launches (the launchers only see the scratch cwd below).
+    if ! . "$SCRIPT_DIR/../lib/claude-lane.sh" || ! claude_lane_resolve "$SCRIPT_DIR/../.." || ! claude_lane_egress "$(pwd)"; then
         rm -rf "$scratch_dir"
         return 1
     fi

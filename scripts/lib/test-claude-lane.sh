@@ -31,9 +31,39 @@ check "openrouter launcher"         "0|$REPO/scripts/claude-openrouter" "$(resol
 check "claudex launcher"            "0|$REPO/scripts/claude-codex" "$(resolve claudex)"
 bad="$(resolve bogus)"
 check "unknown refuses (rc)"        "2" "${bad%%|*}"
+# shellcheck disable=SC2030,SC2031 # the lane var is set in a subshell on purpose
 err="$( (HIMMEL_CLAUDE_LANE=bogus; export HIMMEL_CLAUDE_LANE; claude_lane_resolve "$REPO") 2>&1 >/dev/null )"
 case "$err" in *bogus*native*openrouter*claudex*) r=ok;; *) r="got: $err";; esac
 check "unknown refusal names value + valid lanes" "ok" "$r"
+
+# HIMMEL-4111: claude_lane_egress classifies the REVIEWED repo (not the cwd) and
+# refuses a non-native lane when the matrix forbids that backend for its corpus.
+W="$(mktemp -d "${TMPDIR:-/tmp}/test-claude-lane.XXXXXX")" || { echo "FAIL - mktemp"; exit 1; }
+trap 'rm -rf "$W"' EXIT
+mkdir -p "$W/phi" "$W/hand/sub" "$W/plain" "$W/vault/.obsidian/x" "$W/cfg"
+: > "$W/phi/.salus"
+egress() { # <lane|__unset__> <dir> -> prints "rc|CLAUDE_OPENROUTER_CWD|stderr-first-line"
+  # shellcheck disable=SC2015,SC2031 # unset cannot fail, so the || arm only runs for a real lane
+  ( [ "$1" = __unset__ ] && unset HIMMEL_CLAUDE_LANE || export HIMMEL_CLAUDE_LANE="$1"
+    unset CLAUDE_OPENROUTER_CWD
+    export HANDOVER_DIR="$W/hand" CLAUDE_GLM_CONFIG_DIR="$W/cfg"
+    claude_lane_resolve "$REPO" >/dev/null 2>&1
+    claude_lane_egress "$2" 2>"$W/egress.err"; rc=$?
+    echo "$rc|${CLAUDE_OPENROUTER_CWD:-}|$(head -1 "$W/egress.err")" )
+}
+r="$(egress __unset__ "$W/phi")";    check "native + salus repo: no gate, no env"   "0||" "$r"
+r="$(egress native "$W/hand/sub")";  check "native + handover repo: no gate"        "0||" "$r"
+r="$(egress openrouter "$W/phi")";   case "$r" in 3\|\|*salus*) r=ok;; esac
+check "openrouter + salus repo refused (names corpus)" ok "$r"
+r="$(egress openrouter "$W/vault")"; case "$r" in 3\|\|*luna-personal*) r=ok;; esac
+check "openrouter + vault (.obsidian) repo refused"    ok "$r"
+r="$(egress claudex "$W/hand/sub")"; case "$r" in 3\|\|*handover-state*) r=ok;; esac
+check "claudex + handover-state repo refused (conditional)" ok "$r"
+r="$(egress openrouter "$REPO")";    check "openrouter + himmel repo: allowed, launcher cwd = reviewed repo" "0|$REPO|" "$r"
+r="$(egress claudex "$REPO")";       check "claudex + himmel repo: allowed"     "0||" "$r"
+r="$(egress claudex "$W/plain")";    check "claudex + unclassified repo: allowed" "0||" "$r"
+r="$(egress openrouter "$W/nope")";  case "$r" in 3\|*) r=ok;; esac
+check "unresolvable reviewed repo refused (fail closed)" ok "$r"
 
 # Spawn-site coverage with stubbed launchers: scripts/lib/test-claude-headless.sh case 17
 # and scripts/cr/test-hermes-critic.sh case 8c.

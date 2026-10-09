@@ -186,6 +186,11 @@ record_failure() {
 }
 
 # --- 3. the headless review ---------------------------------------------------
+# HIMMEL-4111: claude-headless.sh runs claude from the snapshot, so classify the
+# reviewed repo (the cwd's checkout) before a non-native lane can launch.
+# shellcheck source=scripts/lib/claude-lane.sh
+. "$REPO_ROOT/scripts/lib/claude-lane.sh" || die "cannot load scripts/lib/claude-lane.sh" 1
+claude_lane_egress "$(git rev-parse --show-toplevel)" || die "not eligible: the ${HIMMEL_CLAUDE_LANE:-native} lane may not receive this repo. Nothing spent." 3
 # headless-claude-ok: HIMMEL-3107 context-free CR floor reviewer — runs only when
 # every non-Claude critic is exhausted and the operator opted in via
 # CR_FLOOR_FALLBACK=claude-only; claude-headless.sh pins native auth (native-auth-pin.sh native_auth_pin_env), does the mandatory bank
