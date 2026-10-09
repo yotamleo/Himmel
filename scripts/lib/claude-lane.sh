@@ -68,6 +68,8 @@ claude_lane_egress() {
         line="${line%$'\r'}"; line="${line%/}"
         [ -n "$line" ] || continue
         case "$dir/" in "$line"/*) corpus=salus ;; esac
+        line="$(cd -P "$line" 2>/dev/null && pwd -P)" || continue
+        case "$dir/" in "$line"/*) corpus=salus ;; esac
       done < "$list"
     done
   fi
@@ -83,10 +85,7 @@ claude_lane_egress() {
     fi
     # HIMMEL-4420: handover_root reads only the live env, so a .env-only HANDOVER_DIR
     # is loaded from himmel's own primary checkout (cwd = this lib, never the reviewed repo).
-    hd="${HANDOVER_DIR:-}"
-    if [ -z "$hd" ] && [ -f "$_CLAUDE_LANE_DIR/load-dotenv.sh" ]; then
-      hd="$(cd "$_CLAUDE_LANE_DIR" && . ./load-dotenv.sh && load_dotenv HANDOVER_DIR >/dev/null 2>&1; printf '%s' "${HANDOVER_DIR:-}")"
-    fi
+    hd="$(cd "$_CLAUDE_LANE_DIR" 2>/dev/null && { . ./load-dotenv.sh && load_dotenv HANDOVER_DIR; } >/dev/null 2>&1; . ./handover-path.sh 2>/dev/null && handover_root 2>/dev/null)" || hd=""
     hroot="$(cd -P "${hd:-/nonexistent}" 2>/dev/null && pwd -P)" || hroot=""
     if [ -n "$hroot" ] && [ "${corpus#luna-}" = "$corpus" ]; then
       case "$dir/" in "$hroot/"*) corpus=handover-state ;; esac

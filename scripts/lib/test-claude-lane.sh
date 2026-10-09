@@ -62,6 +62,11 @@ check "claudex + handover-state repo refused (conditional)" ok "$r"
 r="$(egress openrouter "$REPO")";    check "openrouter + himmel repo: allowed, launcher cwd = reviewed repo" "0|$REPO|" "$r"
 r="$(egress claudex "$REPO")";       check "claudex + himmel repo: allowed"     "0||" "$r"
 r="$(egress claudex "$W/plain")";    check "claudex + unclassified repo: allowed" "0||" "$r"
+mkdir -p "$W/real/x" "$W/cfg2"; ln -s "$W/real" "$W/link"; echo "$W/link" > "$W/cfg2/phi-roots"
+cp "$W/cfg2/phi-roots" "$W/cfg/phi-roots"
+r="$(egress openrouter "$W/real/x")"; case "$r" in 3\|\|*salus*) r=ok;; esac
+check "phi-roots entry that is a symlink still matches the canonical repo" ok "$r"
+rm -f "$W/cfg/phi-roots"
 r="$(egress openrouter "$W/nope")";  case "$r" in 3\|*) r=ok;; esac
 check "unresolvable reviewed repo refused (fail closed)" ok "$r"
 
