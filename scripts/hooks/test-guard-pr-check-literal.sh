@@ -1685,6 +1685,71 @@ for v in \
     'git grep --extended-regexp -e .'; do
     run "HIMMEL-4958 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# HIMMEL-5095: a capital O after a value-taking short option in a cluster is
+# part of that option's value (git's parse-options), not the pager flag.
+# shellcheck disable=SC2016 # literal payloads, never expanded here
+for v in \
+    'git grep -ceFOO' \
+    'git grep -eOverflow' \
+    'git commit -m"Fix Overflow"' \
+    'git commit -mOops' \
+    'git commit -CORIG_HEAD' \
+    'git commit -tOther' \
+    'git merge -sOurs' \
+    'git merge -XOurs' \
+    'git push -oOpt' \
+    'git stash push -mOld' \
+    'git checkout -bOld-fix' \
+    'git branch -DOld' \
+    'git grep --extended' \
+    'git grep --extended -e . -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5095 attached O in a value [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# shellcheck disable=SC2016 # the $ words are literal hook input
+for v in \
+    'git grep -iO -e x' \
+    'git grep -iOe x' \
+    'git grep -Obash -e x' \
+    'git grep -ciObash -e x' \
+    'git grep -ObashO -e x' \
+    'git grep -iOe x -- scripts/cr/pr-check-env.sh' \
+    'git commit -Obash' \
+    'git --namespace add grep -oObash x' \
+    'git --namespace rm grep -cObash x' \
+    'git --namespace restore grep -FObash x' \
+    'git --namespace log grep -Obash x' \
+    'git --namespace show grep -Obash x' \
+    'git --git-dir=.git --namespace add grep -oObash x' \
+    'git --unknown-opt add grep -oObash x' \
+    'git myalias -oObash x' \
+    'git myalias -FObash x' \
+    'git myalias -cObash x' \
+    'git --no-pager myalias -oObash x' \
+    'git -C . myalias -FObash x' \
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.g GIT_CONFIG_VALUE_0=grep git g -oObash x' \
+    'git -C ~/w zz -oObash -e x' \
+    'git -C "$D" zz -oObash -e x' \
+    'git -C $D grep -oObash -e x' \
+    'git $S -oObash -e x' \
+    'git "$S" -oObash -e x' \
+    'git g?ep -oObash -e x' \
+    'git gr*p -oObash -e x' \
+    'git {grep,} -oObash -e x' \
+    'git --git-dir $D zz -oObash -e x' \
+    'git --no-pager $S -oObash -e x' \
+    'git -C . $S -oObash -e x' \
+    'S=grep; git $S -oObash -e x' \
+    'git $S -Obash -e x' \
+    'git "grep" -oObash x' \
+    'git -C "a b" grep -oObash x' \
+    'git -oObash grep -e x' \
+    'git -mOx grep -e x' \
+    'git -C . -oObash grep -e x' \
+    'git --no-pager -oObash zz -e x' \
+    'git -C -oObash grep -e x' \
+    'FOO=1 git -oObash grep -e x'; do
+    run "HIMMEL-5095 O before any value letter [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
 # guarded mention is unsafe, since it can assemble the git word; split the command.
 # shellcheck disable=SC2016 # the $( is literal hook input

@@ -837,8 +837,29 @@ PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0 PR_TOKFAIL=0 PR_GIT_EXEC=0
 # A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
 PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
+# HIMMEL-5095: true when short-option cluster <word> carries a capital O as a
+# FLAG letter, i.e. before any value-taking letter (git's parse-options: the
+# rest of the cluster after -e/-m/-b/... is that option's value, so the O in
+# `-eOverflow` or `-mOops` is text). -O itself takes the rest as the pager.
+# diff/log/show keep the old any-O reading (an orderfile, never a pager).
+short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
+    local c ch vals=mbBDcFCtsXuSo
+    case "$1" in --* | -) return 1 ;; -*) ;; *) return 1 ;; esac
+    case "$2" in
+        # '*' = subcommand unknown (an unrecognised option came first): strict.
+        '*' | diff | log | show) case "$1" in *O*) return 0 ;; esac; return 1 ;;
+        grep) vals=efABCm ;;
+    esac
+    c=${1#-}
+    while [ -n "$c" ]; do
+        ch=${c:0:1}; c=${c:1}
+        [ "$ch" = O ] && return 0
+        case "$vals" in *"$ch"*) return 1 ;; esac
+    done
+    return 1
+}
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0 es
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -852,22 +873,32 @@ git_mentions_only() { # git_mentions_only <command-word index>
                 case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_UNSAFE=1 ;; esac
             fi
             # Keep scanning: a later word may be an exec option (`docs/{a,b} -O{x,y}`).
+            # HIMMEL-5095: an expanded word before the subcommand is a global
+            # option's value or the subcommand itself (`$S`, `g?ep`): either way
+            # the subcommand is unknowable, so only a positively identified
+            # literal one may take the relaxed reading.
+            if [ -z "$sub" ]; then sub='*'; dir=0; fi
             xp=1; j=$((j + 1)); continue
         fi
         # After --, option-shaped words are literal pathspec operands.
         if [ "$paths" = 1 ]; then j=$((j + 1)); continue; fi
+        # HIMMEL-5095: while no subcommand is identified yet (and none is a known
+        # non-grep builtin) the grammar is unknown: strict any-O reading.
+        es=$sub
+        if [ -z "$sub" ] && [ "$nsub" = 0 ]; then es='*'; fi
         # Refuse these even when the older text classifier cannot see a
         # runner: git aliases/config and helper options can execute operands.
         case "$w" in
-            --oneline) ;;
+            --oneline | --extended | --extended-regexp) ;;
             -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
-                --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; bad=1 ;;
+                --o* | --ext*) PR_GIT_UNSAFE=1; bad=1 ;;
+            *) if short_cluster_has_O "$w" "$es"; then PR_GIT_UNSAFE=1; bad=1; fi ;;
         esac
         # HIMMEL-4958: an exec/write option is denied whatever the pathspec; a
         # directory or empty pathspec matches guarded scripts without naming them.
         case "$w" in
             # Benign long options that share a prefix with an exec option.
-            --oneline | --on* | --output-indicator-* | --extended-regexp) ;;
+            --oneline | --on* | --output-indicator-* | --extended | --extended-regexp) ;;
             # Only the prefixes of --output and --open-files-in-pager (--ou* would
             # also hit --ours); a bare --o* also hit --others and --objects.
             --exec* | --upload* | --receive* | ext::* | --ext* | --op* | \
@@ -877,9 +908,9 @@ git_mentions_only() { # git_mentions_only <command-word index>
                 if [ -n "$sub" ] && [ "${w#--}" = "$w" ]; then
                     # After the subcommand -c* is a short-flag cluster (grep -c),
                     # not a config option; -O inside it is the pager/orderfile flag.
-                    case "$w" in
-                        *O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
-                    esac
+                    if short_cluster_has_O "$w" "$es"; then
+                        case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
+                    fi
                 else
                     # Match the config KEY (git folds its case), never the value.
                     # --config-env=KEY=ENVVAR and `--config-env KEY=ENVVAR` carry the key too.
@@ -895,18 +926,42 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     esac
                 fi ;;
             # -O runs a pager only for grep; diff/log/show take it as an orderfile.
-            -O* | -[!-]*O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
+            -*) if short_cluster_has_O "$w" "$es"; then
+                    case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
+                fi ;;
         esac
         if [ "$dir" = 1 ]; then
             dir=0
+            [ "${ST_Q[j]}" = 0 ] || sub='*'
         elif [ -z "$sub" ]; then
             [ "${ST_Q[j]}" = 0 ] || bad=1
+            # HIMMEL-5095: a global option's separate value is not the subcommand
+            # (`--namespace add grep`); an unrecognised option makes the
+            # subcommand unknowable, so sub='*' keeps the strict any-O reading.
             case "$w" in
                 -C) dir=1 ;;
+                -c | --git-dir | --work-tree | --namespace | --super-prefix | \
+                    --config-env | --attr-source) bad=1; dir=1 ;;
+                --git-dir=* | --work-tree=* | --namespace=* | --super-prefix=* | \
+                    --config-env=* | --attr-source=* | -C* | -c*) bad=1 ;;
                 --no-pager) ;;
                 grep|log|show|diff|add|restore|rm) sub=$w ;;
-                *) bad=1 ;;
+                -*) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
+                # Git ignores an alias that shadows a builtin, so only a builtin
+                # name has a known option grammar (long-stable builtins only: a
+                # newer one is an alias on an older git). Any other first word
+                # may be an alias for grep (`-O` takes the program): strict.
+                am | apply | archive | bisect | blame | branch | bundle | \
+                    checkout | cherry-pick | clean | clone | commit | config | \
+                    describe | fetch | format-patch | gc | init | \
+                    ls-files | ls-tree | merge | mv | notes | pull | push | rebase | \
+                    reflog | remote | reset | rev-list | rev-parse | revert | \
+                    shortlog | stash | status | tag | worktree)
+                    bad=1; nsub=1 ;;
+                *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
             esac
+            # A quoted word is not positively identified either.
+            [ "${ST_Q[j]}" = 0 ] || sub='*'
         elif [ "$w" = -- ]; then
             # An unknown option may consume -- as its value (-e/-S, ...),
             # rather than end options. Keep that ambiguous shape fenced.
