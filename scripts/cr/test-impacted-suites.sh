@@ -665,7 +665,8 @@ mkf scripts/hooks/test-wired-hooks-integrity-resolution.sh 'echo sweep'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: wired-hook sweep fixture"
 mkdir -p "$FX/.claude" "$FX/.codex"
-for f in scripts/hooks/some-guard.sh scripts/lib/some-lib.sh .claude/settings.json .codex/hooks.json; do
+mkdir -p "$FX/scripts/guardrails" "$FX/scripts/handover"
+for f in scripts/hooks/some-guard.sh scripts/lib/some-lib.sh scripts/guardrails/lib.sh scripts/handover/queue-lock.sh .claude/settings.json .codex/hooks.json; do
   change "$f"
   out="$(run_is "$range")"
   if grepq "$out" '^scripts/hooks/test-wired-hooks-integrity-resolution\.sh$'; then pass "$f -> test-wired-hooks-integrity-resolution.sh (scan root)"; else fail "wired-hook sweep not selected for $f: $out"; fi

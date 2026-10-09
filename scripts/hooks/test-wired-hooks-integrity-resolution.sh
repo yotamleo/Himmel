@@ -34,8 +34,10 @@ check_closure() {
     const root = fs.realpathSync(process.argv[1]);
     const { sourcedClosure } = require(path.join(root, "scripts/hooks/hook-integrity.js"));
     const queue = [path.resolve(process.argv[2])], seen = new Set(queue);
+    const list = [];
     while (queue.length) {
       const file = queue.shift();
+      list.push(path.relative(root, file));
       let c;
       try { c = sourcedClosure(file, root); }
       catch (e) { console.log(`${path.relative(root, file)}: unreadable (${e.code || e.message})`); continue; }
@@ -47,7 +49,28 @@ check_closure() {
         if (!seen.has(lib)) { seen.add(lib); queue.push(lib); }
       }
     }
+    if (process.env.CLOSURE_OUT) fs.appendFileSync(process.env.CLOSURE_OUT, list.join("\n") + "\n");
   ' "$1" "$2"
+}
+
+# uncovered <root> <paths-file> -> the paths no impacted-suites.sh scan_roots row
+# maps to THIS suite, so a change to them would not select it in PR CI
+uncovered() {
+  local globs g s rest f hit
+  globs="$(sed -n '/^scan_roots() {/,/^EOF$/p' "$1/scripts/cr/impacted-suites.sh" |
+    while read -r g s rest; do
+      [ "$s" = "scripts/hooks/test-wired-hooks-integrity-resolution.sh" ] && printf '%s\n' "$g"
+    done)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    hit=0
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      # shellcheck disable=SC2254  # the scan_roots glob is a pattern on purpose
+      case "$f" in $g) hit=1; break ;; esac
+    done <<< "$globs"
+    [ "$hit" -eq 1 ] || printf '%s\n' "$f"
+  done < "$2"
 }
 
 # wired_scripts <root> -> repo-relative hook script paths, one per line, deduped
@@ -88,8 +111,13 @@ printf '#!/usr/bin/env bash\n. "$(dirname "$0")/../lib/load-dotenv.sh"\n' > "$FX
 if [ -n "$(check_closure "$FX" "$FX/scripts/hooks/bad.sh")" ]; then ok "the #2202 source form is reported unresolved"; else bad "the #2202 source form passed the resolver (suite cannot fail)"; fi
 if good_out="$(check_closure "$FX" "$FX/scripts/hooks/good.sh" 2>&1)" && [ -z "$good_out" ]; then ok "a dirname-relative source of a real lib resolves"; else bad "a resolvable source form was flagged"; fi
 
+# RED control: a path under a directory no row covers must be reported
+printf 'scripts/lib/x.sh\nscripts/newdir/x.sh\n' > "$FX/paths"
+if [ "$(uncovered "$ROOT" "$FX/paths")" = "scripts/newdir/x.sh" ]; then ok "an uncovered closure directory is reported, a covered one is not"; else bad "closure-coverage check cannot fail"; fi
+
 echo "== every wired hook script resolves"
 N=0
+CL="$FX/closure"; : > "$CL"; export CLOSURE_OUT="$CL"
 if ! SCRIPTS="$(wired_scripts "$ROOT" 2>&1)"; then bad "wiring enumeration failed: $SCRIPTS"; SCRIPTS=""; fi
 if [ -z "$SCRIPTS" ]; then bad "no wired hook scripts found in settings.json / hooks.json"; fi
 while IFS= read -r rel; do
@@ -111,6 +139,12 @@ while IFS= read -r rel; do
     bad "$rel (resolver failed to run)"; printf '       %s\n' "$out"
   fi
 done <<< "$SCRIPTS"
+CLOSURE_OUT="" # the fixture rows above are done; stop recording
+# Every file hook-integrity walks must sit where impacted-suites.sh selects this
+# suite, else a PR touching only that file (guardrails/lib.sh, queue-lock.sh)
+# adds an unresolvable source and CI never runs the sweep.
+sort -u "$CL" > "$CL.u"
+if unc="$(uncovered "$ROOT" "$CL.u")" && [ -z "$unc" ]; then ok "every closure file is selected by a scan_roots row"; else bad "closure files outside scan_roots coverage (add a row in scripts/cr/impacted-suites.sh): $(printf '%s' "$unc" | tr '\n' ' ')"; fi
 if [ "$N" -ge 10 ]; then ok "enumerated $N wired hook scripts"; else bad "only $N wired hook scripts enumerated (parser drift?)"; fi
 
 echo "passed=$PASS failed=$FAIL"
