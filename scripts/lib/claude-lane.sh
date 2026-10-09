@@ -65,8 +65,11 @@ claude_lane_egress() {
         echo "claude-lane: REFUSED - guard config $list is unreadable (fail closed)" >&2; return 3
       fi
       while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"; line="${line%/}"
+        line="${line%$'\r'}"
         [ -n "$line" ] || continue
+        # an entry of only slashes is the filesystem root: it covers every repo
+        if [ "$line" = "${line%%[!/]*}" ]; then corpus=salus; continue; fi
+        line="${line%/}"
         case "$dir/" in "$line"/*) corpus=salus ;; esac
         line="$(cd -P "$line" 2>/dev/null && pwd -P)" || continue
         case "$dir/" in "$line"/*) corpus=salus ;; esac
@@ -86,7 +89,13 @@ claude_lane_egress() {
     # HIMMEL-4420: handover_root reads only the live env, so a .env-only HANDOVER_DIR
     # is loaded from himmel's own primary checkout (cwd = this lib, never the reviewed repo).
     hd="$(cd "$_CLAUDE_LANE_DIR" 2>/dev/null && { . ./load-dotenv.sh && load_dotenv HANDOVER_DIR; } >/dev/null 2>&1; . ./handover-path.sh 2>/dev/null && handover_root 2>/dev/null)" || hd=""
-    hroot="$(cd -P "${hd:-/nonexistent}" 2>/dev/null && pwd -P)" || hroot=""
+    hroot=""
+    if [ -n "$hd" ]; then
+      hroot="$(cd -P "$hd" 2>/dev/null && pwd -P)" || {
+        echo "claude-lane: REFUSED - the handover root \"$hd\" cannot be resolved (fail closed)" >&2; return 3; }
+    elif [ -n "${HANDOVER_DIR:-}" ]; then
+      echo "claude-lane: REFUSED - HANDOVER_DIR is set but the handover root cannot be resolved (fail closed)" >&2; return 3
+    fi
     if [ -n "$hroot" ] && [ "${corpus#luna-}" = "$corpus" ]; then
       case "$dir/" in "$hroot/"*) corpus=handover-state ;; esac
     fi

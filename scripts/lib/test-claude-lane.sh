@@ -43,7 +43,7 @@ trap 'rm -rf "$W"' EXIT
 mkdir -p "$W/phi" "$W/hand/sub" "$W/plain" "$W/vault/.obsidian/x" "$W/cfg"
 : > "$W/phi/.salus"
 egress() { # <lane|__unset__> <dir> -> prints "rc|CLAUDE_OPENROUTER_CWD|stderr-first-line"
-  # shellcheck disable=SC2015,SC2031 # unset cannot fail, so the || arm only runs for a real lane
+  # shellcheck disable=SC2015,SC2030,SC2031 # unset cannot fail, so the || arm only runs for a real lane
   ( [ "$1" = __unset__ ] && unset HIMMEL_CLAUDE_LANE || export HIMMEL_CLAUDE_LANE="$1"
     unset CLAUDE_OPENROUTER_CWD
     export HANDOVER_DIR="$W/hand" CLAUDE_GLM_CONFIG_DIR="$W/cfg"
@@ -66,7 +66,14 @@ mkdir -p "$W/real/x" "$W/cfg2"; ln -s "$W/real" "$W/link"; echo "$W/link" > "$W/
 cp "$W/cfg2/phi-roots" "$W/cfg/phi-roots"
 r="$(egress openrouter "$W/real/x")"; case "$r" in 3\|\|*salus*) r=ok;; esac
 check "phi-roots entry that is a symlink still matches the canonical repo" ok "$r"
+printf '/\n' > "$W/cfg/phi-roots"
+r="$(egress openrouter "$W/plain")"; case "$r" in 3\|\|*salus*) r=ok;; esac
+check "phi-roots entry of / covers every repo" ok "$r"
 rm -f "$W/cfg/phi-roots"
+# shellcheck disable=SC2031 # the vars are set in a subshell on purpose
+r="$( ( export HANDOVER_DIR="$W/gone"; export HIMMEL_CLAUDE_LANE=claudex CLAUDE_GLM_CONFIG_DIR="$W/cfg"; claude_lane_egress "$W/plain" 2>&1 >/dev/null ) )"
+case "$r" in *handover*fail\ closed*) r=ok;; esac
+check "configured but unresolvable handover root refused" ok "$r"
 r="$(egress openrouter "$W/nope")";  case "$r" in 3\|*) r=ok;; esac
 check "unresolvable reviewed repo refused (fail closed)" ok "$r"
 
