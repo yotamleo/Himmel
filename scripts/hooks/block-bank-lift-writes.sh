@@ -58,7 +58,9 @@
 # (each needs a runtime or filesystem view; upgrade path is a sandbox that
 # mounts HOME read-only for agent shells): (a) an archive MEMBER that is a
 # symlink, or a git clone carrying a link, then a second extraction through it
-# in a LATER command; (b) data piped into a shell (`echo '…' | bash`), whose
+# in a LATER command, or in the SAME command (a clone then an extract, or two
+# extractions into one destination: the first leaves the link the second
+# follows, and no text names it); (b) data piped into a shell (`echo '…' | bash`), whose
 # text arrives on a pipe the tokenizer does not join to the reader; (c) a
 # variable command word with a variable destination when the command names
 # neither an archive tool nor a HOME spelling; (d) an interpreter script FILE,
@@ -564,6 +566,9 @@ MENTION_RE='^(curl|wget|tar|bsdtar|unzip|cpio|7z|7za|7zr|ed|ex|vi|vim|nvim|view|
 # anywhere in a text and as a command word.
 EXTRACT_WORD_RE='(^|[^A-Za-z0-9_.-])(tar|gtar|bsdtar|unzip|cpio|bsdcpio|7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar|tarfile|zipfile)([^A-Za-z0-9_.-]|$)'
 EXTRACT_CMD_RE='^(tar|gtar|bsdtar|unzip|cpio|bsdcpio|7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar)$'
+# A symlink CALL in interpreter code: symlink(…), os.symlink(…), symlink_to,
+# perl/php `symlink q(…)` / `symlink "…"` — not the word inside a string.
+SYMCALL_RE='(^|[^a-z0-9_"'"'"'])symlink[a-z_]*[[:space:]]*\(|(^|[^a-z0-9_"'"'"'])symlink_to|(^|[^a-z0-9_"'"'"'])symlink[[:space:]]+[q"'"'"'$]'
 # Commands that only name a tool (install it, look it up, print it): not wrappers.
 NOSCAN_RE='^(apt|apt-get|aptitude|apt-cache|dnf|yum|zypper|apk|brew|pacman|pip[0-9.]*|pipx|cargo|gem|which|whereis|type|man|info|help|whatis|apropos|tldr|echo|printf|git|gh)$'
 
@@ -1062,8 +1067,8 @@ analyse() {
         [ "$TEXT_MENTION" = 1 ] && deny "command nests too deep to inspect and names bank-lift"
         # HIMMEL-5094: too deep to inspect, so an archive tool beside a HOME
         # spelling denies.
-        if [[ "$text" =~ $EXTRACT_WORD_RE ]]; then
-            case "$text" in *'~'*|*HOME*|*/home/*|*/Users/*|*/root*) deny "command nests too deep to inspect and names an archive tool beside HOME" ;; esac
+        if [[ "$text" =~ $EXTRACT_WORD_RE ]] && _text_names_home "$text"; then
+            deny "command nests too deep to inspect and names an archive tool beside HOME"
         fi
         return 0
     fi
@@ -1470,12 +1475,21 @@ check_extract_coarse() {
 # check_interp_archive <args...>: `python -m tarfile|zipfile -e <archive>
 # [<dest>]` extracts like tar/unzip (HIMMEL-5094).
 check_interp_archive() {
-    local a mod="" st=0 ex=0
+    local a mod="" st=0 ex=0 pre
     local -a ops=() dests=()
     for a in "$@"; do
         if [ -z "$mod" ]; then
             if [ "$st" = 1 ]; then mod="$a"; continue; fi
-            case "$a" in -m) st=1 ;; -m?*) mod="${a#-m}" ;; esac
+            case "$a" in
+                --*) ;;
+                # -m, -mMOD, or -m inside a short-flag cluster (-Im, -Bm, -Imtarfile)
+                -*m*)
+                    pre="${a#-}"; pre="${pre%%m*}"
+                    case "$pre" in
+                        *[!BdEhIiOPqRsSuvVx]*) ;;
+                        *) if [ "${a#*m}" = "" ]; then st=1; else mod="${a#*m}"; fi ;;
+                    esac ;;
+            esac
             continue
         fi
         case "$a" in -e|--extract) ex=1 ;; -*) ;; *) ops+=("$a") ;; esac
@@ -1497,10 +1511,42 @@ _homeish_word() {
     return 1
 }
 
+# _text_names_home <text>: some word of the text is a HOME bank-lift target
+# (~, $HOME, the real HOME path itself, ~/.himmel, the state dir, or a bare
+# /home or /Users). A path UNDER a user directory (a worktree) is not one,
+# so the fail-closed rules below never fire on a bare /home/ substring.
+_text_names_home() {
+    local t w
+    t="${1//[^[:alnum:]_.\/~\$\{\}:+=-]/ }"
+    for w in $t; do
+        case "$w" in
+            /home|/home/|/Users|/Users/) return 0 ;;
+            *'~'*|*HOME*|*/home*|*/Users*|*/root*|*.himmel*|"$HOME"*) _homeish_word "$w" && return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# _cd_home_in <text>: a cd/pushd in the text goes to a HOME bank-lift target.
+_cd_home_in() {
+    local t w p=0
+    t="${1//[^[:alnum:]_.\/~\$\{\}:+=-]/ }"
+    for w in $t; do
+        if [ "$p" = 1 ]; then
+            case "$w" in -*) continue ;; esac
+            _text_names_home "$w" && return 0
+            p=0
+        fi
+        case "$w" in cd|pushd) p=1 ;; esac
+    done
+    return 1
+}
+
 # _dyn_cmd_check <command-word> <args...>: a command word held in a variable
 # or substitution cannot be read (HIMMEL-5094). It denies when an argument
-# names HOME/~/.himmel, or when an argument is computed and the command also
-# names an archive tool and a HOME spelling.
+# names HOME/~/.himmel, or when the command also names an archive tool and
+# either a computed argument beside a HOME word, or a cwd (or a cd) at HOME or
+# the bank-lift dir.
 _dyn_cmd_check() {
     local w="$1" a dynarg=0
     shift
@@ -1511,8 +1557,14 @@ _dyn_cmd_check() {
         _homeish_word "$a" && deny "a command word held in a variable or substitution ($w) is handed HOME or ~/.himmel ($a), so it may be an extractor; name the command literally"
         _is_dynamic "$a" && dynarg=1
     done
-    if [ "$dynarg" = 1 ] && [[ "$CMD" =~ $EXTRACT_WORD_RE ]]; then
-        case "$CMD" in *'~'*|*HOME*|*/home/*|*/Users/*|*/root*) deny "a command word held in a variable or substitution ($w) is handed a computed argument beside an archive tool and a HOME spelling, so it may extract into HOME; name the command and destination literally" ;; esac
+    if [[ "$CMD" =~ $EXTRACT_WORD_RE ]]; then
+        if [ "$dynarg" = 1 ] && _text_names_home "$CMD"; then
+            deny "a command word held in a variable or substitution ($w) is handed a computed argument beside an archive tool and a HOME spelling, so it may extract into HOME; name the command and destination literally"
+        fi
+        case "$(_dir_kind "$CWD")" in HOME|HIMMEL|STATE) deny "a command word held in a variable or substitution ($w) runs beside an archive tool in HOME or the bank-lift dir, so it may extract there; name the command literally" ;; esac
+        if _cd_home_in "$CMD"; then
+            deny "a command word held in a variable or substitution ($w) runs beside an archive tool after a cd into HOME or the bank-lift dir, so it may extract there; name the command literally"
+        fi
     fi
     return 0
 }
@@ -1531,7 +1583,20 @@ _wrapped_extract() {
         nx=$((j+1))
         if [ "$nx" -lt "$n" ]; then
             _lb "${ws[j]}"
-            if [[ "$R" =~ $EXTRACT_CMD_RE ]]; then
+            if [[ "$R" =~ $SHELL_RE ]]; then
+                # A shell run under an unmodelled wrapper: its -c text is
+                # analysed as if the wrapper were not there.
+                k=$nx
+                while [ "$k" -lt "$n" ]; do
+                    case "${ws[k]}" in
+                        --) break ;;
+                        -c*|-[a-zA-Z]*c*|--command) check_clause "$depth" "$fed" "${ws[@]:j}"; break ;;
+                    esac
+                    k=$((k+1))
+                done
+            elif [ "$R" = eval ]; then
+                check_clause "$depth" "$fed" "${ws[@]:j}"
+            elif [[ "$R" =~ $EXTRACT_CMD_RE ]]; then
                 check_clause "$depth" "$fed" "${ws[@]:j}"
             elif [[ "$R" =~ $INTERP_RE ]]; then
                 k=$nx
@@ -1785,7 +1850,13 @@ check_clause() {
             code="${code//\\/}"
             # HIMMEL-5094: an interpreter one-liner that creates a link counts
             # as a symlink creation beside any extraction in the command.
-            if [[ "$code" =~ symlink|(^|[^a-z0-9_])ln[^a-z0-9_]+(-[a-z-]*s|--sym)|mklink ]]; then SYMLINK_SEEN=1; fi
+            # A symlink CALL counts (a quoted word does not); `ln -s` / mklink
+            # text counts only beside a HOME word (j2243a).
+            if [[ "$code" =~ $SYMCALL_RE ]]; then
+                SYMLINK_SEEN=1
+            elif [[ "$code" =~ (^|[^a-z0-9_])ln[^a-z0-9_]+(-[a-z-]*s|--sym)|mklink ]] && _text_names_home "$CMD"; then
+                SYMLINK_SEEN=1
+            fi
             if _code_names_lift "$code"; then
                 deny "an interpreter ($cmd) runs inline code naming the bank lift"
             fi

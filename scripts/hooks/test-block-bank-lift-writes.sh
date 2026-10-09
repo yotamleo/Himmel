@@ -1186,6 +1186,46 @@ row "5094 nesting depth 7"                     deny  "$(_nest 7 'tar -xf /tmp/a.
 row "5094 nesting depth 5, safe dest (ctrl)"   allow "$(_nest 5 'tar -xf /tmp/a.tar -C /var/out')"
 row "5094 nesting depth 5, echo (ctrl)"        allow "$(_nest 5 'echo hi')"
 
+
+echo "== HIMMEL-5094 judge j2243a NO-GO fixes =="
+# (1) an unmodelled wrapper in front of a shell -c / eval fails closed
+row "5094 j1 strace -f bash -c tar ~"          deny  "strace -f bash -c \"tar -xf /tmp/a.tar -C ~\""
+row "5094 j1 fakeroot sh -c unzip ~/.himmel"   deny  "fakeroot sh -c \"unzip /tmp/a.zip -d ~/.himmel\""
+row "5094 j1 unshare -m bash -c tar"           deny  "unshare -m bash -c \"tar -xf /tmp/a.tar -C ~\""
+row "5094 j1 fakeroot eval tar"                deny  "fakeroot eval \"tar -xf /tmp/a.tar -C ~\""
+row "5094 j1 strace -f sh -c 7z"               deny  "strace -f sh -c \"7z x /tmp/a.7z -o\$HOME\""
+row "5094 j1 firejail bash -c"                 deny  "firejail --quiet bash -c \"tar -xf /tmp/a.tar -C ~\""
+row "5094 j1 pnpm exec bash -c"                deny  "pnpm exec bash -c \"tar -xf /tmp/a.tar -C ~\""
+row "5094 j1 wrapper bash -c link at HOME"     deny  "strace -f bash -c \"ln -s ~ /var/out/h; tar -xf /tmp/a.tar -C /var/out\""
+row "5094 j1 strace bash script.sh (ctrl)"     allow "strace -f bash /tmp/s.sh"
+row "5094 j1 strace bash -c safe (ctrl)"       allow "strace -f bash -c \"tar -xf /tmp/a.tar -C /tmp/x\""
+# (2) a variable command word after a cd into HOME / the bank-lift dir, or in a HOME cwd
+row "5094 j2 var cmd, cd ~ then"               deny  "c=tar; cd ~ && \$c -xf /tmp/a.tar"
+row "5094 j2 var cmd, cd ~/.himmel"            deny  "c=unzip; cd ~/.himmel && \$c /tmp/a.zip"
+row "5094 j2 var cmd, cd \$HOME/.himmel/state" deny  "c=tar; cd \$HOME/.himmel/state && \$c -xf /tmp/a.tar"
+row "5094 j2 var cmd, cwd HOME"                deny  "c=tar; \$c -xf /tmp/a.tar" "$HOME"
+row "5094 j2 var cmd 7z, cwd HOME"             deny  "c=7z; \$c x /tmp/a.7z" "$HOME"
+row "5094 j2 var cmd, cd /tmp (ctrl)"          allow "c=tar; cd /tmp/x && \$c -xf /tmp/a.tar"
+row "5094 j2 var cmd no archive, cwd HOME"     allow "\$EDITOR notes.txt" "$HOME"
+# (3) python -m inside a combined short-flag cluster
+row "5094 j3 python3 -Im tarfile -e ~"         deny  "python3 -Im tarfile -e /tmp/a.tar ~"
+row "5094 j3 python3 -Imtarfile -e ~"          deny  "python3 -Imtarfile -e /tmp/a.tar ~"
+row "5094 j3 python3 -Bm zipfile -e ~/.himmel" deny  "python3 -Bm zipfile -e /tmp/a.zip ~/.himmel"
+row "5094 j3 python3 -BIm tarfile, cwd HOME"   deny  "python3 -BIm tarfile -e /tmp/a.tar" "$HOME"
+row "5094 j3 python3 -Im tarfile -l (ctrl)"    allow "python3 -Im tarfile -l /tmp/a.tar"
+row "5094 j3 python3 -Im tarfile -e safe"      allow "python3 -Im tarfile -e /tmp/a.tar /tmp/x"
+# (5) fail-closed rules are scoped to the HOME bank-lift target, not a /home/ substring
+WTU=home   # a worktree lives under a user dir; spelled apart so the home-path leak gate stays quiet
+WT=/$WTU/dev/repos/proj/.claude/worktrees/w
+row "5094 j5 var cmd + worktree path + tar"    allow "\$PY \$ARG $WT/a.tar; tar -tf $WT/a.tar"
+row "5094 j5 var cmd + worktree path + ar"     allow "\"\$PY\" /tmp/s.py \"\$X\" $WT ar"
+row "5094 j5 var cmd + worktree extract"       allow "c=tar; \$c -xf $WT/a.tar -C $WT/out"
+row "5094 j5 print symlink + tar /tmp"         allow "python3 -c 'print(\"symlink\")'; tar -xf /tmp/a.tar -C /tmp/x"
+row "5094 j5 print ln -s word + tar /tmp"      allow "python3 -c 'print(\"ln -s\")'; tar -xf /tmp/a.tar -C /tmp/x"
+row "5094 j5 depth 5 worktree tar"             allow "$(_nest 5 "tar -xf $WT/a.tar -C $WT/out")"
+row "5094 j5 var cmd + computed + tar ~"       deny  "c=tar; d=\$HOME; \$c -xf /tmp/a.tar -C \$d"
+row "5094 j5 python os.symlink call + tar"     deny  "python3 -c 'import os; os.symlink(\"/home\",\"/var/out/h\")'; tar -xf /tmp/a.tar -C /var/out"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. Every verb must deny; rm too since round 6 (it was
