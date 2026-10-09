@@ -834,7 +834,7 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # BASH_CMDS, PATH or a var a later ${x@P} or $[x] runs), echo (it expands
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
-PR_GIT_UNSAFE=0 PR_TOKFAIL=0
+PR_GIT_UNSAFE=0 PR_TOKFAIL=0 PR_GIT_EXEC=0
 # A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
 PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 git_mentions_only() { # git_mentions_only <command-word index>
@@ -862,6 +862,16 @@ git_mentions_only() { # git_mentions_only <command-word index>
             --oneline) ;;
             -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
                 --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; bad=1 ;;
+        esac
+        # HIMMEL-4958: an exec/write option is denied whatever the pathspec; a
+        # directory or empty pathspec matches guarded scripts without naming them.
+        case "$w" in
+            --oneline) ;;
+            --exec* | --upload* | --receive* | ext::* | --o* | --ext* | -O* | -[!-]*O*) PR_GIT_EXEC=1 ;;
+            -c* | --config*)
+                case "$w ${ST_W[j + 1]:-}" in
+                    *'!'* | *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshCommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
+                esac ;;
         esac
         if [ "$dir" = 1 ]; then
             dir=0
@@ -954,8 +964,8 @@ if [ "$PR_TOKFAIL" = 0 ]; then
 fi
 case "$flat" in
     *[cC][rR]/*|*[hH]andover/*) ;;
-    *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || ! heredoc_data_only || exit 0 ;;
-    *) [ "$mentions" -eq 1 ] || exit 0 ;;
+    *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || [ "$PR_GIT_EXEC" = 1 ] || ! heredoc_data_only || exit 0 ;;
+    *) [ "$mentions" -eq 1 ] || [ "$PR_GIT_EXEC" = 1 ] || exit 0 ;;
 esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
@@ -974,7 +984,7 @@ fence=${fence% }
 # deferred to the check after the env -S deny, which words the cause better.
 envs_deferred=0
 [[ $cmd =~ (^|[^[:alnum:]_])env[[:space:]].*(-S|--split-string) ]] && envs_deferred=1
-if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
     deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
@@ -1532,7 +1542,7 @@ if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \
 fi
 # An env -S line deferred here from the early check, so the more specific
 # env -S deny above names the cause when it applies.
-if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
     deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
