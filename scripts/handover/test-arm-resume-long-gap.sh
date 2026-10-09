@@ -121,6 +121,23 @@ make_handover() {
     printf '%s' "$path"
 }
 
+# HIMMEL-2666: arm-resume's exact-minute collision check (rc 6) reads the
+# HOST's `crontab -l` on linux/macos. Unstubbed, a concurrent session's real
+# HIMMEL-* cron entry at the same minute turned LG2/LG3/LG6 into rc 6. Each
+# stub dir gets a crontab whose `-l` prints its own store (empty unless a case
+# writes an entry); `-` swallows stdin so no real crontab is ever installed.
+write_crontab_stub() {
+    cat > "$1/crontab" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+    -l) [ -s "$2" ] && { cat "$2"; exit 0; }; exit 1 ;;
+    -)  cat > /dev/null ;;
+esac
+exit 0
+EOF
+    chmod +x "$1/crontab"
+}
+
 # Empty-scheduler stub (the SCHED_STUB_T17 pattern): every backend exits 0
 # with no jobs, so list_existing / dedup never blocks and the guard is the
 # only thing under test.
@@ -196,6 +213,7 @@ cat > "$SCHED_STUB/claude" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
+write_crontab_stub "$SCHED_STUB" "$TMP/sched-stub.crontab"
 chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/claude" "$SCHED_STUB/powershell"
 
 # Armed stub (the ARMED_STUB pattern): a non-dry-run arm completes on any
@@ -267,6 +285,7 @@ cat > "$ARMED_STUB/powershell" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
+write_crontab_stub "$ARMED_STUB" "$TMP/armed-stub.crontab"
 chmod +x "$ARMED_STUB/schtasks" "$ARMED_STUB/atq" "$ARMED_STUB/at" "$ARMED_STUB/claude" "$ARMED_STUB/powershell"
 
 # Gap fixtures, computed relative to real now (the guard's `now` is captured
@@ -689,6 +708,22 @@ TLOG="$TELE_LG6B/skill-usage.jsonl"
 tline=$(tail -1 "$TLOG" 2>/dev/null || true)
 assert_contains "LG6b record names the event" '"event":"armed"' "$tline"
 assert_contains "LG6b near arm records long_gap=0" '"long_gap":"0"' "$tline"
+
+# ---------------------------------------------------------------------------
+# LG-hermetic (HIMMEL-2666): the collision check reads the STUB crontab, not the
+#       host's, and keeps its teeth. A stub entry at the same minute still
+#       refuses (rc 6); with the store removed the same arm proceeds, so the
+#       rc 6 is the stub entry and not an artefact of the host scheduler.
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+printf '%d %d * * * true # HIMMEL-Other-Cadence\n' "$((10#${FAR_HHMM#*:}))" "$((10#${FAR_HHMM%:*}))" > "$TMP/sched-stub.crontab"
+out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$FAR_HHMM" --handover "$HO" --long-gap --dry-run 2>&1)
+rc=$?
+assert_rc "LG-hermetic stub crontab entry at the same minute refuses (rc 6)" 6 "$rc"
+rm -f "$TMP/sched-stub.crontab"
+out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$FAR_HHMM" --handover "$HO" --long-gap --dry-run 2>&1)
+rc=$?
+assert_rc "LG-hermetic control: same arm with the stub entry removed proceeds (rc 0)" 0 "$rc"
 
 # ---------------------------------------------------------------------------
 # Summary
