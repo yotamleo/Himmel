@@ -1774,6 +1774,96 @@ FORMS
     assert_allow "4454b control: two quoted substitutions as arguments [$pre]" "$(j "echo \"\$(date)\" \"\$(pwd)\"; $pre ls /r/w/docs/*.md")"
     assert_allow "4454b control: trap on EXIT is not a run-time definer [$pre]" "$(j "trap 'echo bye' EXIT; $pre ls /r/w/docs/*.md")"
     assert_allow "4454b control: mapfile without -C [$pre]" "$(j "mapfile -t a </dev/null; $pre ls /r/w/docs/*.md")"
+    # Judge j2236f: the whole ALLOW set of the j2236c forms (81 distinct forms), pinned so
+    # it is reviewable in the diff. env, nice and nohup execvp() their operand, and eval,
+    # source, ., trap, mapfile, readarray and emulate are shell builtins with no executable
+    # on PATH, so none of these runs the quoted text and the shadow is never defined.
+    while IFS= read -r form; do
+        [ -n "$form" ] || continue
+        assert_allow "4454b wrapper-exec ALLOW set $form [$pre]" "$(j "${form//@@/$SH}; $pre ls $GP")"
+    done <<'FORMS'
+env "." /dev/stdin <<<'@@'
+env "e"val '@@'
+env "eval" '@@'
+env "source" /dev/stdin <<<'@@'
+env $'.' /dev/stdin <<<'@@'
+env $'eval' '@@'
+env ${x:-.} /dev/stdin <<<'@@'
+env ${x:-eval} '@@'
+env '.' /dev/stdin <<<'@@'
+env . /dev/stdin <<<'@@'
+env \. /dev/stdin <<<'@@'
+env \eval '@@'
+env e''val '@@'
+env emulate sh -c '@@'
+env emulate zsh -c '@@'
+env ev\al '@@'
+env eval '@@'
+env mapfile -C '@@' -c 1 a <<<x
+env readarray -C '@@' -c 1 a <<<x
+env so\urce /dev/stdin <<<'@@'
+env trap '@@' DEBUG; :
+env trap '@@' ERR; false
+env trap '@@' ZERR; false
+env {,eval} '@@'
+nice "." /dev/stdin <<<'@@'
+nice "e"val '@@'
+nice "eval" '@@'
+nice "source" /dev/stdin <<<'@@'
+nice $'.' /dev/stdin <<<'@@'
+nice $'eval' '@@'
+nice ${x:-.} /dev/stdin <<<'@@'
+nice ${x:-eval} '@@'
+nice '.' /dev/stdin <<<'@@'
+nice . /dev/stdin <<<'@@'
+nice \. /dev/stdin <<<'@@'
+nice \eval '@@'
+nice e''val '@@'
+nice emulate sh -c '@@'
+nice emulate zsh -c '@@'
+nice ev\al '@@'
+nice eval '@@'
+nice mapfile -C '@@' -c 1 a <<<x
+nice readarray -C '@@' -c 1 a <<<x
+nice so\urce /dev/stdin <<<'@@'
+nice trap '@@' DEBUG; :
+nice trap '@@' ERR; false
+nice trap '@@' ZERR; false
+nice {,eval} '@@'
+nohup "." /dev/stdin <<<'@@'
+nohup "e"val '@@'
+nohup "eval" '@@'
+nohup "source" /dev/stdin <<<'@@'
+nohup $'.' /dev/stdin <<<'@@'
+nohup $'eval' '@@'
+nohup ${x:-.} /dev/stdin <<<'@@'
+nohup ${x:-eval} '@@'
+nohup '.' /dev/stdin <<<'@@'
+nohup . /dev/stdin <<<'@@'
+nohup \. /dev/stdin <<<'@@'
+nohup \eval '@@'
+nohup e''val '@@'
+nohup emulate sh -c '@@'
+nohup emulate zsh -c '@@'
+nohup ev\al '@@'
+nohup eval '@@'
+nohup mapfile -C '@@' -c 1 a <<<x
+nohup readarray -C '@@' -c 1 a <<<x
+nohup so\urce /dev/stdin <<<'@@'
+nohup trap '@@' DEBUG; :
+nohup trap '@@' ERR; false
+nohup trap '@@' ZERR; false
+nohup {,eval} '@@'
+x=.; env $x /dev/stdin <<<'@@'
+x=.; nice $x /dev/stdin <<<'@@'
+x=.; nohup $x /dev/stdin <<<'@@'
+x=eval; env $x '@@'
+x=eval; nice $x '@@'
+x=eval; nohup $x '@@'
+y=al; env ev${y} '@@'
+y=al; nice ev${y} '@@'
+y=al; nohup ev${y} '@@'
+FORMS
 done
 
 # HIMMEL-4157 (judge J1685 NO-GO): the relief pass was super-linear -- per
