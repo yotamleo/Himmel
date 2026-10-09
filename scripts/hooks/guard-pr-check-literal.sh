@@ -843,7 +843,7 @@ PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 # `-eOverflow` or `-mOops` is text). -O itself takes the rest as the pager.
 # diff/log/show keep the old any-O reading (an orderfile, never a pager).
 short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
-    local c ch vals=mbBDcF
+    local c ch vals=mbBDcFCt
     case "$1" in --* | -) return 1 ;; -*) ;; *) return 1 ;; esac
     case "$2" in
         diff | log | show) case "$1" in *O*) return 0 ;; esac; return 1 ;;

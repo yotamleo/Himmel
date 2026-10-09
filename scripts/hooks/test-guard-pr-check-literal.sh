@@ -1693,6 +1693,8 @@ for v in \
     'git grep -eOverflow' \
     'git commit -m"Fix Overflow"' \
     'git commit -mOops' \
+    'git commit -CORIG_HEAD' \
+    'git commit -tOther' \
     'git stash push -mOld' \
     'git checkout -bOld-fix' \
     'git branch -DOld' \
