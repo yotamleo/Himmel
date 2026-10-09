@@ -937,7 +937,18 @@ git_mentions_only() { # git_mentions_only <command-word index>
                 --no-pager) ;;
                 grep|log|show|diff|add|restore|rm) sub=$w ;;
                 -*) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
-                *) bad=1; nsub=1 ;;
+                # Git ignores an alias that shadows a builtin, so only a builtin
+                # name has a known option grammar (long-stable builtins only: a
+                # newer one is an alias on an older git). Any other first word
+                # may be an alias for grep (`-O` takes the program): strict.
+                am | apply | archive | bisect | blame | branch | bundle | \
+                    checkout | cherry-pick | clean | clone | commit | config | \
+                    describe | fetch | format-patch | gc | init | \
+                    ls-files | ls-tree | merge | mv | notes | pull | push | rebase | \
+                    reflog | remote | reset | rev-list | rev-parse | revert | \
+                    shortlog | stash | status | tag | worktree)
+                    bad=1; nsub=1 ;;
+                *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
             esac
         elif [ "$w" = -- ]; then
             # An unknown option may consume -- as its value (-e/-S, ...),

@@ -1719,7 +1719,13 @@ for v in \
     'git --namespace log grep -Obash x' \
     'git --namespace show grep -Obash x' \
     'git --git-dir=.git --namespace add grep -oObash x' \
-    'git --unknown-opt add grep -oObash x'; do
+    'git --unknown-opt add grep -oObash x' \
+    'git myalias -oObash x' \
+    'git myalias -FObash x' \
+    'git myalias -cObash x' \
+    'git --no-pager myalias -oObash x' \
+    'git -C . myalias -FObash x' \
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.g GIT_CONFIG_VALUE_0=grep git g -oObash x'; do
     run "HIMMEL-5095 O before any value letter [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
