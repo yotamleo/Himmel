@@ -78,10 +78,17 @@ for f in head round delta; do
     if mv "$dir/$branch.$f" "$dir/$branch.$f.bak-$ts"; then
         moved="$moved .$f"
     else
-        echo "ERR cr-reset: could not back up $branch.$f" >&2
+        echo "ERR cr-reset: could not back up $branch.$f; restoring the rest" >&2
         rc=5
+        break
     fi
 done
+if [ "$rc" -ne 0 ]; then
+    # All or nothing: put back what already moved so no half-reset is left.
+    for f in $moved; do
+        mv "$dir/$branch$f.bak-$ts" "$dir/$branch$f" || echo "ERR cr-reset: could not restore $branch$f" >&2
+    done
+fi
 (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
     bash "$LOCK_LIB" release-if-owner "." "$branch" "$owner" >/dev/null 2>&1) || true
 [ "$rc" -eq 0 ] || exit "$rc"

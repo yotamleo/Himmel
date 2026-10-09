@@ -216,6 +216,13 @@ fleet_manifest() {
     printf '%s\n' "$fleet"
 }
 
+# A detached launch reports only that it started, so check what it needs first.
+have_detach() {
+    command -v setsid >/dev/null 2>&1 && command -v nohup >/dev/null 2>&1 && return 0
+    echo "ERR break-glass: setsid/nohup missing; cannot detach a launch" >&2
+    return 1
+}
+
 valid_label() {
     case "$1" in N[0-9]*) ;; *) return 1 ;; esac
     case "$1" in *[!A-Za-z0-9]*) return 1 ;; esac
@@ -226,14 +233,17 @@ valid_label() {
 # sha256 equals the one gen-briefs.py recorded at write time in the sidecar
 # beside the manifest (<manifest stem>.launchers.sha256, sha256sum format).
 launch_from_launcher() {
-    local label="$1" bypass="$2" fleet="$3" launcher sidecar want have
-    launcher="$(dirname "$fleet")/launch-$label.sh"
+    local label="$1" bypass="$2" fleet="$3" launcher sidecar want have line
     sidecar="${fleet%.json}.launchers.sha256"
-    if [ ! -f "$launcher" ]; then
-        echo "ERR break-glass: $label is not in $(basename "$fleet") and has no launch-$label.sh" >&2
+    # The launcher sits in gen-briefs.py's --bucket, which need not be the
+    # manifest's directory: take its path from the newest sidecar line.
+    line="$(awk -v n="launch-$label.sh" '{ f = $0; sub(/^[0-9a-f]+  /, "", f); k = split(f, a, "/"); if (a[k] == n) l = $0 } END { print l }' "$sidecar" 2>/dev/null)"
+    want="${line%%  *}"
+    launcher="${line#*  }"
+    if [ -z "$line" ] || [ ! -f "$launcher" ]; then
+        echo "ERR break-glass: $label is not in $(basename "$fleet") and has no recorded launch-$label.sh" >&2
         return 23
     fi
-    want="$(awk -v p="$launcher" '{ f = $0; sub(/^[0-9a-f]+  /, "", f); if (f == p) h = $1 } END { print h }' "$sidecar" 2>/dev/null)"
     have="$(sha256sum "$launcher" | cut -d' ' -f1)"
     if [ -z "$want" ] || [ "$want" != "$have" ]; then
         echo "ERR break-glass: launch-$label.sh does not match the sha256 the console recorded; refusing" >&2
@@ -241,8 +251,9 @@ launch_from_launcher() {
     fi
     scrub_env
     [ "$bypass" = "bypass" ] && export HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1
+    have_detach || return 23
     setsid nohup bash "$launcher" >/dev/null 2>&1 &
-    echo "launching $label from launch-$label.sh ($bypass)"
+    echo "launching $label from $launcher ($bypass, pid $!)"
     return 0
 }
 
@@ -267,8 +278,9 @@ op_launch_leg() {
     [ -n "$wt" ] && [ -d "$wt" ] || { echo "ERR break-glass: worktree missing for $label: '${wt}'" >&2; return 23; }
     gitdir="$(git -C "$wt" rev-parse --path-format=absolute --git-dir 2>/dev/null)" || gitdir=""
     common="$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || common=""
-    if [ -z "$gitdir" ] || [ "$gitdir" = "$common" ]; then
-        echo "ERR break-glass: $wt is not a linked worktree; refusing to launch there" >&2
+    if [ -z "$gitdir" ] || [ "$gitdir" = "$common" ] \
+        || [ "$common" != "$(git -C "$PRIMARY" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
+        echo "ERR break-glass: $wt is not a linked worktree of $PRIMARY; refusing to launch there" >&2
         return 23
     fi
     model="$(grep -m1 -oE '\((claude|gpt)-[a-z0-9.-]+,' "$doc" | tr -d '(,')"
@@ -279,6 +291,13 @@ op_launch_leg() {
     : > "$state/$label.signal"
     log="$state/$label-$now.log"
     launcher="${BREAK_GLASS_LEG_CMD:-bash $PRIMARY/scripts/handover/console-kit/headed-arm-leg.sh}"
+    # shellcheck disable=SC2086 # the seam is a command line by design
+    set -- $launcher
+    if ! command -v "$1" >/dev/null 2>&1 || { [ "$1" = bash ] && [ ! -f "$2" ]; }; then
+        echo "ERR break-glass: leg launcher not found: $launcher" >&2
+        return 23
+    fi
+    have_detach || return 23
     scrub_env
     [ "$bypass" = "bypass" ] && export HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1
     export LEG_REPO="$wt"
@@ -286,7 +305,7 @@ op_launch_leg() {
     setsid nohup $launcher --profile leg-impl --fleet "$fleet" --console "$(basename "${fleet%.fleet.json}")" \
         "$(basename "${doc%.md}")" "$doc" "$state/$label.signal" "$now" "$log" "$model" \
         >/dev/null 2>&1 &
-    echo "launching $label in $wt (model $model, $bypass); log $log"
+    echo "launching $label in $wt (model $model, $bypass, pid $!); log $log"
     return 0
 }
 

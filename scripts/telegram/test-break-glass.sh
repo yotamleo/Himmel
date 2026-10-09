@@ -176,6 +176,27 @@ assert_contains "L17 the launcher gets only the hook-integrity bypass" "bypass=1
 assert_contains "L18 and no other *_OK" "other=unset" "$rec"
 echo "# tampered" >> "$BUCKET/launch-N6.sh"
 bg launch-leg N6 bypass >/dev/null; assert_rc "L19 a launcher edited after the console recorded it is refused" 23 "$?"
+# gen-briefs.py writes the launcher in --bucket and the sidecar beside --manifest
+MDIR="$TMP/manifests"; mkdir -p "$MDIR"; FLEET2="$MDIR/HIMMEL-nextleg-2026-10-09ZY-roadmap-console.fleet.json"
+echo '{"schema":1,"legs":[]}' > "$FLEET2"
+cat > "$BUCKET/launch-N2.sh" <<EOF
+#!/usr/bin/env bash
+RECORD="$TMP/launcher2.rec" "$TMP/bin/record"
+EOF
+sha256sum "$BUCKET/launch-N2.sh" > "${FLEET2%.json}.launchers.sha256"
+rm -f "$TMP/launcher2.rec"; BREAK_GLASS_FLEET="$FLEET2" bg launch-leg N2 bypass >/dev/null; rc=$?
+assert_rc "L20 a launcher in a bucket apart from the manifest starts from its sidecar path" 0 "$rc"
+wait_for "$TMP/launcher2.rec"
+[ -s "$TMP/launcher2.rec" ] && echo "PASS L21 and it ran" || { echo "FAIL L21 the bucket launcher never ran"; FAILED=$((FAILED + 1)); }
+git init -q -b main "$TMP/foreign"; git -C "$TMP/foreign" commit -q --allow-empty -m f
+git -C "$TMP/foreign" worktree add -q "$TMP/fwt" -b feat/foreign
+mkleg N3 "$TMP/fwt"
+jq --arg d "$BUCKET/HIMMEL-1-N3-x-2026-10-09.md" '.legs += [{"doc":$d,"label":"N3"}]' "$FLEET" > "$TMP/fleet.new" && mv "$TMP/fleet.new" "$FLEET"
+rm -f "$RECORD"; bg launch-leg N3 bypass >/dev/null; assert_rc "L22 a linked worktree of another repo is refused" 23 "$?"
+jq 'del(.legs[] | select(.label == "N3"))' "$FLEET" > "$TMP/fleet.new" && mv "$TMP/fleet.new" "$FLEET"
+out=$(BREAK_GLASS_LEG_CMD="$TMP/bin/no-such-launcher" bg launch-leg N7 bypass); rc=$?
+assert_rc "L23 a launcher command that is not there is not reported as launched" 23 "$rc"
+assert_not_contains "L24 and it never says launching" "launching" "$out"
 unset BREAK_GLASS_LEG_CMD
 
 # --- /close-wrapped ------------------------------------------------------------
@@ -242,6 +263,18 @@ echo 4 > "$STATE/feat/leg-x.round"
 GH_VIEW='{"headRefName":"feat/leg-x","isCrossRepository":false,"state":"OPEN"}' crr 5 >/dev/null
 n=$(find "$STATE/feat" -name 'leg-x.round.bak-*' | wc -l | tr -d ' ')
 [ "$n" = 2 ] && echo "PASS Z11 a second reset keeps the first backup" || { echo "FAIL Z11 expected 2 round backups, got $n"; FAILED=$((FAILED + 1)); }
+echo 5 > "$STATE/feat/leg-x.round"; echo def > "$STATE/feat/leg-x.head"
+mkdir -p "$TMP/failmv"
+cat > "$TMP/failmv/mv" <<EOF
+#!/usr/bin/env bash
+case "\$1" in *.round) exit 1 ;; esac
+exec $(command -v mv) "\$@"
+EOF
+chmod +x "$TMP/failmv/mv"
+PATH="$TMP/failmv:$PATH" GH_VIEW='{"headRefName":"feat/leg-x","isCrossRepository":false,"state":"OPEN"}' crr 5 >/dev/null
+assert_rc "Z12 a backup that fails part-way is rc 5" 5 "$?"
+[ "$(cat "$STATE/feat/leg-x.head" 2>/dev/null)" = def ] && [ "$(cat "$STATE/feat/leg-x.round" 2>/dev/null)" = 5 ] \
+    && echo "PASS Z13 and the files already moved are put back" || { echo "FAIL Z13 a partial reset was left behind"; FAILED=$((FAILED + 1)); }
 
 git -C "$PRIMARY" worktree remove --force "$TMP/wt" 2>/dev/null
 echo
