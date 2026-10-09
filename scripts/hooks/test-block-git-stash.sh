@@ -247,10 +247,17 @@ fi
 # from each one (quadratic), and a timed-out PreToolUse hook does not deny.
 # shellcheck disable=SC2046 # one word per repeat is the point
 printf -v pad_o '(%.0s' $(seq 1 20000)
-t0=$SECONDS
+printf -v pad_a 'a%.0s' $(seq 1 20000)
+# Timed against a same-size run of a non-paren character in the same process, so
+# runner load scales both sides; a fixed wall-clock budget failed on loaded CI.
+now_ms() { local n; n=$(date +%s%N 2>/dev/null); case "$n" in ''|*[!0-9]*) echo $((SECONDS * 1000)) ;; *) echo $((n / 1000000)) ;; esac; }
+t0=$(now_ms)
+run_case "$(j_bash "echo hi$pad_a; git stash drop")" >/dev/null
+t1=$(now_ms)
 assert_rc 'open-paren run x20000 then git stash drop (linear)' 2 "$(run_case "$(j_bash "echo hi$pad_o; git stash drop")")"
-if [ $((SECONDS - t0)) -gt 2 ]; then
-    echo "FAIL open-paren run x20000 took $((SECONDS - t0))s (budget 2s)"; FAILED=$((FAILED + 1)); fi
+t2=$(now_ms)
+if [ $((t2 - t1)) -gt $(( (t1 - t0) * 3 + 500 )) ]; then
+    echo "FAIL open-paren run x20000 took $((t2 - t1))ms (control $((t1 - t0))ms, budget 3x + 500ms)"; FAILED=$((FAILED + 1)); fi
 # A `(` or `)` inside the path must still reach the program name.
 assert_rc 'path with (b) then git stash drop'         2 "$(run_case "$(j_bash '/tmp/a(b)/git stash drop')")"
 assert_rc 'quoted path with (b) then git stash drop'  2 "$(run_case "$(j_bash '"/tmp/a(b)/git" stash drop')")"
