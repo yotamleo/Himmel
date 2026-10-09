@@ -156,7 +156,8 @@ let p = process.env.WT_CONFIG;
 const seam = process.env.WT_SEAM === "1";
 const refuseLink = () => { console.error("leg-pretrust: " + p + " is a symlink (seam mode) - refusing"); process.exit(3); };
 try { if (seam && fs.lstatSync(p).isSymbolicLink()) refuseLink(); } catch (e) { if (e.code !== "ENOENT") throw e; }
-try { if (fs.lstatSync(p).isSymbolicLink()) p = fs.realpathSync(p); } catch (e) {
+// Seam mode never resolves the path (a second lstat/realpath is itself a race window).
+if (!seam) try { if (fs.lstatSync(p).isSymbolicLink()) p = fs.realpathSync(p); } catch (e) {
     if (e.code !== "ENOENT") { console.error("leg-pretrust: cannot resolve " + p + " (" + e.message + ")"); process.exit(4); }
     try { fs.lstatSync(p); console.error("leg-pretrust: " + p + " is a dangling symlink - refusing to write"); process.exit(4); } catch (_) {}
 }
@@ -167,10 +168,11 @@ const sig = () => { try { const s = seam ? fs.lstatSync(p) : fs.statSync(p); ret
 for (let attempt = 0; attempt < 5; attempt++) {
     const before = sig();
     let j = {};
+    let fmode = null;   // seam mode: mode of the file we actually opened (fstat), never an lstat that could see the 0777 of a link
     try {
         if (seam) {
             const rfd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-            try { j = JSON.parse(fs.readFileSync(rfd, "utf8")); } finally { fs.closeSync(rfd); }
+            try { fmode = fs.fstatSync(rfd).mode & 0o777; j = JSON.parse(fs.readFileSync(rfd, "utf8")); } finally { fs.closeSync(rfd); }
         } else j = JSON.parse(fs.readFileSync(p, "utf8"));
     } catch (e) {
         if (e.code === "ELOOP") refuseLink();
@@ -190,7 +192,7 @@ for (let attempt = 0; attempt < 5; attempt++) {
     const tmp = p + ".tmp-pretrust-" + process.pid;
     // Keep the mode as found (claude does the same); a new file gets the 0600 default claude uses.
     let mode = 0o600;
-    try { mode = (seam ? fs.lstatSync(p) : fs.statSync(p)).mode & 0o777; } catch (_) {}
+    if (seam) { if (fmode !== null) mode = fmode; } else try { mode = fs.statSync(p).mode & 0o777; } catch (_) {}
     try {
         // fchmod the fd we created (wx), not the path: a path can be swapped between calls.
         const wfd = fs.openSync(tmp, "wx", 0o600);
