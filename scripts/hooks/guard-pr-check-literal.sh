@@ -866,23 +866,36 @@ git_mentions_only() { # git_mentions_only <command-word index>
         # HIMMEL-4958: an exec/write option is denied whatever the pathspec; a
         # directory or empty pathspec matches guarded scripts without naming them.
         case "$w" in
-            --oneline | --on*) ;;
-            --exec* | --upload* | --receive* | ext::* | --o* | --ext*) PR_GIT_EXEC=1 ;;
+            # Benign long options that share a prefix with an exec option.
+            --oneline | --on* | --output-indicator-* | --extended-regexp) ;;
+            # Only the prefixes of --output and --open-files-in-pager (--ou* would
+            # also hit --ours); a bare --o* also hit --others and --objects.
+            --exec* | --upload* | --receive* | ext::* | --ext* | --op* | \
+                --ou | --out | --outp | --outpu | --output | \
+                --ou=* | --out=* | --outp=* | --outpu=* | --output=*) PR_GIT_EXEC=1 ;;
+            -c* | --config*)
+                if [ -n "$sub" ] && [ "${w#--}" = "$w" ]; then
+                    # After the subcommand -c* is a short-flag cluster (grep -c),
+                    # not a config option; -O inside it is the pager/orderfile flag.
+                    case "$w" in
+                        *O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
+                    esac
+                else
+                    # Match the config KEY (git folds its case), never the value.
+                    # --config-env=KEY=ENVVAR and `--config-env KEY=ENVVAR` carry the key too.
+                    case "$w" in
+                        -c | --config-env) xk=${ST_W[j + 1]:-}; xk=${xk%%=*} ;;
+                        --config-env=*) xk=${w#--config-env=}; xk=${xk%%=*} ;;
+                        -c*) xk=${w#-c}; xk=${xk%%=*} ;;
+                        *) xk=$w ;;
+                    esac
+                    xk=$(printf '%s' "$xk" | tr '[:upper:]' '[:lower:]')
+                    case "$xk" in
+                        *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshcommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
+                    esac
+                fi ;;
             # -O runs a pager only for grep; diff/log/show take it as an orderfile.
             -O* | -[!-]*O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
-            -c* | --config*)
-                # Match the config KEY (git folds its case), never the value.
-                # --config-env=KEY=ENVVAR and `--config-env KEY=ENVVAR` carry the key too.
-                case "$w" in
-                    -c | --config-env) xk=${ST_W[j + 1]:-}; xk=${xk%%=*} ;;
-                    --config-env=*) xk=${w#--config-env=}; xk=${xk%%=*} ;;
-                    -c*) xk=${w#-c}; xk=${xk%%=*} ;;
-                    *) xk=$w ;;
-                esac
-                xk=$(printf '%s' "$xk" | tr '[:upper:]' '[:lower:]')
-                case "$xk" in
-                    *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshcommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
-                esac ;;
         esac
         if [ "$dir" = 1 ]; then
             dir=0
@@ -998,7 +1011,7 @@ envs_deferred=0
 if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+    deny "git execution/config options or ambiguous option-value boundaries cannot be proven safe: a guarded script is named, or the option runs a program whatever the pathspec; drop the option or run the script as its own literal command (HIMMEL-4916)."
 fi
 
 # norm <path> - drop empty and . segments. A .. is kept, so the path no longer
@@ -1556,7 +1569,7 @@ fi
 if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+    deny "git execution/config options or ambiguous option-value boundaries cannot be proven safe: a guarded script is named, or the option runs a program whatever the pathspec; drop the option or run the script as its own literal command (HIMMEL-4916)."
 fi
 [ "$hit" -eq 1 ] || exit 0
 # ponytail: a glob through a directory symlink the text does not spell as

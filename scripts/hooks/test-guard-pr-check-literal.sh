@@ -1660,7 +1660,10 @@ for v in \
     'git -c core.PAGER=bash grep -e .' \
     'git --config-env=alias.x=V x' \
     'git --config-env alias.x=V x' \
-    'git --config-env=core.pager=V grep -e .'; do
+    'git --config-env=core.pager=V grep -e .' \
+    'git log --out=out.txt' \
+    'git grep --open=bash -e .' \
+    'git grep -cObash -e .'; do
     run "HIMMEL-4958 exec option any pathspec [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 for v in \
@@ -1672,7 +1675,14 @@ for v in \
     "git -c user.name='pager duty' grep -e ." \
     'git log -Oorderfile --oneline' \
     'git grep --only-matching -e .' \
-    'git -c user.name=t -c user.email=t@t commit -m x'; do
+    'git -c user.name=t -c user.email=t@t commit -m x' \
+    'git ls-files --others' \
+    'git ls-files --others -- scripts/cr/ scripts/lib/ scripts/check-ci.sh' \
+    'git checkout --ours -- docs/x.md' \
+    'git rev-list --objects HEAD' \
+    'git log --output-indicator-new=+ --oneline' \
+    'git -cuser.name=Overlord commit -m x' \
+    'git grep --extended-regexp -e .'; do
     run "HIMMEL-4958 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
