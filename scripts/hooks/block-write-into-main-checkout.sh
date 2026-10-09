@@ -443,13 +443,15 @@ _bwimc_quote_run() {
 # real command hits it (HIMMEL-4145).
 _bwimc_blank_heredocs() {
     local text="$1" nest="${2:-}"
-    local nl=0 unsure=0 ncode=""
+    local nl=0 unsure=0 ncode="" nopen=0 allq=1 allgit=1
     local -a pd=()
     local out="" line
     local active=0 dashmode=0 term="" pend_term="" pend_dash=0
     local i len c prev rest check tab run
     local arith_pfx arith_open arith_close arith_scan
     tab=$(printf '\t')
+    # HIMMEL-4397: the line prefix before a `<<` of a `git commit -m "$(cat <<'X'` message
+    local gitmsg_re='(^|[;&|(][[:space:]]*)git[[:space:]]+commit[[:space:]]([^;&|<>$`]*[[:space:]])?(-[a-zA-Z]*m|--message)[=[:space:]]*"[$][(]cat[[:space:]]*$'
     # Quote/escape state is carried ACROSS lines (the scanner is initialised
     # once, here) but is FROZEN while a heredoc body is active — the body-line
     # branch below `continue`s without stepping the scanner, because a heredoc
@@ -530,10 +532,12 @@ _bwimc_blank_heredocs() {
                                 : # inside arithmetic context — not an opener
                             else
                             rest="${line:$((i+2))}"
-                            if [[ "$rest" =~ ^(-)?[[:space:]]*(\"([A-Za-z_][A-Za-z0-9_]*)\"|\'([A-Za-z_][A-Za-z0-9_]*)\'|([A-Za-z_][A-Za-z0-9_]*)) ]]; then
-                                term="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
+                            if [[ "$rest" =~ ^(-)?[[:space:]]*(\"([A-Za-z_][A-Za-z0-9_]*)\"|\'([A-Za-z_][A-Za-z0-9_]*)\'|\\([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)) ]]; then
+                                term="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}"
+                                nopen=$((nopen+1)); [ -z "${BASH_REMATCH[6]}" ] || allq=0
                                 if [ -n "${BASH_REMATCH[1]}" ]; then dashmode=1; else dashmode=0; fi
                                 active=1
+                                [[ "${line:0:$i}" =~ $gitmsg_re ]] || allgit=0
                             fi
                             fi
                         fi
@@ -591,6 +595,12 @@ _bwimc_blank_heredocs() {
         _bwimc_deny "unresolved-heredoc" "<<${term:-$pend_term} (terminator not found)" "" ""
     fi
     printf '%s' "$out"
+    # HIMMEL-4397: status 7 = nest mode blanked every body and every opener's
+    # delimiter was quoted, so no body expands anything, and every opener is a
+    # `git commit -m "$(cat <<'X'` message (inert text, never run as code: a
+    # `bash -c "$(cat <<'X'` body is code and keeps the flat reading).
+    [ -z "$nest" ] || [ "$nopen" -eq 0 ] || [ "$allq" -eq 0 ] || [ "$allgit" -eq 0 ] || return 7
+    return 0
 }
 
 # Split TEXT into clauses at top-level (unquoted) occurrences of ; & | ( and
@@ -2057,8 +2067,10 @@ _bwimc_check_target() {
 _bwimc_ansic() {
     local s="$1" o="" c k=0 h v m
     while [ "$k" -lt "${#s}" ]; do
-        c="${s:$k:1}"; k=$((k+1))
-        if [ "$c" != "\\" ]; then o="$o$c"; continue; fi
+        # HIMMEL-4397: take the whole run before the next backslash in one step
+        c="${s:$k}"; c="${c%%\\*}"
+        if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
+        k=$((k+1))
         c="${s:$k:1}"; k=$((k+1))
         case "$c" in
             a) v=7 ;; b) v=8 ;; e|E) v=27 ;; f) v=12 ;; n) v=10 ;;
@@ -2156,10 +2168,15 @@ _bwimc_unq() {
     case "$t" in
         *\$\'*|*\$\"*)
             while [ "$k" -lt "${#t}" ]; do
+                # HIMMEL-4397: jump over runs of plain text, not one char a step
+                c="${t:$k}"; c="${c%%\$*}"
+                if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
                 c="${t:$k:1}"
                 if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = "'" ]; then
                     k=$((k+2)); q=""
                     while [ "$k" -lt "${#t}" ] && [ "${t:$k:1}" != "'" ]; do
+                        c="${t:$k}"; c="${c%%[\'\\]*}"
+                        if [ -n "$c" ]; then q="$q$c"; k=$((k+${#c})); continue; fi
                         if [ "${t:$k:1}" = "\\" ]; then q="$q\\"; k=$((k+1)); fi
                         q="$q${t:$k:1}"; k=$((k+1))
                     done
@@ -3010,13 +3027,29 @@ _bwimc_readings=("$_bwimc_hb"); _bwimc_rmodes=(0)
 # ponytail: a long quoted multi-line span is one long clause here, so a
 # multi-line single-quoted message costs about 2x the char scan of base (no
 # size gate: padding past one would reopen HIMMEL-4143), perf fix HIMMEL-4164.
-_bwimc_hbn=$(_bwimc_blank_heredocs "$cmd" nest)
+_bwimc_hbq=0
+_bwimc_hbn=$(_bwimc_blank_heredocs "$cmd" nest) || { _bwimc_hbq=$?; [ "$_bwimc_hbq" = 7 ] || exit "$_bwimc_hbq"; }
 case "$_bwimc_hbn" in
     *"$_BWIMC_NL"*)
         _bwimc_readings+=("$_bwimc_hbn"); _bwimc_rmodes+=(1)
         _bwimc_strip_comments "$_bwimc_hbn"
         [ "$_BWIMC_NC" = "$_bwimc_hbn" ] || { _bwimc_readings+=("$_BWIMC_NC"); _bwimc_rmodes+=(1); } ;;
 esac
+# HIMMEL-4397: every opener had a quoted delimiter and every body is blanked
+# in the nested reading, so the raw readings only re-scan inert body text (a
+# 10 KB commit message took ~10 s of char scans, a 100 KB one hit the 300 s
+# deadline). Keep the nested readings alone; a bare delimiter, a fallback to
+# the flat reading or an unparsable opener never sets status 7.
+if [ "$_bwimc_hbq" = 7 ] && [ "${#_bwimc_readings[@]}" -gt 1 ]; then
+    _bwimc_keep=(); _bwimc_keepm=()
+    for _bwimc_ki in "${!_bwimc_readings[@]}"; do
+        [ "${_bwimc_rmodes[$_bwimc_ki]}" = 1 ] || continue
+        _bwimc_keep+=("${_bwimc_readings[$_bwimc_ki]}"); _bwimc_keepm+=(1)
+    done
+    if [ "${#_bwimc_keep[@]}" -gt 0 ]; then
+        _bwimc_readings=("${_bwimc_keep[@]}"); _bwimc_rmodes=("${_bwimc_keepm[@]}")
+    fi
+fi
 
 # ---- (a) redirect / tee, per-clause quote-aware token walk ----
 #
@@ -3892,8 +3925,10 @@ _bwimc_redir_scan_text "$_bwimc_hb"
 _bwimc_ansic() {
     local s="$1" o="" c k=0 h v m
     while [ "$k" -lt "${#s}" ]; do
-        c="${s:$k:1}"; k=$((k+1))
-        if [ "$c" != "\\" ]; then o="$o$c"; continue; fi
+        # HIMMEL-4397: take the whole run before the next backslash in one step
+        c="${s:$k}"; c="${c%%\\*}"
+        if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
+        k=$((k+1))
         c="${s:$k:1}"; k=$((k+1))
         case "$c" in
             a) v=7 ;; b) v=8 ;; e|E) v=27 ;; f) v=12 ;; n) v=10 ;;
@@ -3942,10 +3977,15 @@ _bwimc_unq() {
     case "$t" in
         *\$\'*|*\$\"*)
             while [ "$k" -lt "${#t}" ]; do
+                # HIMMEL-4397: jump over runs of plain text, not one char a step
+                c="${t:$k}"; c="${c%%\$*}"
+                if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
                 c="${t:$k:1}"
                 if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = "'" ]; then
                     k=$((k+2)); q=""
                     while [ "$k" -lt "${#t}" ] && [ "${t:$k:1}" != "'" ]; do
+                        c="${t:$k}"; c="${c%%[\'\\]*}"
+                        if [ -n "$c" ]; then q="$q$c"; k=$((k+${#c})); continue; fi
                         if [ "${t:$k:1}" = "\\" ]; then q="$q\\"; k=$((k+1)); fi
                         q="$q${t:$k:1}"; k=$((k+1))
                     done
