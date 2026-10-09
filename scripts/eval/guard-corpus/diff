@@ -660,12 +660,13 @@ def main(argv):
         # fine), so read the tree once, serially and unbounded, before the pool.
         # ponytail: warms the page cache, does not remove the per-launch scan;
         # the upgrade path is one mask list per run (HIMMEL-5055).
-        try:
-            subprocess.run(["find", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc",
-                            "-printf", ""], stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, check=False)
-        except OSError:
-            pass
+        for root in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"):
+            for dirpath, dirnames, filenames in os.walk(root):
+                for name in dirnames + filenames:
+                    try:
+                        os.lstat(os.path.join(dirpath, name))
+                    except OSError:
+                        pass
         with ThreadPoolExecutor(args.jobs) as ex:
             results = list(ex.map(one, enumerate(corpus)))
 
