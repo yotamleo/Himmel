@@ -167,7 +167,7 @@ go_verdict_scope() (
 # vetoes whatever PR it names (it only narrows). An empty <pr> refuses.
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 go_trust_verdict() {
-    local root="$1" qid="$2" sha="$3" anchor="${4:-}" pr="${5:-}" f line word head go=0 scope vpr name
+    local root="$1" qid="$2" sha="$3" anchor="${4:-}" pr="${5:-}" f line word head go=0 scope vpr name snap
     case "$qid" in
         [A-Za-z0-9]*) ;;
         *) qid="" ;;
@@ -188,7 +188,10 @@ go_trust_verdict() {
     esac
     for f in "$root/$scope/verdicts/$qid"/*.md; do
         [ -f "$f" ] || continue
-        line=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }')
+        # HIMMEL-4984: one read; the mac, the scope check and every field come from it.
+        go_verdict_snapshot "$f" || continue
+        snap=$GO_VERDICT_SNAP
+        line=$(printf '%s' "$snap" | tr -d '\r' | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }')
         word=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `[0-9a-f]{40}`\.?$/\1/p')
         head=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\2/p')
         if [ -z "$word" ] || [ -z "$head" ]; then
@@ -204,15 +207,15 @@ go_trust_verdict() {
         # post-cap scope record (delta-scope:) is round-admission evidence,
         # never merge trust.
         name=${f##*/}; name=${name%.md}
-        if ! go_verdict_mac_ok "$f" "$scope" "$qid" "$name"; then
+        if ! go_verdict_mac_ok_text "$snap" "$scope" "$qid" "$name"; then
             printf 'the verdict in %s carries no valid mac (HIMMEL-4984) — only a record written by write-verdict.sh counts; the judge rewrites it.\n' "$f"
             return 2
         fi
-        if grep -qE '^delta-(scope|from): ' "$f" 2>/dev/null; then
+        if printf '%s' "$snap" | grep -qE '^delta-(scope|from): '; then
             printf 'the verdict in %s is a post-cap scope record (delta-scope:/delta-from:), not merge trust (HIMMEL-4984) — pass the qid of a judge that ruled GO on the PR itself.\n' "$f"
             return 2
         fi
-        vpr=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF && !n { n = NR + 2; next } n && NR == n { print; exit }' \
+        vpr=$(printf '%s' "$snap" | tr -d '\r' | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF && !n { n = NR + 2; next } n && NR == n { print; exit }' \
             | sed -nE 's/^pr: ([1-9][0-9]*)$/\1/p')
         if [ -z "$vpr" ]; then
             printf 'the verdict in %s names no PR (no pr: line after the verdict line) — the judge rewrites it with write-verdict.sh --pr %s.\n' "$f" "$pr"
@@ -443,12 +446,29 @@ go_verdict_mac() {
 # go_verdict_mac_ok <file> <scope> <qid> <name> — rc 0 iff the file's last line is
 # `mac: <64 hex>` and equals the mac of every line above it.
 go_verdict_mac_ok() {
+    go_verdict_snapshot "$1" || return 1
+    go_verdict_mac_ok_text "$GO_VERDICT_SNAP" "$2" "$3" "$4"
+}
+
+# go_verdict_snapshot <file> — HIMMEL-4984: read the record's bytes ONCE into
+# GO_VERDICT_SNAP (a trailing sentinel keeps the final newline). A caller
+# verifies the mac and parses its fields from this one copy, so a rewrite
+# between the two reads cannot make a verified mac vouch for different bytes.
+go_verdict_snapshot() {
+    GO_VERDICT_SNAP=$(cat "$1" 2>/dev/null; printf x) || return 1
+    GO_VERDICT_SNAP=${GO_VERDICT_SNAP%x}
+    [ -n "$GO_VERDICT_SNAP" ]
+}
+
+# go_verdict_mac_ok_text <snapshot> <scope> <qid> <name> — go_verdict_mac_ok over
+# bytes already read.
+go_verdict_mac_ok_text() {
     local got want
-    got=$(tail -n 1 "$1" 2>/dev/null | tr -d '\r')
+    got=$(printf '%s' "$1" | tail -n 1 | tr -d '\r')
     case "$got" in 'mac: '*) got=${got#mac: } ;; *) return 1 ;; esac
     case "$got" in ''|*[!0123456789abcdef]*) return 1 ;; esac
     [ "${#got}" -eq 64 ] || return 1
-    want=$(sed '$d' "$1" 2>/dev/null | go_verdict_mac "$2" "$3" "$4") || return 1
+    want=$(printf '%s' "$1" | sed '$d' | go_verdict_mac "$2" "$3" "$4") || return 1
     [ -n "$want" ] && [ "$got" = "$want" ]
 }
 

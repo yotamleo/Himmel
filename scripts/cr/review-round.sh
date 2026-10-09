@@ -241,8 +241,12 @@ EOF
 # candidate evidence is the explicit way out of a repeated-class stop.
 # shellcheck disable=SC2016  # JavaScript template fields are literal here
 judge_class_check() {
-    VERDICT_DIR="$dir" HISTORY="$verdict_state" CANDIDATE="$1" WANT="$2" node -e '
-const fs = require("fs"), path = require("path"), cp = require("child_process"), e = process.env;
+    VERDICT_DIR="$dir" HISTORY="$verdict_state" CANDIDATE="$1" WANT="$2" SIGNED="$3" node -e '
+const fs = require("fs"), path = require("path"), cp = require("child_process"), crypto = require("crypto"), e = process.env;
+// HIMMEL-4984: a layer-decision counts only from a record whose mac verified; the
+// bash side hands over qid/name:sha256 of the bytes it verified, and the record
+// read here must hash to the same bytes (no window between verify and read).
+const signed = new Set((e.SIGNED || "").split(" ").filter(Boolean));
 const allowed = new Set(["option-parsing", "cwd-indirection", "shell-parsing", "tool-defaults", "reader-allowlist", "other"]);
 const seg = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const candidates = e.CANDIDATE.split(" ").map(r => r.split("/")[0]);
@@ -253,7 +257,9 @@ const records = (qid) => {
     const file = path.join(dir, n), name = n.slice(0, -3);
     const stat = fs.lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink()) throw Error("invalid history file " + file);
-    const lines = fs.readFileSync(file, "utf8").split("\n");
+    const bytes = fs.readFileSync(file);
+    const lines = bytes.toString("utf8").split("\n");
+    const isSigned = signed.has(`${qid}/${name}:${crypto.createHash("sha256").update(bytes).digest("hex")}`);
     if (!seg.test(name) || lines[0] !== `# VERDICT ${qid} - ${name}` || lines[1] || lines[4] || lines[6]
         || !/^writer-session: [A-Za-z0-9-]+$/.test(lines[2])
         || !/^written-at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(lines[3]) || lines[5] !== "## Verdict") throw Error("invalid history record " + file);
@@ -267,7 +273,7 @@ const records = (qid) => {
       if (fields.length !== 1 || classes.some(c => !allowed.has(c))) throw Error("invalid history class " + file);
     }
     return { head: verdict[2], nogo: verdict[1] === "NO-GO", classes,
-      decision: evidence.some(l => /^layer-decision: (text|os|classifier|accept)\s+\S.*$/.test(l)) };
+      decision: isSigned && evidence.some(l => /^layer-decision: (text|os|classifier|accept)\s+\S.*$/.test(l)) };
   });
 };
 try {
@@ -368,7 +374,7 @@ judge_nogo_record() (
     pr_want=""
     re_session='^writer-session: [A-Za-z0-9-]+$'
     re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
-    hits="" check_hits=""
+    hits="" check_hits="" signed=""
     for qdir in "$dir"/*/; do
         qdir="${qdir%/}"
         qid="${qdir##*/}"
@@ -405,10 +411,15 @@ judge_nogo_record() (
             if [ -L "$f" ] || [ ! -f "$f" ]; then bad=1; break; fi
             name="${f##*/}"; name="${name%.md}"
             case "$name" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) bad=1; break ;; esac
+            # HIMMEL-4984: one read; the mac and every field come from this copy.
+            go_verdict_snapshot "$f" || { bad=1; break; }
+            snap=$GO_VERDICT_SNAP
             l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8="" l9="" l10="" l11=""
             { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4
               IFS= read -r l5; IFS= read -r l6; IFS= read -r l7; IFS= read -r l8
-              IFS= read -r l9; IFS= read -r l10; IFS= read -r l11; } < "$f" 2>/dev/null
+              IFS= read -r l9; IFS= read -r l10; IFS= read -r l11; } <<EOF_SNAP 2>/dev/null
+$snap
+EOF_SNAP
             if [ "$l1" != "# VERDICT $qid - $name" ] || [ -n "$l2$l5$l7" ] || [ "$l6" != "## Verdict" ] \
                 || ! [[ $l3 =~ $re_session ]] || ! [[ $l4 =~ $re_written ]]; then
                 bad=1; break
@@ -418,7 +429,11 @@ judge_nogo_record() (
             # HIMMEL-4984: a record buys a round only when write-verdict.sh signed
             # it; one hand-written or edited withholds the round from its qid, but
             # its NO-GO still feeds the class veto (a NO-GO only narrows).
-            go_verdict_mac_ok "$f" "$scope" "$qid" "$name" || macbad=1
+            if go_verdict_mac_ok_text "$snap" "$scope" "$qid" "$name"; then
+                snap_sha="$(printf '%s' "$snap" | _go_sha256)" && signed="${signed:+$signed }$qid/$name:$snap_sha"
+            else
+                macbad=1
+            fi
             if [ "$word" = "NO-GO $want" ]; then
                 [ -n "$hit" ] || hit="$qid/$name"
                 if [ -z "$bound" ] && record_binds "$l9" "$l10" "$l11"; then bound="$qid/$name"; fi
@@ -430,7 +445,7 @@ judge_nogo_record() (
         fi
     done
     [ -n "$check_hits" ] || exit 1
-    judge_class_check "$check_hits" "$want" || exit 8
+    judge_class_check "$check_hits" "$want" "$signed" || exit 8
     [ "$pr_want" != "-" ] || exit 8
     [ -n "$hits" ] || exit 1
     printf '%s\n' "$hits"
@@ -537,10 +552,15 @@ judge_scope_record() (
             if [ -L "$f" ] || [ ! -f "$f" ]; then bad=1; break; fi
             name="${f##*/}"; name="${name%.md}"
             case "$name" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) bad=1; break ;; esac
+            # HIMMEL-4984: one read; the mac and every field come from this copy.
+            go_verdict_snapshot "$f" || { bad=1; break; }
+            snap=$GO_VERDICT_SNAP
             l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8="" l9="" l10="" l11=""
             { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4
               IFS= read -r l5; IFS= read -r l6; IFS= read -r l7; IFS= read -r l8
-              IFS= read -r l9; IFS= read -r l10; IFS= read -r l11; } < "$f" 2>/dev/null
+              IFS= read -r l9; IFS= read -r l10; IFS= read -r l11; } <<EOF_SNAP 2>/dev/null
+$snap
+EOF_SNAP
             if [ "$l1" != "# VERDICT $qid - $name" ] || [ -n "$l2$l5$l7" ] || [ "$l6" != "## Verdict" ] \
                 || ! [[ $l3 =~ $re_session ]] || ! [[ $l4 =~ $re_written ]]; then
                 bad=1; break
@@ -548,7 +568,7 @@ judge_scope_record() (
             word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
             [ -n "$word" ] || { bad=1; break; }
             # HIMMEL-4984: signed by write-verdict.sh, or the qid is disqualified.
-            go_verdict_mac_ok "$f" "$scope" "$qid" "$name" || { bad=1; break; }
+            go_verdict_mac_ok_text "$snap" "$scope" "$qid" "$name" || { bad=1; break; }
             if [ -n "$hit" ] || [ "$word" != "GO $want" ]; then continue; fi
             # HIMMEL-4984: the record names this branch's PR (and branch, when it
             # carries one); a record for another PR or branch is refused.
@@ -556,7 +576,7 @@ judge_scope_record() (
                 [ "$pr_want" != "-" ] || exit 8
                 continue
             fi
-            evidence="$(sed -n '9,$p' "$f")"
+            evidence="$(printf '%s\n' "$snap" | sed -n '9,$p')"
             n_from="$(printf '%s\n' "$evidence" | grep -cE '^delta-from: ')"
             n_from_ok="$(printf '%s\n' "$evidence" | grep -cFx "delta-from: $from")"
             n_scope="$(printf '%s\n' "$evidence" | grep -cE '^delta-scope: ')"

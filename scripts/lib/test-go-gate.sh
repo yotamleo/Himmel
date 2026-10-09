@@ -305,6 +305,15 @@ rc=0; pin_mac go_msg_mac '' x >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail 
 rc=0; pin_mac go_msg_mac himmel-verdict-v1 '' >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail "6d: an empty message was signed"
 rc=0; HOME="$ROOT/nokey" bash -c '. "$1"; go_msg_mac himmel-verdict-v1 x' _ "$GO_GATE_SRC" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "6d: go_msg_mac signed with no key"
+# 6e. One snapshot of the bytes: the file check and the snapshot check agree, and
+# an edited byte in the snapshot fails the mac.
+SREC="$ROOT/snap-record.md"
+printf '# VERDICT q - n\n\nbody line\n' > "$SREC"
+printf 'mac: %s\n' "$(HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac s q n < "$2"' _ "$GO_GATE_SRC" "$SREC")" >> "$SREC"
+snap_ok() { HOME="$PINHOME" bash -c '. "$1"; go_verdict_snapshot "$2" || exit 3; case "$4" in edit) GO_VERDICT_SNAP=${GO_VERDICT_SNAP/body/BODY} ;; esac; go_verdict_mac_ok_text "$GO_VERDICT_SNAP" s q n' _ "$GO_GATE_SRC" "$SREC" x "${1:-}"; }
+rc=0; snap_ok >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 0 ] || fail "6e: a signed record's snapshot did not verify (rc=$rc)"
+rc=0; snap_ok edit >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail "6e: an edited snapshot verified"
+rc=0; HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac_ok "$2" s q n' _ "$GO_GATE_SRC" "$SREC" >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 0 ] || fail "6e: go_verdict_mac_ok disagrees with the snapshot check"
 
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
