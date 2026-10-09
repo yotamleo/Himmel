@@ -37,7 +37,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Held child: polls for the release file $1 (at most HOLD_TICKS * 0.1s, so a
 # blocking detach is bounded), then drops the completion marker $2.
-HOLD_TICKS=100
+HOLD_TICKS=300
 HELD="i=0; while [ ! -e \"\$1\" ] && [ \"\$i\" -lt $HOLD_TICKS ]; do sleep 0.1; i=\$((i + 1)); done; : > \"\$2\""
 MARKER="$TMP/child-done"
 RELEASE="$TMP/release"
