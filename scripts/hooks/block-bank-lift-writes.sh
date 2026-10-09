@@ -93,6 +93,8 @@ LIFT_NAME=bank-lift.json
 STATE_REAL="$HOME/.himmel/state"
 CWD_UNPROVEN=0  # set for Bash: a directory-changing word anywhere makes the cwd unknown
 XENV_SET=0      # set for Bash: the command names a tar/unzip option variable
+EXTRACT_SEEN=0  # set when a clause extracts an archive to disk (HIMMEL-4530)
+SYMLINK_SEEN=0  # set when a clause creates a symlink (ln -s, cp -s)
 # HIMMEL-4458: the repo whose scripts/lib/bank-lift.sh may run show|clear —
 # this hook's own checkout (scripts/hooks/..), the primary when that is a
 # .claude/worktrees/* worktree. Its worktrees qualify too.
@@ -1309,17 +1311,18 @@ check_extract() {
     [ "$lst" = 1 ] && x=0
     case "$c" in tar|gtar|bsdtar) [ "$nx" = 1 ] && [ "$xe" = 0 ] && x=0 ;; esac
     [ "$x" = 1 ] && [ "$out" = 0 ] || return 0
+    EXTRACT_SEEN=1
     # GNU cpio keeps absolute and ../ member names by default, and its
     # pass mode copies whatever paths stdin names: every cpio extraction
     # denies, whatever the destination (--no-absolute-filenames not modelled).
     [ "$c" = cpio ] && deny "cpio extracts members by their own (absolute or ../) names, which can land on the bank lift whatever the destination; extract with tar or unzip into an absolute destination"
     [ "$XENV_SET" = 1 ] && deny "$c extracts while the command names TAR_OPTIONS/UNZIP/UNZIPOPT/ZIPINFO/ZIPINFOOPT, which can inject options (-P, -C, -:) the hook cannot see; pass the options on the $c command line"
     [ "$abs" = 1 ] && deny "$c keeps absolute (or ../) member names, so a member can land on the bank lift whatever the destination; drop -P/--absolute-names/--absolute-paths/-:"
-    # ponytail: a symlink ALREADY inside an allowed destination is followed by
-    # default for a member's intermediate path (GNU tar without a directory
-    # member, unzip, cpio) and is not judged here; revisit (new ticket) if a
-    # destination-internal symlink becomes plantable by an agent before the
-    # extraction, e.g. the destination is created in the same command.
+    # ponytail: a symlink that ALREADY exists inside an allowed destination is
+    # followed by default for a member's intermediate path (GNU tar without a
+    # directory member, unzip, cpio) and is not judged here; one planted by the
+    # SAME command is denied (HIMMEL-4530, closed). Upgrade path: a new ticket
+    # if an agent can plant the link in an earlier command.
     [ "$ksym" = 1 ] && deny "$c --keep-directory-symlink follows a directory symlink inside the destination, which can lead into HOME or ~/.himmel; drop it"
     _extract_allow "$c" "$@"
     n=${#dests[@]}
@@ -1346,6 +1349,24 @@ check_extract() {
         _home_anc "$e" && deny "$c extracts into $a, an ancestor of HOME: a relative member (home/<user>/.himmel/state/...) can reach the bank lift"
     done
     return 0
+}
+
+# _symlink_mode <cmd> <args...>: flag a clause that creates a symlink (ln -s /
+# --symbolic, cp -s / --symbolic-link, combined short flags too) so a
+# same-command extraction can be denied (HIMMEL-4530). An operand starting
+# with a dash and holding an s over-matches by design: it only adds a deny.
+_symlink_mode() {
+    local c="$1" a
+    shift
+    case "$c" in ln|cp) ;; *) return 0 ;; esac
+    for a in "$@"; do
+        case "$a" in
+            --) return 0 ;;
+            --symbolic*) SYMLINK_SEEN=1 ;;
+            --*) ;;
+            -*s*) SYMLINK_SEEN=1 ;;
+        esac
+    done
 }
 
 # check_clause <depth> <fed> <args...> — returns 10 when the clause is a shell
@@ -1591,6 +1612,7 @@ check_clause() {
                 case "$a" in of=*) is_lift "${a#of=}" && deny "dd of= writes the bank lift (${a#of=})" ;; esac
             done ;;
         cp|mv|install|ln|rsync|gcp|gmv|gln|ginstall)
+            _symlink_mode "${cmd#g}" "$@"
             check_copy "${cmd#g}" "$@" ;;
         find|gfind)
             local acts=0
@@ -1644,4 +1666,9 @@ xenv_hits=$(printf '%s\n%s' "$CMD" "${WTOK//$'\037'/ }" | grep -Ec "$XENV_RE")
 case "$xenv_hits" in ''|0) ;; *) XENV_SET=1 ;; esac
 if names_lift "$CMD" || names_lift "$WTOK"; then whole_command_gate "$CMD" 0; fi
 analyse "$CMD" 0
+# HIMMEL-4530: an extraction and a symlink creation in one command, in any
+# order, can send members through the planted link into HOME.
+if [ "$EXTRACT_SEEN" = 1 ] && [ "$SYMLINK_SEEN" = 1 ]; then
+    deny "the command extracts an archive and creates a symlink (ln -s / cp -s), so members can follow the link into HOME or ~/.himmel; create the link in a separate command, away from the extraction destination"
+fi
 exit 0

@@ -1084,6 +1084,24 @@ if [ "$rc" = 2 ] && [ $((SECONDS-t0)) -le 10 ]; then ok "4972 probe 20 groups de
 }
 run_probes4972
 
+echo "== HIMMEL-4530: an extraction sharing a command with a symlink creation =="
+row "4530 ln -s ~ ; tar -xf -C"               deny  "ln -s ~ /var/out/h; tar -xf /tmp/a.tar -C /var/out"
+row "4530 ln -s .himmel && unzip -d"          deny  "ln -s \"\$HOME/.himmel\" /var/out/h && unzip /tmp/a.zip -d /var/out"
+row "4530 ln -s fixture HOME path ; tar"     deny  "ln -s $HOME /var/out/h; tar -xf /tmp/a.tar -C /var/out"
+row "4530 ln -sf && cpio -idm"                deny  "ln -sf ~ h && cpio -idm < /tmp/a.cpio"
+row "4530 cp -s ; tar"                        deny  "cp -s ~/x /var/out/h; tar -xf /tmp/a.tar -C /var/out"
+row "4530 cp --symbolic-link ; unzip"         deny  "cp --symbolic-link ~/x /var/out/h; unzip /tmp/a.zip -d /var/out"
+row "4530 ln --symbolic ; tar"                deny  "ln --symbolic ~ /var/out/h; tar -xf /tmp/a.tar -C /var/out"
+row "4530 ln -fs || tar"                      deny  "ln -fs ~ /var/out/h || tar -xf /tmp/a.tar -C /var/out"
+row "4530 reversed: tar then ln -s"           deny  "tar -xf /tmp/a.tar -C /var/out; ln -s ~ /var/out/h"
+row "4530 pipe: ln -s | tar"                  deny  "ln -s ~ /var/out/h | tar -xf /tmp/a.tar -C /var/out"
+row "4530 inside bash -c"                     deny  "bash -c 'ln -s ~ /var/out/h; tar -xf /tmp/a.tar -C /var/out'"
+row "4530 tar -xf alone (ctrl)"               allow "tar -xf /tmp/a.tar -C /var/out"
+row "4530 ln -s alone (ctrl)"                 allow "ln -s /tmp/a /var/out/h"
+row "4530 ln hard link + tar (ctrl)"          allow "ln /tmp/a /var/out/h; tar -xf /tmp/a.tar -C /var/out"
+row "4530 tar -tf list + ln -s (ctrl)"        allow "ln -s /tmp/a /var/out/h; tar -tf /tmp/a.tar"
+row "4530 tar -xOf stdout + ln -s (ctrl)"     allow "ln -s /tmp/a /var/out/h; tar -xOf /tmp/a.tar"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. Every verb must deny; rm too since round 6 (it was
