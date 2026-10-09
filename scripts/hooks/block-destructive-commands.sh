@@ -280,7 +280,7 @@ guard_cmdpos_grammar
 # additions are run on Linux bash 5 only (no macOS bash 3.2 here, Git Bash
 # parked, HIMMEL-4102), upgrade path HIMMEL-4134 item 3: run this suite on a
 # macOS station under /bin/bash.
-_rmpos_flag='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${CMDPOS_PFX}"
+_rmpos_flag='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${CMDPOS_PFX_X}"
 _rmpos_text='^[[:space:]]*(echo|printf|:)([[:space:]][^];&|<>(){}`$\"*?[!#~'"'"']*)?$'
 if [[ $cmd_lc =~ $_rmpos_text ]]; then
     RMPOS="(${CMDPOS})"
@@ -302,8 +302,11 @@ fi
 # Every head here takes an optional .exe, and xargs.exe joins lib.sh's xargs
 # (which has no .exe), with the same flags.
 _xwrap='(busybox(\.exe)?|command(\.exe)?([[:space:]]+-[-[:alnum:]]*)*|eval(\.exe)?|xargs\.exe([[:space:]]+(-[adeilnps]'"${CMDVAL}"'|--[admp][a-z-]*'"${CMDVAL}"'|'"${CMDFLG}"'))*|((ba|da|k|mk|z|a)?sh|fish)(\.exe)?([[:space:]]+'"${CMDFLG}"'('"${CMDVAL}"')?)*[[:space:]]+-[[:alnum:]]*c[[:alnum:]]*)[[:space:]]+'
-MASS_PFX="${CMDPOS_PFX}(${_xwrap}${CMDPOS_PFX})*"
-MASS_CMDPOS="${CMDPOS}(${_xwrap}${CMDPOS_PFX})*"
+# HIMMEL-4321: no `(` or `){` anchor follows these prefixes (the -exec/-x flag,
+# a launcher word), so they keep lib.sh's CMDPOS_PFX_X, whose path run crosses
+# `(` and `){`; the stop-at-paren EXEPFX is sound only behind a CMDPOS anchor.
+MASS_PFX="${CMDPOS_PFX_X}(${_xwrap}${CMDPOS_PFX_X})*"
+MASS_CMDPOS="${CMDPOS}(${_xwrap}${CMDPOS_PFX_X})*"
 # HIMMEL-4255: the old single pattern (CMDPOS find .* -delete) was quadratic,
 # about 22s on a 100 KB command of `; find x` words. _find_delete cuts the
 # text at its LAST -delete flag with a glob (linear) and looks for a
