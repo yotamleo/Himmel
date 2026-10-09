@@ -2,8 +2,8 @@
 # scripts/ci/main-sweep-red-issue.sh -- maintain ONE `main-red` issue for the
 # push-to-main CI sweep (HIMMEL-3841 slice E, spec HIMMEL-3815 section 6.1 B).
 #
-# ci.yml's push-to-main runs share one queued (never cancelled) concurrency
-# group, so each COMPLETED sweep tests the tip at its start and completed sweeps
+# HIMMEL-5113: main has no per-merge push run; a sweep is a cron / dispatch run
+# of ci.yml on main, each testing the tip at its start, so completed sweeps
 # cover contiguous ranges of merges. main-sweep-red.yml runs this once per
 # completed sweep with the run id. A red job means "a green merge produced a red
 # main" (CI red triage policy: fix main); the issue names the tested sha and the
@@ -82,6 +82,10 @@ while IFS= read -r line; do
   esac
   case "$name" in
     "shell-unit-shard"*|"main-sweep"*) continue ;;
+    # HIMMEL-5113: the nightly is swept too (event `schedule`). Its windows
+    # legs are continue-on-error by design and guard-corpus-full is
+    # schedule-only with its own nightly signal; neither is main's health.
+    *"(windows-latest"*|"guard-corpus-full"*) continue ;;
   esac
   n_jobs=$((n_jobs + 1))
   # A job killed by timeout-minutes concludes `cancelled`; its check-run
@@ -134,10 +138,13 @@ now() { date -u +'%Y-%m-%d %H:%M UTC' 2>/dev/null || echo "unknown-time"; }
 # --- the range since the last green sweep ----------------------------------
 range_text() {
   local green
-  green="$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=5" \
-    --jq "[.workflow_runs[] | select(.id < $RUN_ID)] | .[0].head_sha // empty" 2>/dev/null)" || green=""
+  # HIMMEL-5113: no push runs; the anchor is the newest earlier green cron or
+  # dispatch run on main. branch=main also lists a fork PR's head branch named
+  # main, so pull_request runs are dropped.
+  green="$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=20" \
+    --jq "[.workflow_runs[] | select(.id < $RUN_ID and .event != \"pull_request\")] | .[0].head_sha // empty" 2>/dev/null)" || green=""
   if [ -z "$green" ]; then
-    echo "- since last green: unknown (no earlier green push sweep was found)"
+    echo "- since last green: unknown (no earlier green main sweep was found)"
     return
   fi
   echo "- since last green: $green"
@@ -157,7 +164,7 @@ range_text() {
 if [ -s "$TMP/failed" ]; then
   body_file="$TMP/body.md"
   {
-    echo "**Automated main-red report** -- maintained in place by main-sweep-red.yml. Do not open duplicates; this issue is refreshed each completed push-to-main sweep and is closed automatically only after a later sweep runs and passes every job listed below."
+    echo "**Automated main-red report** -- maintained in place by main-sweep-red.yml. Do not open duplicates; this issue is refreshed each completed main CI sweep (cron or dispatch) and is closed automatically only after a later sweep runs and passes every job listed below."
     echo ""
     echo "Policy (CI red triage): a green merge followed by a red main means **fix main**. Find the owning PR from the range below and bisect by the failed jobs."
     echo ""

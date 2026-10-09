@@ -366,7 +366,10 @@ ci_run=$(printf '%s' "$ci_runs_json" | jq -r '
 case "$ci_run" in
     completed/success) : ;;
     missing/*)
+        # HIMMEL-5113: main runs CI on a cron, not per merge, so a sha with no
+        # run is expected; the cron run covers it only if it started after.
         echo "cut-tag: refusing - no CI workflow run found at $SHA" >&2
+        echo "cut-tag: dispatch one on the tip, wait for green, retry: gh workflow run ci.yml --ref main" >&2
         exit 4 ;;
     *)
         echo "cut-tag: refusing - CI workflow run at $SHA is $ci_run, not completed/success" >&2

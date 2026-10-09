@@ -12,51 +12,54 @@ on:
   # `shell-unit` itself (HIMMEL-2872) is the aggregating gate over that
   # matrix — see its own comment block below.
   pull_request:
-  # Post-merge verification (HIMMEL-511): re-run the cheap ubuntu gates when code
-  # lands on main, catching anything that reached main outside the PR path. The
-  # shell-unit-shard matrix stays ubuntu-only on `push` (the paid windows leg
-  # is schedule-only), so this adds no multi-OS cost.
-  push:
-    branches: [main]
-  # A plain dispatch runs the ubuntu-only matrix, same as a push. It takes no
-  # inputs on purpose (HIMMEL-3853): a per-PR all-OS dispatch held 14 of the
-  # account's 20 concurrent job slots on 2026-09-29.
+  # HIMMEL-5113: there is NO `push` trigger. Main used to run this workflow on
+  # every merge (~52 runs/day, about half cancelled as superseded, ~2,300 runner
+  # hours on the green ones alone) and those runs competed with PR runs for the
+  # account's 20 runner slots. Post-merge verification (HIMMEL-511) is now the
+  # main-sweep cron below. Trade-off: a break that reached main surfaces up to
+  # 7 h later and spans every merge since the previous run; the cron run prints
+  # that range (step `Merge range since the previous main run`) and
+  # main-sweep-red.yml names it in the main-red issue.
+  # A run at an exact sha (a tag cut, a bisect) is a manual dispatch:
+  #   gh workflow run ci.yml --ref main
+  # then check-ci.sh / cut-tag.sh read that run. A dispatch takes no inputs on
+  # purpose (HIMMEL-3853): a per-PR all-OS dispatch held 14 of the account's 20
+  # concurrent job slots on 2026-09-29. It runs the ubuntu-only matrix.
   workflow_dispatch:
   schedule:
-    - cron: '17 7 * * *'   # nightly, UTC
+    # Nightly, UTC: the only run with the windows legs, SUITE_TIER_MODE=all and
+    # guard-corpus-full. Every nightly-only gate below keys on THIS string via
+    # github.event.schedule, because the main-sweep cron is also a `schedule`
+    # event and must stay ubuntu-only / fast-tier.
+    - cron: '17 7 * * *'
+    # Main sweep (HIMMEL-5113), UTC, ubuntu-only fast tier, the shape the
+    # per-merge push run had. Real cadence: 01:43, 08:43, 15:43 and 22:43, i.e.
+    # gaps of 7 h, 7 h, 7 h and 3 h -- cron cannot express an exact 7 h period
+    # because 24 is not a multiple of 7 (`*/7` fires at 00, 07, 14, 21 and then
+    # resets to 00). Tune the hours here; test-ci-main-cron.sh holds the max gap
+    # at 7 h.
+    - cron: '43 1,8,15,22 * * *'
 
 permissions:
   contents: read
 
 # HIMMEL-3217 / HIMMEL-3226: a newer run cancels the run it supersedes -- on
 # 2026-09-19 stale runs kept the Actions queue at 5+ and leg PR runs waited
-# 25-40 min. Three DISJOINT groups (a workflow has one top-level block):
+# 25-40 min. Two DISJOINT groups (a workflow has one top-level block):
 #   pull_request -> ci-pr-<PR number>: a PR's newer push cancels that PR's
 #                   older run, and never another PR's;
-#   push         -> ci-<github.ref>: push is restricted to `main` above, so
-#                   these runs share ONE group (ci-refs/heads/main) and are
-#                   NOT cancelled while running (HIMMEL-3841 slice E): at most
-#                   one sweep runs and one waits, and a newer pending sweep
-#                   replaces the older pending one (verified on #1429: a
-#                   superseded pending run cancels with 0 jobs and leaves no
-#                   context). Each completed sweep therefore tests the tip at
-#                   its start, so the completed sweeps cover contiguous ranges
-#                   of merges and a red on main is always attributed to a
-#                   range (see main-sweep-red.yml). A running sweep is NOT
-#                   cancelled by a newer push (HIMMEL-5036): sweeps take ~1h45m
-#                   under the backlog and merges land every few minutes, so
-#                   cancelling would starve main of any completed sweep and a
-#                   red would never be attributed. The pending-run collapse
-#                   above is the safe half and is kept;
-#   everything else (schedule, workflow_dispatch) -> ci-<run_id>: unique to the
-#                   run, so the nightly / a dispatch is never cancelled nor
-#                   queued behind anything.
+#   everything else (both crons, workflow_dispatch) -> ci-<run_id>: unique to
+#                   the run, so a sweep / the nightly / a dispatch is never
+#                   cancelled nor queued behind anything. The shared
+#                   push-to-main group (HIMMEL-3841 slice E, HIMMEL-5036) went
+#                   with the push trigger: the crons are hours apart and a
+#                   ~1h45m sweep cannot meet the next one.
 # cancel-in-progress is scoped to pull_request alone, so it stays inert for the
-# push and run_id groups. A cancelled run only ever belongs to a superseded
-# head: the required checks (incl. the `shell-unit` aggregator) are evaluated
-# on the PR's current head, whose own run this never cancels.
+# run_id groups. A cancelled run only ever belongs to a superseded head: the
+# required checks (incl. the `shell-unit` aggregator) are evaluated on the PR's
+# current head, whose own run this never cancels.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || github.run_id }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -472,7 +475,7 @@ jobs:
       # where this stays false so a red Windows leg still reports Linux.
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: ${{ github.event_name == 'schedule'
+        os: ${{ github.event.schedule == '17 7 * * *'
                && fromJSON('["ubuntu-latest","windows-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
@@ -789,7 +792,7 @@ jobs:
       # the nightly keep the full red set so a red stays attributable.
       fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
-        os: ${{ github.event_name == 'schedule'
+        os: ${{ github.event.schedule == '17 7 * * *'
                && fromJSON('["ubuntu-latest","windows-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
         # shard: [1..8] fans run-shell-tests.sh across 8 runners (HIMMEL-2872).
@@ -912,6 +915,24 @@ jobs:
           bash .github/scripts/apt-install.sh 'ffmpeg=7:6.1.*'
           ffmpeg -version | head -n 1
           echo "HIMMEL_REQUIRE_FFMPEG=1" >> "$GITHUB_ENV"
+      # HIMMEL-5120(b): scripts/guardrails/test-gitleaks-retired-org.sh SKIPs
+      # without gitleaks on PATH, and the pinned binary was only downloaded to
+      # /tmp inside secret-scan. Put the SAME pinned, sha-verified release on
+      # PATH for every ubuntu shard: the bin-pack (duration ledger) decides
+      # which shard holds the suite, so any single-shard pin could go stale.
+      # ponytail: ~8 MB download x8 shards, upgrade by pinning to the shard
+      # the ledger assigns once run-shell-tests.sh can print it (HIMMEL-5120).
+      # Keep ver/sha in lockstep with secret-scan.
+      - name: Put pinned gitleaks on PATH (Linux — retired-org suite)
+        if: runner.os == 'Linux'
+        run: |
+          ver=8.30.1
+          sha=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" -o "$RUNNER_TEMP/gitleaks.tgz"
+          echo "${sha}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
       # HIMMEL-2223 codex-3: scripts/test-template-nostash-hooks.sh hard-SKIPs
       # (exit 0) without pre-commit on PATH — the exact vacuous-SKIP shape
       # called out for the Windows vault suites above (LUNA-131) — so without
@@ -927,7 +948,7 @@ jobs:
       # artifact below — the inline tail is bounded, so without this the
       # failing assertion can be unrecoverable from Actions logs (HIMMEL-963).
       # SUITE_TIER_MODE (HIMMEL-2166): fast on every per-PR/post-merge leg
-      # (pull_request, push, or a plain workflow_dispatch) — this job is
+      # (pull_request, the main cron, or a plain workflow_dispatch) — this job is
       # ubuntu-only there. `all` stays the corpus on the nightly leg that
       # expands to the paid windows matrix, matching the
       # cadence/full-scan intent this ticket must not touch.
@@ -941,7 +962,7 @@ jobs:
       # scripts/ci/impacted-selection.sh selects for the PR diff — or the full
       # sweep, which it decides for any trust-path change (this file,
       # run-shell-tests.sh, the selector, the trust list), a base that is not on
-      # main (spec hole H1), or any doubt. A PR to another branch, push, schedule
+      # main (spec hole H1), or any doubt. A PR to another branch, schedule
       # and dispatch pass '' = the full sweep. The 8 shards stay 8 required
       # contexts either way; a docs-only PR's shards exit 0 with nothing to run.
       # SUITE_MANIFEST: the selection this shard acted on and every suite's fate,
@@ -949,7 +970,7 @@ jobs:
       - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8 .
         env:
           FAIL_LOG_DIR: failed-suite-logs
-          SUITE_TIER_MODE: ${{ github.event_name == 'schedule' && 'all' || 'fast' }}
+          SUITE_TIER_MODE: ${{ github.event.schedule == '17 7 * * *' && 'all' || 'fast' }}
           # HIMMEL-4912: the shards (60 min) always run the fast guard-corpus
           # subset; the full replay runs in the schedule-only guard-corpus-full job.
           GUARD_CORPUS_TIER: fast
@@ -1067,11 +1088,12 @@ jobs:
     # result and shadow the PR's. HIMMEL-3853 removed the all-OS dispatch input,
     # so a dispatch is now ubuntu-only; the distinct name is kept as the
     # name-collision guard.
-    # schedule/pull_request/push keep the unchanged name.
+    # schedule/pull_request keep the unchanged name.
     name: shell-unit${{ github.event_name == 'workflow_dispatch' && ' (dispatch verify)' || '' }} (${{ matrix.os }})
     permissions:
       contents: read
       issues: write
+      actions: read
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -1114,7 +1136,7 @@ jobs:
       - name: Every shard ran exactly the selection
         env:
           IMPACTED_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.base.sha || '' }}
-          SUITE_TIER_MODE: ${{ github.event_name == 'schedule' && 'all' || 'fast' }}
+          SUITE_TIER_MODE: ${{ github.event.schedule == '17 7 * * *' && 'all' || 'fast' }}
           SUITE_CHANGED_SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
         run: |
           bash scripts/ci/impacted-selection.sh "$IMPACTED_BASE" HEAD > shard-selection.txt
@@ -1126,10 +1148,29 @@ jobs:
       # impacted selection did not list. Recorded, never blocking: the red
       # shards already fail this job; this names which reds a PR run would
       # have missed, for the selector's miss ledger.
-      - name: Selector-miss ledger (main push, red sweep)
-        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # HIMMEL-5113: main has no per-merge run, so a cron / dispatch run names
+      # the merges it covers: the sha of the previous completed non-PR run on
+      # main (any conclusion) up to this sha. Best effort -- an API failure or
+      # no earlier run leaves `range` empty and never fails the job.
+      - name: Merge range since the previous main run
+        id: range
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        continue-on-error: true
         env:
-          RANGE: ${{ github.event.before }}..${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prev="$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=main&status=completed&per_page=30" \
+            --jq "[.workflow_runs[] | select(.event != \"pull_request\" and .id < ${{ github.run_id }} and (.conclusion == \"success\" or .conclusion == \"failure\"))] | .[0].head_sha // empty" 2>/dev/null || true)"
+          if [ -z "$prev" ]; then
+            echo "no earlier completed main run found; merge range unknown" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "range=$prev..${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          { echo "### Merges covered by this run ($prev..${{ github.sha }})"; echo '```'; git log --oneline "$prev..${{ github.sha }}" 2>&1 | head -n 100; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Selector-miss ledger (main cron, red sweep)
+        if: failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.range.outputs.range != ''
+        env:
+          RANGE: ${{ steps.range.outputs.range }}
         run: |
           awk '$1 == "ran" && $2 != "0" { print $3 }' shard-manifest/manifest-shard*.txt 2>/dev/null | sort -u > shard-red-suites.txt
           echo "red suites on this sweep: $(wc -l < shard-red-suites.txt)"
@@ -1138,7 +1179,7 @@ jobs:
           { echo "### Selector-miss ledger ($RANGE, rc $rc)"; echo '```'; cat selector-miss.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           cat selector-miss.txt
       - name: Upload selector-miss ledger
-        if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.range.outputs.range != ''
         uses: actions/upload-artifact@v7
         with:
           name: selector-miss-ledger
@@ -1153,12 +1194,12 @@ jobs:
       # an extended suite broke rather than double-reporting a per-PR fast-
       # tier failure the PR gate already surfaced.
       - name: Extended-tier nightly issue — clear on green
-        if: success() && github.event_name == 'schedule'
+        if: success() && github.event.schedule == '17 7 * * *'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/shell-extended-nightly-issue.sh 0 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
       - name: Extended-tier nightly issue — file/refresh on red
-        if: failure() && github.event_name == 'schedule'
+        if: failure() && github.event.schedule == '17 7 * * *'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/shell-extended-nightly-issue.sh 1 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -1172,7 +1213,7 @@ jobs:
   # gates no PR.
   # ponytail: one job, serial; upgrade path: shard the replay (HIMMEL-5055).
   guard-corpus-full:
-    if: github.event_name == 'schedule'
+    if: github.event.schedule == '17 7 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     steps:

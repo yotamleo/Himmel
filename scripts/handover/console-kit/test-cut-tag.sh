@@ -258,6 +258,9 @@ rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_RUNS_JSON="$PAGES_ONLY_R
 check "pages-only: rc 4" "$rc" "4"
 contains "pages-only: names the missing CI run" "$out" "CI workflow run"
 not_contains "pages-only: never writes the tag" "$(cat "$CALLS")" "git/refs -f"
+# HIMMEL-5113: main has no per-merge CI run, so a missing run at the sha is the
+# normal case and the refusal must say how to get one.
+contains "pages-only: names how to dispatch a run" "$out" "gh workflow run ci.yml --ref main"
 
 # --- 18. CI workflow run queued -------------------------------------------------
 reset_calls

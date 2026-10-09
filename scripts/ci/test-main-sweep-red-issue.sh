@@ -245,6 +245,28 @@ has "failed: shell-unit (ubuntu-latest)" "$out" "the failed aggregator is report
 has "failed: lint" "$out" "a timed-out non-shard job is reported failed"
 hasnt "failed: doc-invariants" "$out" "a plain cancelled job (no timeout note) is not reported failed"
 
+# 14. HIMMEL-5113: main has no push runs, so the range anchor is the newest earlier
+# green non-PR run on main, and a pull_request run whose head branch is named
+# `main` (a fork) is never the anchor.
+if command -v jq >/dev/null 2>&1; then
+  newcase cron-anchor
+  printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+  printf '%s\n' '{"workflow_runs":[{"id":850,"event":"pull_request","head_sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},{"id":800,"event":"schedule","head_sha":"dddddddddddddddddddddddddddddddddddddddd"}]}' > "$STUB/runs.json"
+  sweep
+  has "since last green: dddddddddddddddddddddddddddddddddddddddd" "$out" "range anchors on the newest earlier cron run, not a PR run"
+  hasnt "event=push" "$log" "the range lookup no longer filters on event=push"
+else
+  ok "SKIP cron-anchor case (jq not installed)"
+fi
+
+# 15. The nightly is also swept now: its windows legs (continue-on-error by
+# design) and the schedule-only guard-corpus-full job are not main's health.
+newcase nightly-only-jobs
+printf 'failure%sshell-unit (windows-latest)\nfailure%sbun-suites (windows-latest)\nfailure%sguard-corpus-full\nsuccess%sshell-unit (ubuntu-latest)\n' "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+if [ "$rc" -eq 0 ]; then ok "nightly-only reds exit 0"; else bad "nightly-only reds exit=$rc; out: $out"; fi
+hasnt "gh issue create" "$log" "a red windows leg / guard-corpus-full opens no main-red issue"
+
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
 echo "all checks passed."

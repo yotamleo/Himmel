@@ -3440,6 +3440,27 @@ REMOVE by the operator on 2026-09-29. Gate 3b no longer accepts a `codex-adv`
 availability row: a legacy row of that name is not cross-model evidence, so
 the panel's own non-Claude rows are the only source.
 
+### Main CI cadence — cron, not per merge (HIMMEL-5113)
+
+`ci.yml` has no `push: branches: [main]` trigger: a merge starts no run (it was
+~52 runs/day, half cancelled as superseded). Main is swept by `schedule` cron
+`43 1,8,15,22 * * *` (UTC; gaps 7/7/7/3 h — cron cannot express an exact 7 h
+period, so the worst gap is 7 h) on the ubuntu-only fast tier, by the nightly
+cron `17 7 * * *` (windows legs, `SUITE_TIER_MODE=all`, guard-corpus-full;
+nightly-only gates key on `github.event.schedule`, not `event_name`), and by
+`gh workflow run ci.yml --ref main` on demand. PR triggers are unchanged.
+
+- **A break surfaces up to 7 h later and spans several merges.** The cron run's
+  "Merge range since the previous main run" step summary lists
+  `git log --oneline <previous completed sweep>..<sha>` (best effort).
+- **A merge with no run at its sha is unknown, neither red nor green.** The red
+  signal is the newest completed cron or dispatch run on main
+  (`main-sweep-red.yml` gates on event `schedule`/`workflow_dispatch`, and drops
+  the nightly's windows legs and guard-corpus-full); `cut-tag.sh` refuses with
+  `gh workflow run ci.yml --ref main` named when no run exists at the sha.
+- **Tag cuts** therefore need a dispatched or cron run at the exact tip, green,
+  before `cut-tag.sh`.
+
 ### CI-green merge gate (HIMMEL-1043)
 
 Runs on the SAME `gh pr merge` path as the CodeRabbit gate above, one step

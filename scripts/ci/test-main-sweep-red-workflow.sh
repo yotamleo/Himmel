@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # scripts/ci/test-main-sweep-red-workflow.sh -- shape guard for
 # .github/workflows/main-sweep-red.yml (HIMMEL-3841 slice E): the reporter that
-# runs scripts/ci/main-sweep-red-issue.sh after each completed push-to-main CI
-# sweep. Text assertions over the workflow with comments stripped; no network.
+# runs scripts/ci/main-sweep-red-issue.sh after each completed main CI sweep
+# (cron / dispatch since HIMMEL-5113). Text assertions over the workflow with
+# comments stripped; no network.
 #
 # It pins the properties that make the reporter safe: it triggers only on a
-# completed CI run on main, only reports the push event, holds issues: write
+# completed CI run on main, only reports schedule / dispatch events, holds issues: write
 # without any write to code, checks out the default branch (never the swept
 # sha), serialises without cancelling, and runs the script with the run id.
 #
@@ -44,11 +45,14 @@ fi
 if has '^[[:space:]]+types: \[completed\]'; then ok "fires on completed runs only"; else bad "types must be [completed]"; fi
 if has '^[[:space:]]+branches: \[main\]'; then ok "limited to runs on main"; else bad "branches must be [main]"; fi
 
-# Only the push sweep is main's health.
-if has "github.event.workflow_run.event == 'push'"; then
-  ok "job is gated to the push event"
+# Only the cron / dispatch sweep is main's health (HIMMEL-5113: no push run).
+if has "github.event.workflow_run.event == 'schedule'" \
+   && has "github.event.workflow_run.event == 'workflow_dispatch'" \
+   && ! has "workflow_run.event == 'push'" \
+   && ! has "workflow_run.event == 'pull_request'"; then
+  ok "job is gated to the schedule and workflow_dispatch events"
 else
-  bad "job must be gated on workflow_run.event == 'push'"
+  bad "job must be gated on workflow_run.event schedule / workflow_dispatch only"
 fi
 
 # Least privilege: issues:write to file the issue, read-only everything else.
@@ -96,7 +100,7 @@ fi
 if [ -z "${SELF_CONTROL:-}" ]; then
   mut="$(mktemp "${TMPDIR:-/tmp}/main-sweep-red-mut.XXXXXX")"
   sed -e 's/cancel-in-progress: false/cancel-in-progress: true/' \
-      -e "s/== 'push'/== 'schedule'/" \
+      -e "s/== 'schedule'/== 'pull_request'/" \
       -e 's/^  issues: write/  issues: write\n  contents: write/' \
       -e 's/^on:/on:\n  pull_request:/' "$WF" > "$mut"
   if SELF_CONTROL=1 MAIN_SWEEP_RED_YML="$mut" bash "$0" > /dev/null 2>&1; then

@@ -1,7 +1,8 @@
 name: Main Sweep Red
 
 # HIMMEL-3841 slice E (spec HIMMEL-3815 section 6.1 B). After each COMPLETED
-# push-to-main CI sweep, open or refresh ONE `main-red` issue when a job failed,
+# main CI sweep (a cron or dispatch run since HIMMEL-5113; there is no push
+# run), open or refresh ONE `main-red` issue when a job failed,
 # and close it only after a later sweep ran and passed every job it recorded
 # (scripts/ci/main-sweep-red-issue.sh).
 #
@@ -34,9 +35,11 @@ concurrency:
 
 jobs:
   main-sweep-red:
-    # Only the push-to-main sweep: PR runs, the nightly and dispatches are not
-    # main's health.
-    if: github.event.workflow_run.event == 'push'
+    # HIMMEL-5113: main has no per-merge push run; its health is the cron sweep
+    # (event `schedule`: the main-sweep cron and the nightly, whose windows legs
+    # and guard-corpus-full the script drops) and a manual dispatch on main
+    # (branches: [main] above). PR runs are never main's health.
+    if: github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

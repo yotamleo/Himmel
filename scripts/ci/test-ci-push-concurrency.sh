@@ -3,13 +3,11 @@
 # `concurrency:` block of .github/workflows/ci.yml (HIMMEL-3217 push-to-main,
 # HIMMEL-3226 per-PR).
 #
-# Three run classes get three DISJOINT groups: push-to-main runs share ONE group
-# (ci-refs/heads/main) and are queued, never cancelled while running
-# (HIMMEL-3841 slice E: at most one sweep running + one pending, a newer pending
-# sweep replaces the older pending one, so completed sweeps cover contiguous
-# ranges of merges); a newer push to a PR cancels that PR's superseded run (one
-# group per PR number, so two PRs never touch each other, HIMMEL-3226);
-# schedule / dispatch runs keep a unique per-run group and are never cancelled.
+# Two run classes get two DISJOINT groups: a newer push to a PR cancels that
+# PR's superseded run (one group per PR number, so two PRs never touch each
+# other, HIMMEL-3226); every cron / dispatch run keeps a unique per-run group and
+# is never cancelled. HIMMEL-5113 removed the push trigger and with it the shared
+# push-to-main group (HIMMEL-3841 slice E): no run is grouped on github.ref.
 # Pure text assertions over
 # the workflow file (trailing YAML comments stripped, so a comment cannot satisfy
 # a policy check); the group expression is then EVALUATED for sample events to
@@ -43,10 +41,10 @@ case "$group" in
     ok "pull_request runs are grouped per PR number" ;;
   *) bad "pull_request runs are not grouped per PR number; group='$group'" ;;
 esac
-# ...push runs share one group per ref (so a newer main push meets the older run)...
+# ...no run is grouped on a push event or a ref any more (HIMMEL-5113)...
 case "$group" in
-  *"github.event_name == 'push' && github.ref"*) ok "push runs are grouped by github.ref" ;;
-  *) bad "push runs are not grouped by github.ref; group='$group'" ;;
+  *"'push'"*|*"github.ref"*) bad "group still keys on push / github.ref; group='$group'" ;;
+  *) ok "group no longer keys on push or github.ref" ;;
 esac
 # ...and every other event gets a unique group, so nothing else ever queues or
 # cancels (a shared group would cancel the nightly or a dispatch verification).
@@ -54,26 +52,20 @@ case "$group" in
   *"|| github.run_id"*) ok "other runs fall back to a unique group (run_id)" ;;
   *) bad "other runs do not get a unique group; group='$group'" ;;
 esac
-# cancel-in-progress is scoped to pull_request alone (HIMMEL-3841 slice E): a
-# bare `true`, or `push` in the expression, would cancel a RUNNING main sweep on
-# every merge -- the sweep would then never complete and a red on main would
-# never be attributed to a range. A superseded PENDING push run is replaced by
-# GitHub regardless of this flag.
+# cancel-in-progress is scoped to pull_request alone: a bare `true` would cancel
+# a RUNNING main sweep or nightly.
 if [ "$cancel" = "\${{ github.event_name == 'pull_request' }}" ]; then
-  ok "cancel-in-progress is scoped to pull_request only (main sweeps are queued, not cancelled)"
+  ok "cancel-in-progress is scoped to pull_request only (sweeps are never cancelled)"
 else
   bad "cancel-in-progress is not scoped to pull_request only; got '$cancel'"
 fi
 
-# The group key includes github.ref, so branches stay isolated from each other
-# even if the trigger widens; but widening it would make every branch push start
-# cancelling its own predecessor, so the comments/docs claim "push means main"
-# only holds while the trigger stays restricted to main.
-push_branches="$(awk '/^  push:/ {f=1; next} f && /branches:/ {print; exit} f && /^  [a-z_]+:/ {exit}' "$CI_YML" | sed 's/[[:space:]][[:space:]]*#.*$//')"
-if [ "${push_branches#*'branches: [main]'}" != "$push_branches" ]; then
-  ok "push trigger is restricted to branches: [main]"
+# A re-added push trigger would run unique-group (uncancelled, unserialised)
+# sweeps on every merge again -- the cost HIMMEL-5113 removed.
+if awk '/^on:/ {f=1; next} f && /^[^ #]/ {f=0} f' "$CI_YML" | grep -q '^  push:'; then
+  bad "ci.yml has a push: trigger again (HIMMEL-5113 removed it; main runs on cron)"
 else
-  bad "push trigger is not restricted to branches: [main]"
+  ok "ci.yml has no push: trigger"
 fi
 
 # Behavioural check: evaluate the group and cancel-in-progress expressions for
@@ -99,8 +91,8 @@ runs = {
     "pr5-a":    ctx("pull_request", 1001, ref="refs/pull/5/merge", pr=5),
     "pr5-b":    ctx("pull_request", 1002, ref="refs/pull/5/merge", pr=5),
     "pr6":      ctx("pull_request", 1003, ref="refs/pull/6/merge", pr=6),
-    "main-a":   ctx("push", 1004, ref="refs/heads/main"),
-    "main-b":   ctx("push", 1005, ref="refs/heads/main"),
+    "main-a":   ctx("schedule", 1004, ref="refs/heads/main"),
+    "main-b":   ctx("schedule", 1005, ref="refs/heads/main"),
     "nightly":  ctx("schedule", 5, ref="refs/heads/main"),
     "dispatch": ctx("workflow_dispatch", 1006, ref="refs/heads/main"),
 }
@@ -114,10 +106,9 @@ except Exception as e:  # a group that does not evaluate cannot be disjoint
 errs = []
 if g["pr5-a"] != g["pr5-b"]: errs.append("two runs of one PR do not share a group")
 if g["pr5-a"] == g["pr6"]: errs.append("two PRs share a group")
-if g["main-a"] != g["main-b"]: errs.append("two main pushes do not share a group")
-if g["main-a"] in (g["pr5-a"], g["pr6"]): errs.append("a main push shares a group with a PR")
-if len({g["nightly"], g["dispatch"], g["pr5-a"], g["pr6"], g["main-a"]}) != 5:
-    errs.append("nightly/dispatch group collides with another class")
+if g["main-a"] == g["main-b"]: errs.append("two main cron runs share a group (one would queue behind the other)")
+if len({g["nightly"], g["dispatch"], g["pr5-a"], g["pr6"], g["main-a"], g["main-b"]}) != 6:
+    errs.append("a cron / dispatch group collides with another class")
 for k in ("pr5-a", "pr6"):
     if c[k] != "True": errs.append(f"{k} does not cancel in progress (got {c[k]})")
 for k in ("main-a", "main-b", "nightly", "dispatch"):
@@ -125,7 +116,7 @@ for k in ("main-a", "main-b", "nightly", "dispatch"):
 if errs:
     print("FAIL - " + "; ".join(errs) + f"; groups={g}")
     sys.exit(1)
-print(f"ok - PR / main-push / nightly+dispatch groups are disjoint; only PRs cancel in progress; groups={g}")
+print(f"ok - PR / main-cron / nightly+dispatch groups are disjoint; only PRs cancel in progress; groups={g}")
 PY
 then :; else bad "resolved-group disjointness check failed (see output above)"; fi
 
@@ -140,13 +131,13 @@ c = d.get("concurrency") or {}
 on = d.get("on", d.get(True)) or {}
 print(c.get("group"))
 print(c.get("cancel-in-progress"))
-print((on.get("push") or {}).get("branches"))
+print("push" in on)
 PY
 )"
-  want="ci-\${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || github.run_id }}
+  want="ci-\${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
 \${{ github.event_name == 'pull_request' }}
-['main']"
-  if [ "$parsed" = "$want" ]; then ok "parsed YAML: group, cancel-in-progress and push branches match"
+False"
+  if [ "$parsed" = "$want" ]; then ok "parsed YAML: group, cancel-in-progress match and there is no push trigger"
   else bad "parsed YAML mismatch; got: $parsed"; fi
 else
   echo "skip - PyYAML not importable; parsed-YAML assertion not run"
