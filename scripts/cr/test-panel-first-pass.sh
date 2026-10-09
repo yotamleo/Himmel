@@ -226,6 +226,16 @@ assert_lacks "$out" "PHANTOM-FINDING-MUST-NOT-SURVIVE" "T6b findings reset to em
 # the later cases were not budgeted for, so give them a fresh counter.
 rm -rf "$repo/.git/cr-review-rounds"
 
+# T6c (HIMMEL-1932): exit 6 whose ledger row could NOT be written leaves nothing
+# for clear-cr-marker.sh to hold, so the fence must ABORT (exit 7), not degrade.
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && FAKE_RC=6 FAKE_ERR='critic-panel.sh: could not record certify-refused on the CR ledger' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+err="$(cat "$tmp/err")"
+if [ "$rc" -eq 7 ]; then ok "T6c unrecorded refusal aborts at exit 7"; else bad "T6c unrecorded refusal exit (got $rc, want 7)"; fi
+assert_has "$err" "could not be recorded" "T6c abort names the unrecorded refusal"
+rm -rf "$repo/.git/cr-review-rounds"
+
 # T7: stubbed panel exit 0 -> findings on stdout, availability on stderr,
 # streams never merged; captured diff base line present.
 rm -f "$CALL_LOG" "$tmp/err"

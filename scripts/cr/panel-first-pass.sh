@@ -254,7 +254,14 @@ PINABORTRETRY
             if [ "$panel_rc" -eq 6 ]; then
                 # HIMMEL-1932: exit 6 is a deliberate fail-closed refusal, not
                 # a failed panel. The panel recorded certify-refused on the
-                # ledger, so clear-cr-marker.sh holds this SHA closed.
+                # ledger, so clear-cr-marker.sh holds this SHA closed. If that
+                # write failed there is nothing to hold, so ABORT instead.
+                case "$panel_avail_lines" in
+                *"could not record certify-refused"*)
+                    echo "/pr-check ABORT - critic-panel.sh exit 6 and the refusal could not be recorded on the CR ledger (HIMMEL-1932), so nothing would hold the CR marker closed. Fix the ledger path and re-run /pr-check from step 1." >&2
+                    exit 7
+                    ;;
+                esac
                 echo "critic panel REFUSED to certify this run (exit 6: the citation-guard digest could not be computed - fix sha256sum/shasum) - claude-only review; the CR marker stays held at this SHA until the panel is re-run on a new HEAD" >&2
             else
                 echo "critic panel unavailable (all critics failed) - claude-only review" >&2
