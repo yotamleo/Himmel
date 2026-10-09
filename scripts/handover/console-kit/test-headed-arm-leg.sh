@@ -291,6 +291,7 @@ fleet_launch() {
 rc=0; out="$(fleet_launch 2>&1)" || rc=$?
 check 'fleet: successful handoff returns zero' 0 "$rc"
 check 'fleet: successful handoff adds exactly the leg doc' "$fleet_doc" "$(jq -r '.legs[].doc' "$fleet_manifest" 2>/dev/null)"
+check 'fleet: the added row records the launch lane (HIMMEL-5074 N1)' native "$(jq -r '.legs[0].lane' "$fleet_manifest" 2>/dev/null)"
 rm -f "$fleet_manifest"
 rc=0; out="$(FLEET_TEST_RC=7 fleet_launch 2>&1)" || rc=$?
 check 'fleet: failed target status is preserved' 7 "$rc"

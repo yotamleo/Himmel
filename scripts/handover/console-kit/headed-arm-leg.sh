@@ -2209,7 +2209,7 @@ if [ -n "$FLEET_MANIFEST" ]; then
         "${HA_RUN[@]}" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
     launch_rc=$?
     [ "$launch_rc" -eq 0 ] || exit "$launch_rc"
-    if ! bash "$HERE/fleet-manifest.sh" add "$FLEET_MANIFEST" "$DOC"; then
+    if ! bash "$HERE/fleet-manifest.sh" add "$FLEET_MANIFEST" --lane "$LANE" "$DOC"; then
         echo "headed-arm-leg: launch handed off but fleet manifest update failed: $FLEET_MANIFEST" >&2
         exit 1
     fi

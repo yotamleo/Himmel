@@ -311,6 +311,26 @@ else
 fi
 rm -f "$fm"
 
+# --- HIMMEL-5074: a lockless (eval/pilot) manifest row reads NOLOCK, not FREE,
+# and is judged by its tail marker alone. RED control (tick.sh before this
+# change): the lockless row below read legs=...P01:FREE, and an unstamped
+# `- WRAPPED —` bullet moved nothing in legs=. (The parser already read the
+# unstamped marker; tails= is pinned here so it cannot regress.)
+lk_doc="$W/handover/HIMMEL-4869-N90-pilot.md"
+printf '%s\n' '# pilot row' '- LIVE — working' > "$lk_doc"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N61","lane":"native"},{"doc":"%s","label":"N90","lane":"deepseek","lockless":true}]}\n' "$fm_n61" "$lk_doc" > "$fm"
+lk_out="$(LEGS='' bash "$SUT" --legs-from "$fm")"
+contains 'a lockless row reads NOLOCK, never FREE (HIMMEL-5074)' "$lk_out" ' legs=N61:FRESH,N90:NOLOCK '
+contains 'a lockless row is judged by its tail marker (HIMMEL-5074)' "$lk_out" ' tails=N61:LIVE,N90:LIVE '
+printf '%s\n' '- WRAPPED — done, no stamp' >> "$lk_doc"
+lk_out2="$(LEGS='' bash "$SUT" --legs-from "$fm")"
+contains 'an unstamped WRAPPED on a lockless row changes tails= (HIMMEL-5074)' "$lk_out2" ' tails=N61:LIVE,N90:WRAPPED '
+contains 'a wrapped lockless row stays NOLOCK, not FREE or WRAPPED-lock (HIMMEL-5074)' "$lk_out2" ' legs=N61:FRESH,N90:NOLOCK '
+# A manifest row with no lockless key keeps its FREE verdict.
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N61"},{"doc":"%s","label":"N90","lane":"deepseek"}]}\n' "$fm_n61" "$lk_doc" > "$fm"
+contains 'a row without the lockless key is still judged by its lock (HIMMEL-5074)' "$(LEGS='' bash "$SUT" --legs-from "$fm")" ' legs=N61:FRESH,N90:WRAPPED '
+rm -f "$fm" "$lk_doc"
+
 # --- HIMMEL-2973 S1: livestate= drift field --------------------------------
 # legs=N61:FRESH,N65:FREE above -- only N61 is actually held (the stub
 # queue-lock only reports FRESH for a doc path containing "N61"). Each

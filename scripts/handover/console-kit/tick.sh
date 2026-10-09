@@ -95,6 +95,8 @@ but either no live session matched or the census itself could not be read --
 the normal end of a leg once its window is gone, and also the fail-closed
 reading when CLOSABLE cannot be proven), FREE (lock released while the tail
 does not say WRAPPED -- a lost lock),
+NOLOCK (HIMMEL-5074: a fleet-manifest row marked lockless -- an eval/pilot row
+that never takes a queue lock; no lock is read, tails= alone judges it),
 UNVERIFIED (a lock named for the doc exists but records a path that does not
 resolve here -- neither ruled held nor free: check its owner, never reclaim on
 it; HIMMEL-3290), CORRUPT, UNKNOWN (queue-lock status unreadable) or NOTFOUND
@@ -386,15 +388,26 @@ for leg in $LEGS_SPLIT; do
     lock_status=NOTFOUND
     tail_status="?"
     if [ -f "$leg_doc" ]; then
-        lock_out="$(bash "$REPO/scripts/handover/queue-lock.sh" status "$leg_doc" 2>&1)" || true
-        case "$lock_out" in
-            *'status: FRESH'*) lock_status=FRESH ;;
-            *'status: STALE'*) lock_status=STALE ;;
-            *UNVERIFIED*) lock_status=UNVERIFIED ;;
-            free*) lock_status=FREE ;;
-            *CORRUPT*) lock_status=CORRUPT ;;
-            *) lock_status=UNKNOWN ;;
-        esac
+        # HIMMEL-5074: a lockless manifest row (an eval/pilot row that never takes a
+        # queue lock) reads NOLOCK, not FREE, and is judged by its tail marker alone.
+        row_lockless=0
+        if [ -n "$LEGS_FROM" ] && [ -r "$LEGS_FROM" ] \
+            && jq -e --arg d "$leg_doc" 'any(.legs[]; .doc == $d and .lockless == true)' "$LEGS_FROM" >/dev/null 2>&1; then
+            row_lockless=1
+        fi
+        if [ "$row_lockless" -eq 1 ]; then
+            lock_status=NOLOCK
+        else
+            lock_out="$(bash "$REPO/scripts/handover/queue-lock.sh" status "$leg_doc" 2>&1)" || true
+            case "$lock_out" in
+                *'status: FRESH'*) lock_status=FRESH ;;
+                *'status: STALE'*) lock_status=STALE ;;
+                *UNVERIFIED*) lock_status=UNVERIFIED ;;
+                free*) lock_status=FREE ;;
+                *CORRUPT*) lock_status=CORRUPT ;;
+                *) lock_status=UNKNOWN ;;
+            esac
+        fi
         tail_status="$(leg_tail_status "$leg_doc")"
         [ -n "$tail_status" ] || tail_status="?"
         # HIMMEL-4568: a READY whose GO file (<root>/.locks/go/<pr>.<head>) is still

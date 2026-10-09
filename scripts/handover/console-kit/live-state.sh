@@ -28,6 +28,10 @@
 # tick.sh is unchanged: livestate=DRIFT/MALFORMED and nonces= read the result as
 # they read a hand-written line.
 #
+# HIMMEL-5074: a manifest row marked lockless (an eval/pilot row) is not a leg that
+# lost its lock: it is listed on its own `lockless: <label> (<lane>) <doc>; ...` line
+# right after the legs: line (replaced on every render), for succession to carry.
+#
 # Exit: 0 ok; 1 refused (no manifest, no legs: line, new leg without a nonce);
 # 2 usage. PLATFORM GUARD: Linux-only kit, bash 3.2-safe; needs jq.
 # shellcheck disable=SC2016  # backtick spans and awk programs are literal, not expansions
@@ -63,7 +67,7 @@ done
 [ -f "$doc" ] || { echo "live-state: no such console doc: $doc" >&2; exit 1; }
 manifest="${doc%.md}.fleet.json"
 [ -f "$manifest" ] || { echo "live-state: no fleet manifest: $manifest" >&2; exit 1; }
-rows="$(jq -r '.legs[] | [.label, .doc] | @tsv' "$manifest" 2>/dev/null)" \
+rows="$(jq -r '.legs[] | [.label, .doc, ((.lane // "") | if . == "" then "unknown" else . end), ((.lockless == true) | tostring)] | @tsv' "$manifest" 2>/dev/null)" \
     || { echo "live-state: unreadable fleet manifest: $manifest" >&2; exit 1; }
 
 # The block tick.sh reads: the same awk, over the same section.
@@ -81,8 +85,15 @@ old_entries="$(printf '%s\n' "$old_block" | grep -oE "$entry_re" | tr -d '`')"
 
 new_entries=""
 missing=""
-while IFS=$'\t' read -r label ldoc; do
+lockless_rows=""
+while IFS=$'\t' read -r label ldoc llane llockless; do
     [ -n "$label" ] || continue
+    # HIMMEL-5074: a lockless row (eval/pilot) holds no lock by design: it is carried
+    # in its own `lockless:` line, never left out as a leg that lost its lock.
+    if [ "$llockless" = true ]; then
+        lockless_rows="$lockless_rows$label ($llane) $ldoc; "
+        continue
+    fi
     out="$(bash "$HERE/../queue-lock.sh" status "$ldoc" 2>/dev/null)"; rc=$?
     case "$rc" in
         11|12) ;;
@@ -117,6 +128,8 @@ fi
 prose="$(printf '%s\n' "$old_block" | sed -E "s/^legs:[[:space:]]*//; s/$entry_re//g" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//; s/^none$//; s/^none //')"
 if [ -n "$new_entries" ]; then new_line="legs: $new_entries$prose"; else new_line="legs: none${prose:+ $prose}"; fi
 new_line="$(printf '%s' "$new_line" | sed -E 's/ +$//')"
+# The lockless section follows the legs: line; a stale `lockless:` line is replaced.
+[ -z "$lockless_rows" ] || new_line="$new_line"$'\n'"lockless: ${lockless_rows%; }"
 
 if [ "$print_only" -eq 1 ]; then
     printf '%s\n' "$new_line"
@@ -136,6 +149,7 @@ if ! NL="$new_line" awk '
     $0 == "## Live state" { s = 1; print; next }
     s && /^## / { s = 0 }
     s && /^legs:/ { f = 1; print ENVIRON["NL"]; next }
+    s && /^lockless:/ { f = 0; next }
     f && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z ]*:/ || /^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]/ || /^[[:space:]]*[>#]/) { f = 0 }
     f { next }
     { print }' "$doc" > "$tmp" || ! mv -f "$tmp" "$doc"; then

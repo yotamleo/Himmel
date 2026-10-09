@@ -67,14 +67,61 @@ entries="$(awk '
     b && (/^[[:space:]]*$/ || /^[0-9]+\. / || /^[A-Za-z][A-Za-z ]*:/ || /^[-*+>#]/) { b = 0 }
     b { print }
 ' "$doc" | grep -oE '`[A-Za-z0-9_.-]+:[^`:[:space:]]+:[^`:[:space:]]+:[^`:[:space:]]+`' | tr -d '`')"
-[ -n "$entries" ] || { echo "relay-batch: no leg entries in $doc ## Live state" >&2; exit 0; }
+if [ -z "$entries" ]; then
+    echo "relay-batch: no leg entries in $doc ## Live state" >&2
+    # HIMMEL-5074: a console watching only lockless rows still reports them below.
+    if [ -f "$manifest" ] && jq -e '[.legs[] | select(.lockless == true)] | length > 0' "$manifest" >/dev/null 2>&1; then :; else exit 0; fi
+fi
+
+# HIMMEL-5074: the claudex set comes from the manifest's per-leg lane. --claudex, when
+# given, must name exactly the Live-state legs the manifest marks claudex (lockless
+# rows are listed below, never relayed), or the relay refuses before sending anything.
+if [ -n "$claudex" ]; then
+    live_labels="$(printf '%s\n' "$entries" | cut -d: -f1)"
+    mclaudex=""
+    if [ -f "$manifest" ]; then
+        mclaudex="$(jq -r '.legs[] | select(.lane == "claudex" and (.lockless == true | not)) | .label' "$manifest" 2>/dev/null \
+            | grep -Fx -f <(printf '%s\n' "$live_labels") | sort -u | tr '\n' ',')"
+    fi
+    given="$(printf '%s\n' "${claudex//,/$'\n'}" | awk 'NF' | sort -u | tr '\n' ',')"
+    if [ "$given" != "$mclaudex" ]; then
+        echo "relay-batch: --claudex (${given%,}) disagrees with the fleet manifest's claudex legs (${mclaudex%,}); nothing sent" >&2
+        exit 1
+    fi
+fi
 
 rc=0
 while IFS=: read -r label nonce _lock _pid; do
     [ -n "$label" ] || continue
-    ldoc=""
-    [ -f "$manifest" ] && ldoc="$(jq -r --arg l "$label" '.legs[] | select(.label == $l) | .doc' "$manifest" 2>/dev/null | head -n 1)"
+    ldoc=""; lane=unknown
+    if [ -f "$manifest" ]; then
+        # A live, locked leg is never a lockless row: the label is matched against the
+        # locked rows only (lockless is the boolean true; anything else is locked and
+        # visible). Two locked rows under one label are ambiguous, so nothing is sent.
+        mrows="$(jq -r --arg l "$label" '.legs[] | select(.label == $l and (.lockless == true | not)) | [.doc, ((.lane // "") | if . == "" then "unknown" else . end)] | @tsv' "$manifest" 2>/dev/null)"
+        nrows=0; [ -z "$mrows" ] || nrows="$(printf '%s\n' "$mrows" | wc -l)"
+        if [ "$nrows" -gt 1 ]; then
+            echo "UNRESOLVED $label ($nrows manifest rows share the label, nothing sent) — relay by hand"
+            continue
+        fi
+        IFS=$'\t' read -r ldoc lane <<EOR
+$mrows
+EOR
+        if [ -z "$ldoc" ] && jq -e --arg l "$label" 'any(.legs[]; .label == $l)' "$manifest" >/dev/null 2>&1; then
+            echo "UNRESOLVED $label (the only manifest row for the label is lockless, nothing sent) — relay by hand"
+            continue
+        fi
+    fi
     if [ -z "$ldoc" ]; then echo "SKIPPED $label (no manifest row)"; continue; fi
+    case "$lane" in
+        native|claudex) ;;
+        unknown)
+            echo "UNRESOLVED-LANE $label (manifest lane unknown, nothing sent) — fleet-manifest.sh remove it, then add it with --lane, or relay by hand"
+            continue ;;
+        *)
+            echo "UNRESOLVED-LANE $label (lane $lane has no relay path, nothing sent) — relay by hand"
+            continue ;;
+    esac
     # The session name is read from the live census, never guessed: a leg launches under
     # its full doc stem (dated, even -RESUME) or an undated name. Candidates: the full
     # stem first, then leg_identity's names; exactly one live match is the session.
@@ -82,19 +129,25 @@ while IFS=: read -r label nonce _lock _pid; do
     lnames="$(leg_identity "$ldoc")"; lnames="${lnames#*$'\t'}"
     cands=",$lstem,$lnames,"
     hits=0; lsession=""
-    while IFS=$'\t' read -r _cpid cname _rest; do
-        [ -n "$cname" ] || continue
-        case "$cands" in *",$cname,"*) hits=$((hits + 1)); lsession="$cname" ;; esac
-    done <<EOC
+    if [ "$lane" = claudex ]; then
+        # A claudex leg is not a `claude -n` process, so the census cannot resolve it:
+        # its inbox is named for its doc stem.
+        hits=1; lsession="$lstem"
+    else
+        while IFS=$'\t' read -r _cpid cname _rest; do
+            [ -n "$cname" ] || continue
+            case "$cands" in *",$cname,"*) hits=$((hits + 1)); lsession="$cname" ;; esac
+        done <<EOC
 $census_lines
 EOC
+    fi
     if [ "$hits" -ne 1 ]; then
         echo "UNRESOLVED $label (candidates: ${cands#,}; $hits live match(es), nothing sent) — relay by hand"
         continue
     fi
     text="SUCCESSION relay from $sender: your console is now $successor. Your current token \`$nonce\`. Verify this relay, send your quote-back to $successor, and keep working your sealed scope."
-    case "$claudex" in
-        *",$label,"*)
+    case "$lane" in
+        claudex)
             if bash "$send" "$lsession" "$text" --token "$nonce" --doc "$ldoc" >/dev/null; then
                 echo "SENT-INBOX $label ($lsession)"
             else
@@ -107,7 +160,7 @@ $entries
 EOF
 # A manifest leg the Live state does not list is reported, never silently dropped.
 if [ -f "$manifest" ]; then
-    mrows="$(jq -r '.legs[] | "\(.label) \(.doc)"' "$manifest" 2>/dev/null)"
+    mrows="$(jq -r '.legs[] | select(.lockless == true | not) | "\(.label) \(.doc)"' "$manifest" 2>/dev/null)"
     while read -r mlabel mdoc; do
         [ -n "$mlabel" ] || continue
         if ! printf '%s\n' "$entries" | cut -d: -f1 | grep -Fxq -- "$mlabel"; then
@@ -116,5 +169,12 @@ if [ -f "$manifest" ]; then
     done <<EOF3
 $mrows
 EOF3
+    # HIMMEL-5074: lockless watched rows hold no queue lock and no token, so there is
+    # nothing to relay; they are listed so the successor watches them by mechanism.
+    lrows="$(jq -r '.legs[] | select(.lockless == true) | "LOCKLESS \(.label) lane=\((.lane // "") | if . == "" then "unknown" else . end) doc=\(.doc)"' "$manifest" 2>/dev/null)"
+    if [ -n "$lrows" ]; then
+        echo "== lockless watched rows (no relay; the successor's tick judges them by tail marker) =="
+        printf '%s\n' "$lrows"
+    fi
 fi
 exit "$rc"
