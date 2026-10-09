@@ -136,6 +136,10 @@ python3 "$SUT" "$WORK/lane-bad.json" --base 4ccb59d --console BZ --bucket "$WORK
 python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["lane"]=123; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/lane-num.json"
 python3 "$SUT" "$WORK/lane-num.json" --base 4ccb59d --console BZ --bucket "$WORK/b7" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/lane-num.err"; rc=$?
 [ "$rc" = 1 ] && grep -q 'lane' "$WORK/lane-num.err" && [ ! -e "$WORK/b7/launch-N901.sh" ] && pass "a numeric lane is refused before anything is written" || fail "numeric lane rc=$rc"
+# A trailing newline is not a lowercase word: the whole value must match.
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["lane"]="native\n"; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/lane-nl.json"
+python3 "$SUT" "$WORK/lane-nl.json" --base 4ccb59d --console BZ --bucket "$WORK/b8" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/lane-nl.err"; rc=$?
+[ "$rc" = 1 ] && grep -q 'lane' "$WORK/lane-nl.err" && [ ! -e "$WORK/b8/launch-N901.sh" ] && pass "a lane with a trailing newline is refused" || fail "newline lane rc=$rc"
 
 python3 "$SUT" >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && pass "no arguments is a usage error (rc 2)" || fail "usage rc=$rc"
