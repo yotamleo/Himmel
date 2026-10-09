@@ -35,12 +35,13 @@ PRINT=0 MODE="" MODEL="" BUDGET="" FORMAT=""
 ARGS=()
 while [ "$#" -gt 0 ]; do
   a="$1"; shift
-  # any spelling of a bypass flag (=true, =anything, any case, _ for -), and every caller-supplied tool list,
-  # settings, MCP, plugin or extra-directory source: the launcher's own --allowedTools is the only one claude may see.
-  # A @file argument is an args file, which could carry any of them.
+  # any spelling of a bypass flag (=true, =anything, any case, _ for -), and every caller-supplied tool list, settings,
+  # MCP, plugin, extra-directory, remote or agent-definition source: the launcher's own --tools/--allowedTools are the
+  # only tool flags claude may see. A @file argument is an args file, which could carry any of them. This denylist is a
+  # stopgap; a caller-flag allowlist is the durable shape (follow-up ticket).
   case "$a" in -*) n="$(printf '%s' "${a%%=*}" | tr 'A-Z_' 'a-z-')" ;; *) n="" ;; esac
   case "$n" in
-    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--allowedtools|--allowed-tools|--tools|--settings|--mcp-config|--plugin-dir|--add-dir)
+    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--allowedtools|--allowed-tools|--tools|--settings|--mcp-config|--plugin-dir|--add-dir|--plugin-url|--environment|--remote-control|--agent|--agents)
       refuse "flag ${a%%=*} is not allowed on the api lane" ;;
   esac
   case "$a" in @*) refuse "an @argsfile argument is not allowed on the api lane" ;; esac
@@ -112,6 +113,7 @@ case "$RESERVED" in *'"verdict":"PROCEED"'*) ;; *) refuse "reservation refused: 
 # headless-claude-ok: HIMMEL-4985 one-shot API-credit launch; bank gate, reservation and explicit --permission-mode above
 env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_PROFILE -u ANTHROPIC_FEDERATION_RULE_ID \
   -u ANTHROPIC_ORGANIZATION_ID -u ANTHROPIC_AUTH_TOKEN -u HIMMEL_API_LANE -u HIMMEL_API_KEY_ID \
+  -u LQ_API_KEY -u LQ_API_ACCOUNT -u LQ_API_KEY_ID -u LQ_API_LANE \
   ANTHROPIC_BASE_URL=https://api.anthropic.com CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
   "$CLAUDE_BIN" "${ARGS[@]}" --model "$MODEL" --permission-mode "$MODE" \
   --tools "$ALLOWED_TOOLS" --allowedTools "$ALLOWED_TOOLS" --max-budget-usd "$BUDGET" --output-format json >"$OUT"

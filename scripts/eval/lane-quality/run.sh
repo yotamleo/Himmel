@@ -272,7 +272,7 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
       export HIMMEL_API_JOB_ID="lq-$RUN_ID-$stem"
       # headless-claude-ok: HIMMEL-4986 lane-quality api agent run, launcher bank gate and ledger reservation, explicit permission mode, budget-capped
       # launch-profile-ok: HIMMEL-4986 the eval measures the lane's own default config, not a leg profile
-      ANTHROPIC_API_KEY="$LQ_API_KEY" HIMMEL_API_LANE=on HIMMEL_API_ACCOUNT="$LQ_API_ACCOUNT" HIMMEL_API_KEY_ID="$LQ_API_KEY_ID" \
+      ANTHROPIC_API_KEY="$LQ_API_KEY" HIMMEL_API_LANE="$LQ_API_LANE" HIMMEL_API_ACCOUNT="$LQ_API_ACCOUNT" HIMMEL_API_KEY_ID="$LQ_API_KEY_ID" \
         timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
         --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
       exit $?
@@ -351,14 +351,14 @@ API_PILOT_CAP=1  # HIMMEL-4986: the most one api sweep may be given, in USD
 # api_dry_run <tasks>: every check an api sweep makes before it spends, plus the
 # plan and the exact command. Spends nothing, starts nothing, prints no key.
 api_dry_run() {
-  [ "${HIMMEL_API_LANE:-}" = on ] || die "api lane is OFF (set HIMMEL_API_LANE=on)"
-  case "${HIMMEL_API_ACCOUNT:-}" in A|B) ;; *) die "HIMMEL_API_ACCOUNT must be A or B" ;; esac
-  [ -n "${HIMMEL_API_KEY_ID:-}" ] || die "HIMMEL_API_KEY_ID is absent"
-  [ -n "${ANTHROPIC_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is absent"
+  [ "${LQ_API_LANE:-}" = on ] || die "api lane is OFF (set HIMMEL_API_LANE=on)"
+  case "${LQ_API_ACCOUNT:-}" in A|B) ;; *) die "HIMMEL_API_ACCOUNT must be A or B" ;; esac
+  [ -n "${LQ_API_KEY_ID:-}" ] || die "HIMMEL_API_KEY_ID is absent"
+  [ -n "${LQ_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is absent"
   [ -x "$AGENT_BIN" ] || die "launcher '$AGENT_BIN' is not executable"
   local n; n="$(printf '%s' "$1" | tr ',' '\n' | grep -c .)"
   echo "lane-quality: api dry-run (nothing launched, nothing spent)"
-  echo "  account $HIMMEL_API_ACCOUNT, key id $HIMMEL_API_KEY_ID, model $MODEL${EFFORT:+, effort $EFFORT}"
+  echo "  account $LQ_API_ACCOUNT, key id $LQ_API_KEY_ID, model $MODEL${EFFORT:+, effort $EFFORT}"
   echo "  tasks ($n x $REPS reps): $1 from $TASKS at $BASE_SHA"
   echo "  cap $MAX_USD USD for the sweep (ceiling $API_PILOT_CAP); each call gets the remainder as --max-budget-usd"
   echo "  command: $AGENT_BIN -p <task prompt> --model $MODEL --permission-mode auto --output-format json --max-budget-usd <remainder>${EFFORT:+ --effort $EFFORT}"
@@ -421,6 +421,14 @@ cmd_run() {
   case "$LANE" in
     native|openrouter) ;;
     api)
+      # judge B2/j2229c: the key and lane selectors leave this process's environment before init_env and before any git
+      # call on REPO: its hooks, a partial-clone lazy fetch (core.sshCommand), the preflight and agent-written git config
+      # all run inside run.sh's own calls. They are held in unexported LQ_API_* variables (unset first, so an inherited
+      # exported one does not stay exported) and handed only to the launcher invocation line.
+      unset LQ_API_KEY LQ_API_ACCOUNT LQ_API_KEY_ID LQ_API_LANE
+      LQ_API_KEY="${ANTHROPIC_API_KEY:-}"; LQ_API_ACCOUNT="${HIMMEL_API_ACCOUNT:-}"
+      LQ_API_KEY_ID="${HIMMEL_API_KEY_ID:-}"; LQ_API_LANE="${HIMMEL_API_LANE:-}"
+      unset ANTHROPIC_API_KEY HIMMEL_API_LANE HIMMEL_API_ACCOUNT HIMMEL_API_KEY_ID
       # HIMMEL-4986: the cap and the no-judge rule are code, not convention.
       [ "$NO_JUDGE" -eq 1 ] || die "--lane api needs --no-judge (the judge runs native and would draw the subscription bank)"
       MAX_USD="${MAX_USD:-$API_PILOT_CAP}"
@@ -465,8 +473,8 @@ cmd_run() {
   fi
   if [ "$LANE" = api ]; then
     # HIMMEL-5069 R4: the launcher comes from this script's own location, never from LQ_LANE_BIN or LQ_REPO
-    # (REPO is only the git repo the worktrees are cut from). REPO's hooks and agent-written git config still run
-    # inside run.sh's git calls, so the key is held out of this process's environment and given only to the launcher.
+    # (REPO is only the git repo the worktrees are cut from). The key left this process's environment in the api arm
+    # of the lane case above, before any git call on REPO, and is given only to the launcher invocation line.
     AGENT_BIN="$(cd "$HERE/../../api-lane" && pwd)/claude-api.sh"
   fi
   if [ "$LANE" = claudex ]; then
@@ -490,13 +498,6 @@ cmd_run() {
     [ -f "$TASKS/$t/prompt.md" ] || die "unknown task '$t'"
   done
   if [ "$DRY_RUN" -eq 1 ]; then api_dry_run "$tasks"; return 0; fi
-  if [ "$LANE" = api ]; then
-    # judge B2: run.sh's own git calls (worktree add, the fixture commit, git add -A) fire hooks from an
-    # LQ_REPO-selected repo and from agent-written config (core.fsmonitor), so the key and lane selectors leave
-    # this process's environment now and are passed only on the launcher's command line below.
-    LQ_API_KEY="${ANTHROPIC_API_KEY:-}"; LQ_API_ACCOUNT="${HIMMEL_API_ACCOUNT:-}"; LQ_API_KEY_ID="${HIMMEL_API_KEY_ID:-}"
-    unset ANTHROPIC_API_KEY HIMMEL_API_LANE HIMMEL_API_ACCOUNT HIMMEL_API_KEY_ID
-  fi
   SPENT=0; STATUS=ok
   echo "lane-quality: run $RUN_ID → $OUT"
   # Repeat by repeat, so a sweep cut short still covers every task evenly.

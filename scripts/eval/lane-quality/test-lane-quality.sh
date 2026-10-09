@@ -269,6 +269,35 @@ check "a hook in LQ_REPO sees no API key or lane selector from run.sh's git call
 check "an agent-written core.fsmonitor sees no API key or lane selector" '[ -s "$TMP/fsmon.env" ] && ! grep -q "^ANTHROPIC_API_KEY=\|^HIMMEL_API_" "$TMP/fsmon.env"'
 check "the launcher still receives the key and selectors" 'grep -q "^key=sk-ant-dummy-0000$" "$APIENV" && grep -q "^sel=on/B/key-b$" "$APIENV"'
 
+# judge j2229c B1: run.sh's base-sha check is a git call on LQ_REPO; in a partial clone a missing object makes git run
+# the repo's core.sshCommand (a lazy fetch), so the key must be out of the environment before ANY git call on the repo.
+LZ="$TMP/lzrepo"; rm -f "$TMP/lz.env"
+git init -q "$LZ"; echo a >"$LZ/a"
+git -C "$LZ" -c user.name=t -c user.email=t@t add -A
+git -C "$LZ" -c user.name=t -c user.email=t@t commit -qm base
+git -C "$LZ" config core.repositoryformatversion 1
+git -C "$LZ" config extensions.partialClone origin
+git -C "$LZ" config remote.origin.url ssh://evil.invalid/x.git
+git -C "$LZ" config remote.origin.promisor true
+printf '#!/usr/bin/env bash\nenv >>"%s"\nexit 1\n' "$TMP/lz.env" >"$TMP/lzssh"; chmod +x "$TMP/lzssh"
+git -C "$LZ" config core.sshCommand "$TMP/lzssh"
+LQ_REPO="$LZ" LQ_BASE_SHA=1111111111111111111111111111111111111111 api_run "$TMP/out-lz1" --no-judge --dry-run --tasks cr-fix >"$TMP/lz1.log" 2>&1
+check "a partial-clone lazy fetch from the base-sha check sees no API key or lane selector" '[ -s "$TMP/lz.env" ] && ! grep -q "^ANTHROPIC_API_KEY=\|^HIMMEL_API_" "$TMP/lz.env"'
+
+# judge j2229c B2: an exported LQ_API_KEY (even empty) on entry must not stay exported: hooks, the preflight and
+# accept.sh would inherit it.
+for v in "" leak-lq-key; do
+  rm -f "$TMP/hook.env" "$TMP/pf.env" "$ACCENV" "$APIENV"
+  for h in post-checkout reference-transaction; do
+    printf '#!/usr/bin/env bash\nenv >>"%s"\n' "$TMP/hook.env" >"$TMP/repo/.git/hooks/$h"; chmod +x "$TMP/repo/.git/hooks/$h"
+  done
+  LQ_API_KEY="$v" LQ_API_ACCOUNT="$v" LQ_API_KEY_ID="$v" LQ_FAKE_PFENV="$TMP/pf.env" LQ_FAKE_ACCEPTENV="$ACCENV" \
+    api_run "$TMP/out-lq1" --no-judge --tasks cr-fix >"$TMP/lq1.log" 2>&1
+  for h in post-checkout reference-transaction; do rm -f "$TMP/repo/.git/hooks/$h"; done
+  check "an inherited exported LQ_API_KEY ('$v') reaches no hook, preflight or acceptance code" '[ -s "$TMP/hook.env" ] && [ -s "$TMP/pf.env" ] && [ -s "$ACCENV" ] && ! grep -q "^LQ_API_" "$TMP/hook.env" "$TMP/pf.env" "$ACCENV"'
+  check "the launcher still receives the key after an inherited LQ_API_KEY ('$v')" 'grep -q "^key=sk-ant-dummy-0000$" "$APIENV"'
+done
+
 # HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
 printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"
 bash "$RUN" run --lane native --model haiku --config "$TMP/cfg-out.json" --out "$TMP/out-cfg1" >"$TMP/cfg1.log" 2>&1
