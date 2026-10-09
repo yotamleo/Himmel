@@ -35,26 +35,20 @@ PRINT=0 MODE="" MODEL="" BUDGET="" FORMAT=""
 ARGS=()
 while [ "$#" -gt 0 ]; do
   a="$1"; shift
-  # any spelling of a bypass flag (=true, =anything, any case, _ for -), and every caller-supplied tool list, settings,
-  # MCP, plugin, extra-directory, remote or agent-definition source: the launcher's own --tools/--allowedTools are the
-  # only tool flags claude may see. A @file argument is an args file, which could carry any of them. This denylist is a
-  # stopgap; a caller-flag allowlist is the durable shape (follow-up ticket).
-  case "$a" in -*) n="$(printf '%s' "${a%%=*}" | tr 'A-Z_' 'a-z-')" ;; *) n="" ;; esac
-  case "$n" in
-    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--allowedtools|--allowed-tools|--tools|--settings|--mcp-config|--plugin-dir|--add-dir|--plugin-url|--environment|--remote-control|--agent|--agents)
-      refuse "flag ${a%%=*} is not allowed on the api lane" ;;
-  esac
+  # Allowlist: only -p/--print, --model, --permission-mode, --max-budget-usd, --output-format, --effort and a positional
+  # prompt reach claude (the launcher adds its own --tools/--allowedTools). Any other argument starting with a dash is
+  # refused whatever its spelling or attached =value, so a flag claude adds later is closed by default. A @file
+  # argument is an args file, which could carry any flag.
   case "$a" in @*) refuse "an @argsfile argument is not allowed on the api lane" ;; esac
   case "$a" in
     -p|--print) PRINT=1; ARGS+=("$a"); continue ;;
     --) refuse "the -- argument terminator would turn the enforced options into positionals" ;;
-    --bg|--background|--cloud|--daemon) # t13b-ok: refuses the flag, starts no service
-      refuse "flag $a is not allowed on the api lane" ;;
-    --permission-mode|--model|--max-budget-usd|--output-format)
+    --permission-mode|--model|--max-budget-usd|--output-format|--effort)
       [ "$#" -gt 0 ] || refuse "$a needs a value"
       val="$1"; shift ;;
-    --permission-mode=*|--model=*|--max-budget-usd=*|--output-format=*)
+    --permission-mode=*|--model=*|--max-budget-usd=*|--output-format=*|--effort=*)
       val="${a#*=}"; a="${a%%=*}" ;;
+    -*) refuse "flag ${a%%=*} is not allowed on the api lane" ;;
     *) ARGS+=("$a"); continue ;;
   esac
   case "$a" in
@@ -62,6 +56,8 @@ while [ "$#" -gt 0 ]; do
     --model) MODEL="$val" ;;
     --max-budget-usd) BUDGET="$val" ;;
     --output-format) FORMAT="$val" ;;
+    --effort) case "$val" in ""|-*|*[!A-Za-z0-9._-]*) refuse "--effort needs a value of [A-Za-z0-9._-] not starting with a dash" ;; esac
+              ARGS+=(--effort "$val") ;;
   esac
 done
 [ "$PRINT" = 1 ] || refuse "only -p/--print runs are allowed"

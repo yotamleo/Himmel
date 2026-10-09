@@ -226,6 +226,33 @@ test('judge: bypass flags in any spelling and caller-supplied tool/settings/mcp 
   assert.equal(f.status().reserved_usd, '0.000000');
 });
 
+test('HIMMEL-5093: only allowlisted caller flags pass; an unknown, attached or clustered flag is refused with no spawn or reservation', () => {
+  const f = fixture();
+  const flags = ['--some-future-flag', '--some-future-flag=1', '--SOME_FUTURE_FLAG', '-x', '-pc', '-pp', '-c', '-r', '-', '--print=x',
+    '--resume', '--continue', '--fork-session', '--system-prompt', '--append-system-prompt', '--disallowedTools', '--strict-mcp-config',
+    '--setting-sources', '--betas', '--fallback-model', '--debug-file', '--ide', '--chrome', '--teleport', '--session-id', '--MODEL=x', '--Effort'];
+  for (const flag of flags) {
+    const r = f.run([...f.good, flag, ...(flag.includes('=') ? [] : ['x'])]);
+    assert.equal(r.status, 2, flag);
+    assert.match(r.stderr, /not allowed/, flag);
+  }
+  assert.equal(f.called(), false);
+  assert.equal(f.status().reserved_usd, '0.000000');
+});
+
+test('HIMMEL-5093: --effort, in both spellings, and the positional prompt still pass', () => {
+  for (const [spelled, seen] of [[['--effort', 'high'], /--effort high/], [['--effort=low'], /--effort low/]]) {
+    const ok = fixture();
+    assert.equal(ok.run([...ok.good, ...spelled]).status, 0);
+    assert.match(readFileSync(ok.paths.env, 'utf8'), seen);
+  }
+  const f = fixture();
+  for (const bad of [['--effort'], ['--effort', '--settings'], ['--effort=a b']]) {
+    const r = f.run([...f.good, ...bad]);
+    assert.equal(r.status, 2, bad.join(' '));
+  }
+});
+
 test('an argument terminator is refused so the enforced options stay options', () => {
   const f = fixture();
   const r = f.run(['-p', '--', 'x', '--model', 'm', '--permission-mode', 'plan', '--max-budget-usd', '0.10']);
