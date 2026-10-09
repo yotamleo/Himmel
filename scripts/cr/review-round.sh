@@ -399,7 +399,7 @@ judge_nogo_record() (
                 exit 1
             fi
         fi
-        hit="" bad=0
+        hit="" bad=0 macbad=0
         for f in "$qdir"/*.md; do
             [ -e "$f" ] || [ -L "$f" ] || continue
             if [ -L "$f" ] || [ ! -f "$f" ]; then bad=1; break; fi
@@ -416,8 +416,9 @@ judge_nogo_record() (
             word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
             [ -n "$word" ] || { bad=1; break; }
             # HIMMEL-4984: a record buys a round only when write-verdict.sh signed
-            # it; one hand-written or edited disqualifies its qid.
-            go_verdict_mac_ok "$f" "$scope" "$qid" "$name" || { bad=1; break; }
+            # it; one hand-written or edited withholds the round from its qid, but
+            # its NO-GO still feeds the class veto (a NO-GO only narrows).
+            go_verdict_mac_ok "$f" "$scope" "$qid" "$name" || macbad=1
             if [ "$word" = "NO-GO $want" ]; then
                 [ -n "$hit" ] || hit="$qid/$name"
                 if [ -z "$bound" ] && record_binds "$l9" "$l10" "$l11"; then bound="$qid/$name"; fi
@@ -425,7 +426,7 @@ judge_nogo_record() (
         done
         if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then
             check_hits="${check_hits:+$check_hits }$hit"
-            if [ "$consumed" -eq 0 ] && [ -n "$bound" ]; then hits="${hits:+$hits }$bound"; fi
+            if [ "$consumed" -eq 0 ] && [ "$macbad" -eq 0 ] && [ -n "$bound" ]; then hits="${hits:+$hits }$bound"; fi
         fi
     done
     [ -n "$check_hits" ] || exit 1
