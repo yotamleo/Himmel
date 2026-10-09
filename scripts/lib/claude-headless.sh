@@ -208,7 +208,9 @@ lock_is_stale() {
 reclaim_stale_lock() {
   mkdir "$RECLAIM_LOCK" 2>/dev/null || return 0
   printf '%s' "$$" > "$RECLAIM_LOCK/pid" 2>/dev/null || true
-  if [ -d "$ADMISSION_LOCK" ] && lock_is_stale; then
+  # Re-check we still own the marker after the (slow) staleness read: a steal
+  # may have displaced it, in which case we must not delete the lock.
+  if [ -d "$ADMISSION_LOCK" ] && lock_is_stale && [ "$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)" = "$$" ]; then
     echo "claude-headless.sh: admission lock held by dead/unrecorded pid — reclaiming stale lock" >&2
     rm -rf "$ADMISSION_LOCK" 2>/dev/null || true
   fi
