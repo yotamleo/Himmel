@@ -4135,8 +4135,11 @@ _bwimc_env_prog() {
 # `--text` alone is -a; `--u=`, `--exe=` on ls-remote), and -O in a short
 # cluster (probed on git 2.56: it runs without a tty).
 _bwimc_git_args_prog() {
-    local sub="$1" a ci; shift
+    local sub="$1" a ci skip=0; shift
     for a in "$@"; do
+        # HIMMEL-4627: the word after a grep option that takes a separate
+        # operand (`-e --textconv`) is that operand, not an option.
+        if [ "$skip" = 1 ]; then skip=0; continue; fi
         case "$sub:$a" in ls-remote:ext::*|fetch:ext::*|pull:ext::*) return 0 ;; esac
         case "$a" in
             --) [ "$sub" = ls-remote ] || return 1; continue ;;
@@ -4148,13 +4151,19 @@ _bwimc_git_args_prog() {
             cat-file:--*)
                 { _bwimc_long_is "$a" filters 2 || _bwimc_long_is "$a" textconv 1; } && return 0 ;;
             grep:--*)
-                { _bwimc_long_is "$a" open-files-in-pager 2 || _bwimc_long_is "$a" textconv 5; } && return 0 ;;
+                { _bwimc_long_is "$a" open-files-in-pager 2 || _bwimc_long_is "$a" textconv 5; } && return 0
+                # a bare `--max-depth` etc. (no `=`) takes the next word
+                case "$a" in *=*) ;; *)
+                    { _bwimc_long_is "$a" max-depth 5 || _bwimc_long_is "$a" context 3 ||
+                      _bwimc_long_is "$a" after-context 2 || _bwimc_long_is "$a" before-context 2 ||
+                      _bwimc_long_is "$a" threads 2 || _bwimc_long_is "$a" max-count 5; } && skip=1 ;;
+                esac ;;
             grep:-*)
                 ci=1
                 while [ "$ci" -lt "${#a}" ]; do
                     case "${a:$ci:1}" in
                         O) return 0 ;;
-                        [efABCm]) break ;;
+                        [efABCm]) [ "$((ci+1))" -eq "${#a}" ] && skip=1; break ;;
                     esac
                     ci=$((ci+1))
                 done ;;
