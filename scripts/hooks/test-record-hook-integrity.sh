@@ -443,6 +443,15 @@ if [ "$rc9" -eq 0 ] && [ "$after9" = "$before9" ] && [ -d "$LOCK9" ]; then
 else
   bad "row9: rc=$rc9 before='$before9' after='$after9' lockdir=$([ -d "$LOCK9" ] && echo present || echo gone)"
 fi
+# HIMMEL-2588: the lock holder is still publishing, so this run must not mark
+# the session's recorder `done` (the launcher would deny on a record not yet
+# written). It leaves `started`; the launcher's 60 s staleness rule covers it.
+state9="$(cat "$OUT9/sess-9.recorder" 2>/dev/null)"
+if [ "$state9" = "started" ]; then
+  ok "row9: a recorder that loses the lock leaves the marker started, not done"
+else
+  bad "row9 marker: expected 'started', got '$state9'"
+fi
 rm -rf "$LOCK9"
 
 # ---------------------------------------------------------------------------
