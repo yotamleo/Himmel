@@ -330,7 +330,10 @@ if [ "$lock_verified" -eq 1 ]; then
     # A lock we cannot take means ANOTHER writer holds it and is publishing
     # this same record right now. Exiting without writing is correct there and
     # is NOT the off-switch above: the record still gets written, by them.
-    hil_lock_acquire "$dest" || exit 0
+    # Leave the marker `started` (no mark_done): the holder may be another
+    # recorder still publishing, and `done` would make the launcher deny on a
+    # record not yet written (HIMMEL-2588). It goes stale after 60 s.
+    hil_lock_acquire "$dest" || { trap - EXIT; exit 0; }
     lock_held=1
 fi
 
