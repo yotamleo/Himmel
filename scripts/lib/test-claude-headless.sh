@@ -625,5 +625,13 @@ run_sut "$FAKE_OK" "$W/artifact25.txt" >/dev/null 2>&1
 check "25 dispatch row records the worker pid" "number" "$(jq -r '.worker_pid | type' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
 rm -f "$LIVE_DIR"/*.json
 
+# 26: wrapper dead, row marked launching but no worker pid persisted yet (killed
+# between the fork and the worker_pid write): the worker may be alive, keep the slot.
+jq -n --arg d "$DEAD_PID" '{id:"launching", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($d|tonumber), pid_start:"Thu Jan 1 00:00:00 1970", launching:true}' > "$LIVE_DIR/launching.json"
+cap1_run "$W/artifact26.txt"; RC26=$?
+check "26 dead wrapper, launching row without worker pid: slot kept" "1" "$RC26"
+check "26 launching row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/launching.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+
 echo "---$PASS passed, $FAIL failed, $SKIP skipped ---"
 [ "$FAIL" -eq 0 ]

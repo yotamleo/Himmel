@@ -178,7 +178,13 @@ row_holder_dead() {
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   pid_gone "$pid" "$(jq -r '.pid_start // empty' "$1" 2>/dev/null)" || return 1
   wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
-  case "$wpid" in ''|*[!0-9]*) return 0 ;; esac
+  case "$wpid" in
+    ''|*[!0-9]*)
+      # No recorded worker: dead only if the launch never began. A row marked
+      # launching may have a live worker whose pid was not yet persisted.
+      [ "$(jq -r '.launching // false' "$1" 2>/dev/null)" = "true" ] && return 1
+      return 0 ;;
+  esac
   pid_gone "$wpid" "$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
 }
 
@@ -606,6 +612,16 @@ STDOUT_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stdout.XXXXXX")"
 # for an existing copy, so handing it an already-duplicated inherited PATH
 # lets that compound across every headless dispatch in a long session.
 DEDUPED_PATH="$(dedupe_path "$PATH")"
+# HIMMEL-2197: mark the row BEFORE the fork. A wrapper SIGKILLed between the
+# fork and the worker_pid write below must not look launch-free to the reaper.
+# ponytail: such a row keeps its slot forever (no heartbeat/TTL), upgrade path
+# is Chain 4 heartbeats.
+if [ -n "${ROW:-}" ] && [ -f "$ROW" ]; then
+  if ! { jq '.launching = true' "$ROW" > "$ROW.tmp" 2>/dev/null && mv "$ROW.tmp" "$ROW" 2>/dev/null; }; then
+    rm -f "$ROW.tmp" 2>/dev/null
+    die "could not mark registry row launching: $ROW"
+  fi
+fi
 # shellcheck disable=SC1091,SC2031  # SC2031: ${!PREFIX*} parses as an empty-named var
 # HIMMEL-4459: native_auth_pin_env's return value is ADVISORY here — a shadowed
 # `unset`/`return` (function, alias, startup file) can make it return 0 with the
