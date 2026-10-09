@@ -107,8 +107,8 @@ default_branch=$(_gh repo view --json defaultBranchRef --jq '.defaultBranchRef.n
 # LOOKBACK_DAYS window scopes the query to "recent merge traffic" (this
 # ticket's actual concern) instead of cumulative repo history; PR_LIST_LIMIT
 # stays as a safety net that only fires on a genuinely exceptional volume
-# (>200 merges to $default_branch within the window), not as the everyday
-# case. python3 mirrors the portable date-math convention used elsewhere in
+# (a single merge day reaching the cap, see the paging note below), not as
+# the everyday case. python3 mirrors the portable date-math convention used elsewhere in
 # this codebase (e.g. arm-resume.sh's _epoch_hhmm) since GNU `date -d` and
 # BSD `date -v` are not compatible; when python3 is unavailable, fall back
 # to an unscoped query rather than fail-closed on a working host.
@@ -119,24 +119,51 @@ default_branch=$(_gh repo view --json defaultBranchRef --jq '.defaultBranchRef.n
 # reopened here — the ticket's concern is "safe to build on TODAY", and an
 # after-report gap that old is unlikely to reflect current suite health.
 LOOKBACK_DAYS="${BASE_STATUS_LOOKBACK_DAYS:-30}"
+# HIMMEL-2469: one 30-day query hit the 200 cap on every run at 300+ merges
+# per window (and a single --limit 1000 fetch with `files` 502s at GitHub).
+# So the window is PAGED by merge day: one `gh pr list --search merged:<day>`
+# per day, each far under the cap, concatenated and de-duplicated by PR number
+# and matched locally against every fence. A day that itself reaches the cap
+# (or any page that fails) still refuses to certify. python3-less hosts fall
+# back to the single unscoped query.
 PR_LIST_LIMIT=200
-since_date=$(python3 -c \
-    'import datetime,sys; print((datetime.date.today() - datetime.timedelta(days=int(sys.argv[1]))).isoformat())' \
+slice_days=$(python3 -c \
+    'import datetime,sys; t=datetime.datetime.now(datetime.timezone.utc).date(); print("\n".join((t - datetime.timedelta(days=d)).isoformat() for d in range(int(sys.argv[1]), -1, -1)))' \
     "$LOOKBACK_DAYS" 2>/dev/null)
-if [ -n "$since_date" ]; then
-    prs_json=$(_gh pr list --state merged --base "$default_branch" --search "merged:>=$since_date" \
-        --limit "$PR_LIST_LIMIT" --json number,headRefOid,files 2>&1) || {
-        echo "base-status: 'gh pr list' failed — aborting (fail-closed): $prs_json" >&2
-        exit 1
-    }
-else
-    echo "base-status: could not compute the ${LOOKBACK_DAYS}-day lookback date (python3 missing?) — falling back to an unscoped merged-PR query, limit $PR_LIST_LIMIT" >&2
-    prs_json=$(_gh pr list --state merged --base "$default_branch" --limit "$PR_LIST_LIMIT" \
-        --json number,headRefOid,files 2>&1) || {
-        echo "base-status: 'gh pr list' failed — aborting (fail-closed): $prs_json" >&2
-        exit 1
-    }
+if [ -z "$slice_days" ]; then
+    echo "base-status: could not compute the ${LOOKBACK_DAYS}-day lookback dates (python3 missing?) — falling back to an unscoped merged-PR query, limit $PR_LIST_LIMIT" >&2
+    slice_days="-"
 fi
+slice_limit_hit=0
+all_pages=""
+for day in $slice_days; do
+    if [ "$day" = "-" ]; then
+        page=$(_gh pr list --state merged --base "$default_branch" --limit "$PR_LIST_LIMIT" \
+            --json number,headRefOid,files 2>&1) || {
+            echo "base-status: 'gh pr list' failed — aborting (fail-closed): $page" >&2
+            exit 1
+        }
+    else
+        page=$(_gh pr list --state merged --base "$default_branch" --search "merged:$day" \
+            --limit "$PR_LIST_LIMIT" --json number,headRefOid,files 2>&1) || {
+            echo "base-status: 'gh pr list' failed for merge date $day — aborting (fail-closed): $page" >&2
+            exit 1
+        }
+    fi
+    page_count=$(printf '%s' "$page" | jq 'if type == "array" then length else "not-an-array" end' 2>/dev/null)
+    case "$page_count" in
+        ''|*[!0-9]*)
+            echo "base-status: 'gh pr list' returned unparseable or wrong-shaped JSON — aborting (fail-closed)" >&2
+            exit 1
+            ;;
+    esac
+    if [ "$page_count" -ge "$PR_LIST_LIMIT" ]; then
+        echo "QUERY-ERROR: merged-PR list hit the $PR_LIST_LIMIT-result limit (merge date $day) — older merged PRs on this fence were not checked, cannot certify clean" >&2
+        slice_limit_hit=1
+    fi
+    all_pages="$all_pages$page"
+done
+prs_json=$(printf '%s' "$all_pages" | jq -cs 'add // [] | unique_by(.number)' 2>/dev/null) || prs_json=""
 
 # Known residual (HIMMEL-2383 CR round 4, deferred -> HIMMEL-2404): this
 # matches only each file's CURRENT `.path` from `gh pr list --json files`,
@@ -182,10 +209,7 @@ case "$count" in
         ;;
 esac
 
-if [ "$count" -eq "$PR_LIST_LIMIT" ]; then
-    echo "QUERY-ERROR: merged-PR list hit the $PR_LIST_LIMIT-result limit — older merged PRs on this fence were not checked, cannot certify clean" >&2
-    had_error=1
-fi
+had_error=$slice_limit_hit
 
 # Known residual (HIMMEL-2383 CR finding codex-2, round 8, deferred ->
 # HIMMEL-2404): only the top-level array shape is validated above. A single

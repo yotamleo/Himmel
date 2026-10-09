@@ -256,6 +256,70 @@ else
     fail "list truncated at the limit" "rc=$rc out='$out' err='$err'"
 fi
 
+# HIMMEL-2469: 300+ merges per 30 days is everyday volume, so a list of 250
+# (above the 200 cap of one query, spread over the paged merge days) must
+# certify clean at exit 0, not QUERY-ERROR.
+GH_STUB8B="$TMP_ROOT/gh-stub-250list.sh"
+PR_LIST_JSON8B=$(jq -nc '[range(1;251) | {number:., headRefOid:"zzz", files:[{path:(if . == 250 then "scripts/hooks/x.sh" else "docs/unrelated.md" end)}]}]')
+cat > "$GH_STUB8B" <<STUB
+#!/usr/bin/env bash
+case "\$* " in
+    *"repo view"*defaultBranchRef*) echo "main" ;;
+    *"pr list"*"state merged"*)
+        # honor --limit and the merged:<day> search like real gh: each day
+        # holds the PRs numbered day-index mod 30, at most --limit of them
+        lim=200 day=""
+        while [ "\$#" -gt 0 ]; do
+            [ "\$1" = "--limit" ] && lim="\$2"
+            case "\$1" in merged:*) day="\${1#merged:}" ;; esac
+            shift
+        done
+        idx=\$(python3 -c 'import datetime,sys; print(datetime.date.fromisoformat(sys.argv[1]).toordinal() % 30)' "\$day")
+        echo '$PR_LIST_JSON8B' | jq -c "[.[] | select(.number % 30 == \$idx)] | .[:\$lim]" ;;
+    *"pr view 250"*"comments"*) echo '{"comments":[]}' ;;
+    *) echo "stub: unhandled gh args: \$*" >&2; exit 99 ;;
+esac
+STUB
+chmod +x "$GH_STUB8B"
+
+echo "TEST: 250 merged PRs in the window certify clean (no QUERY-ERROR)"
+out=$(GH_CMD="$GH_STUB8B" "$BASE_STATUS" scripts/hooks 2>"$TMP_ROOT/err9b")
+rc=$?
+err=$(cat "$TMP_ROOT/err9b")
+m250=$(printf '%s\n' "$out" | grep -F "PENDING PR 250")
+if [ "$rc" -eq 0 ] && [ -n "$m250" ] && ! grep -qF "QUERY-ERROR" <<< "$err"; then
+    pass "250-PR window certifies without QUERY-ERROR and the paged fence-matching PR reaches evaluation"
+else
+    fail "250-PR window" "rc=$rc out='$out' err='$err'"
+fi
+
+# HIMMEL-2469: one failing page of the paged fetch must still refuse to
+# certify (fail-closed), not be skipped.
+GH_STUB8C="$TMP_ROOT/gh-stub-pagefail.sh"
+cat > "$GH_STUB8C" <<'STUB'
+#!/usr/bin/env bash
+case "$* " in
+    *"repo view"*defaultBranchRef*) echo "main" ;;
+    *"pr list"*"state merged"*)
+        case "$* " in
+            *"merged:"*) n=$(( $(cat "${0}.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${0}.n"
+                if [ "$n" -eq 5 ]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi
+                echo '[]' ;;
+        esac ;;
+    *) echo "stub: unhandled gh args: $*" >&2; exit 99 ;;
+esac
+STUB
+chmod +x "$GH_STUB8C"
+
+echo "TEST: a failing page of the paged merged-PR fetch is fail-closed"
+out=$(GH_CMD="$GH_STUB8C" "$BASE_STATUS" scripts/hooks 2>"$TMP_ROOT/err9c")
+rc=$?
+if [ "$rc" -ne 0 ] && grep -qF "'gh pr list' failed" "$TMP_ROOT/err9c"; then
+    pass "failed page -> abort nonzero"
+else
+    fail "failed page" "rc=$rc out='$out' err='$(cat "$TMP_ROOT/err9c")'"
+fi
+
 # HIMMEL-2383 CR finding codex-3 (round 3): author-binding was tried in
 # round 2 and REVERTED — this repo's multi-session, multi-machine
 # architecture means the poster and the checker need not share a gh
