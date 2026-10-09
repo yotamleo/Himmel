@@ -181,5 +181,19 @@ check "a passing test-a && test-x backs a claim that test-x.sh passes" 'python3 
 leg chain-union-red "bash test-x.sh && bash test-a.sh" "Exit code 1
 FAIL" "bash test-x.sh && bash test-a.sh" "ok"
 check "a failing test-x && test-a chain proves no RED" 'python3 "$TR" score "$TMP/chain-union-red.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == true" >/dev/null'
+echo "8. output that reports failures is a failing run even at exit 0 (HIMMEL-5023)"
+leg out-red-piped "bash test-x.sh 2>&1 | tail -3" "  FAIL a case
+test-x: 128 passed, 25 failed" "bash test-x.sh" "test-x: 153 passed, 0 failed"
+check "a piped RED run (25 failed, exit 0) scores red_before_green" 'python3 "$TR" score "$TMP/out-red-piped.jsonl" | jq -e ".red_before_green == true and .verify_before_claim == true" >/dev/null'
+leg out-red-line "bash test-x.sh" "ok one
+  FAIL: two" "bash test-x.sh" "ok one
+ok two"
+check "a bare FAIL line at exit 0 is a failing run" 'python3 "$TR" score "$TMP/out-red-line.jsonl" | jq -e ".red_before_green == true" >/dev/null'
+leg out-green-only "bash test-x.sh" "test-x: 153 passed, 0 failed" "bash test-x.sh" "test-x: 153 passed, 0 failed"
+check "0 failed at exit 0 is still a passing run, no RED" 'python3 "$TR" score "$TMP/out-green-only.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == true" >/dev/null'
+leg out-nonzero-silent "bash test-x.sh" "Exit code 1" "bash test-x.sh" "ok"
+check "a non-zero exit with silent output still fails" 'python3 "$TR" score "$TMP/out-nonzero-silent.jsonl" | jq -e ".red_before_green == true" >/dev/null'
+leg out-red-then-red "bash test-x.sh" "test-x: 1 passed, 2 failed" "bash test-x.sh" "test-x: 1 passed, 2 failed"
+check "a red run after the impl write is not a pass for the claim" 'python3 "$TR" score "$TMP/out-red-then-red.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == false" >/dev/null'
 echo "test-trajectory: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
