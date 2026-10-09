@@ -245,6 +245,14 @@ const cwd=process.env.CLAUDE_OPENROUTER_CWD || process.cwd();
 // under(): equality counts (launching FROM the himmel checkout root itself is
 // himmel-code, not "unknown" — a root-equal cwd must classify, not fall through).
 const under=(root)=>{ try { const c=path.resolve(cwd).toLowerCase(), r=path.resolve(root).toLowerCase(); return !!root && (c===r || c.startsWith(r+path.sep)); } catch(_) { return false; } };
+// HIMMEL-5099: himmel-code also needs the cwd to share the launcher checkout git common dir, so a
+// worktree passes and a foreign repo nested inside the checkout does not. A cwd that is no git repo
+// at all (a plain subdir) resolves to the enclosing repo, i.e. the launcher checkout itself.
+const sameGitRepo=(a,b)=>{ try {
+  const cp=require("child_process"), env={...process.env}; for (const k of ["GIT_DIR","GIT_WORK_TREE","GIT_COMMON_DIR","GIT_INDEX_FILE"]) delete env[k];
+  const g=(d)=>fs.realpathSync(cp.execFileSync("git",["-C",d,"rev-parse","--path-format=absolute","--git-common-dir"],{env,stdio:["ignore","pipe","ignore"]}).toString().trim());
+  return g(a)===g(b);
+} catch(_) { return false; } };
 // Marker detection uses the real cwd, never the caller-supplied test override.
 let vaultMarker=false;
 try {
@@ -257,7 +265,7 @@ try {
 let corpus;
 if (vaultMarker || under(process.env.LUNA_VAULT_PATH) || under(process.env.LUNA_VAULT)) corpus="luna-personal";
 else if (under(process.env.HANDOVER_DIR)) corpus="handover-state";
-else if (under(repoRoot)) corpus="himmel-code";
+else if (under(repoRoot) && sameGitRepo(cwd, repoRoot)) corpus="himmel-code";
 else corpus="unknown";
 // 3. Require an EXPLICIT openrouter rule (provider === PROVIDER, not "*")
 //    permitting this corpus for this lane purpose (PURPOSE above), applying the

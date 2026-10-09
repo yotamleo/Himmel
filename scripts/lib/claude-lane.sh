@@ -30,20 +30,18 @@ claude_lane_resolve() {
 _CLAUDE_LANE_DIR="${BASH_SOURCE[0]%/*}"
 
 # claude_lane_egress <reviewed-repo-dir> -> rc 0 permitted (native; the matrix
-# allows the lane's provider for the repo's corpus; or the repo is in no gated
-# corpus), rc 3 refused with the reason on stderr. Corpus, most restrictive
+# allows the lane's provider for the repo's corpus), rc 3 refused with the reason on stderr. Corpus, most restrictive
 # first: a .salus/.salus-profile marker or a phi-roots/egress-denylist root ->
 # salus; the luna vault root or an .obsidian marker -> luna-personal
 # (luna-clippings under Clippings/); the handover root -> handover-state.
 # `conditional` counts as refused: no condition can be verified for a whole
 # review pack. For openrouter it also exports CLAUDE_OPENROUTER_CWD=<reviewed
 # repo> so the launcher classifies the repo, not the scratch cwd.
-# A repo in none of those corpora is himmel-code only when it lies under this
-# checkout (as claude-openrouter classifies); any other repo is unclassified and
-# refused, since the matrix default for an unclassified corpus is deny.
-# ponytail: himmel-code means "under this lib's own checkout"; a review of another
-# himmel checkout or worktree outside it is refused, add a git-common-dir match if
-# that is ever needed.
+# A repo in none of those corpora is himmel-code only when its git common dir equals
+# this checkout's (a worktree of it passes, a foreign repo nested inside it does not);
+# any other repo is unclassified and refused, since the matrix default for an
+# unclassified corpus is deny. A LUNA_VAULT/LUNA_VAULT_PATH/HANDOVER_DIR that is set
+# but does not resolve refuses too.
 # ponytail: only hermes-critic.sh and claude-floor-review.sh gate; the shared
 # headless launcher scripts/lib/claude-headless.sh resolves the lane but does not,
 # so a new caller of it would be ungated - move this call into it when a third
@@ -85,15 +83,17 @@ claude_lane_egress() {
     done
   fi
   if [ "$corpus" != salus ]; then
+    # HIMMEL-5099: every vault var that is set must resolve (a stale one would otherwise be
+    # read as "no vault"), and a resolvable one never masks the other.
     for v in "${LUNA_VAULT:-}" "${LUNA_VAULT_PATH:-}"; do
-      if [ -n "$v" ]; then lroot="$(cd -P "$v" 2>/dev/null && pwd -P)" || lroot=""; break; fi
-    done
-    if [ -n "$lroot" ]; then
+      [ -n "$v" ] || continue
+      lroot="$(cd -P "$v" 2>/dev/null && pwd -P)" || {
+        echo "claude-lane: REFUSED - the luna vault \"$v\" cannot be resolved (LUNA_VAULT/LUNA_VAULT_PATH set but not a usable directory; fail closed)" >&2; return 3; }
       case "$dir/" in
-        "$lroot/Clippings/"*) corpus=luna-clippings ;;
+        "$lroot/Clippings/"*) [ -n "$corpus" ] || corpus=luna-clippings ;;
         "$lroot/"*) corpus=luna-personal ;;
       esac
-    fi
+    done
     # HIMMEL-4420: handover_root reads only the live env, so a .env-only HANDOVER_DIR
     # is loaded from himmel's own primary checkout (cwd = this lib, never the reviewed repo).
     # A HANDOVER_DIR set from ANY source (live env or .env) that handover_root cannot
@@ -114,9 +114,15 @@ claude_lane_egress() {
     # positive himmel-code classification (as claude-openrouter does); anything else is
     # unclassified, and the matrix default for an unclassified corpus is deny
     root="$(cd -P "$_CLAUDE_LANE_DIR/../.." 2>/dev/null && pwd -P)" || root=""
-    if [ -n "$root" ]; then case "$dir/" in "$root/"*) corpus=himmel-code ;; esac; fi
+    # HIMMEL-5099: bound to the git common dir, so a worktree of this checkout passes and a
+    # foreign repo nested inside it does not.
+    if [ -n "$root" ] && . "$_CLAUDE_LANE_DIR/git-clean.sh" 2>/dev/null; then
+      lroot="$(git_clean -C "$root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || lroot=""
+      hd="$(git_clean -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || hd=""
+      if [ -n "$lroot" ] && [ "$lroot" = "$hd" ]; then corpus=himmel-code; fi
+    fi
     if [ -z "$corpus" ]; then
-      echo "claude-lane: REFUSED - the reviewed repo is in no known corpus (not under ${root:-the himmel checkout}); the egress matrix denies an unclassified corpus, so the $lane lane would send the review pack somewhere unvetted" >&2
+      echo "claude-lane: REFUSED - the reviewed repo is in no known corpus (not in the git repository of ${root:-the himmel checkout}); the egress matrix denies an unclassified corpus, so the $lane lane would send the review pack somewhere unvetted" >&2
       return 3
     fi
   fi
