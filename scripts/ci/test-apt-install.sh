@@ -26,8 +26,11 @@ echo "$*" >> "$STUB_LOG"
 case "$1" in
   update) exit 0 ;;
   install)
-    if grep -q primary.example "$STUB_SOURCES"; then
-      [ "${STUB_HANG:-0}" = 1 ] && sleep 30
+    if grep -Ev '^[[:space:]]*#' "$STUB_SOURCES" | grep -m1 . | grep -q "${STUB_BAD:-primary.example}"; then
+      if [ "${STUB_HANG:-0}" = 1 ]; then
+        sleep "${STUB_HANG_SECS:-30}"
+        : > "$STUB_LOG.survived"
+      fi
       [ "${STUB_PRIMARY_OK:-0}" = 1 ] || exit 100
     fi
     [ "${STUB_ALL_FAIL:-0}" = 1 ] && exit 100
@@ -41,16 +44,29 @@ run_case() {
   local name="$1"; shift
   local d="$TMP/$name"
   mkdir -p "$d/archives"
-  echo "deb http://primary.example/ubuntu noble main" > "$d/ubuntu.sources"
+  local stub_src="$d/ubuntu.sources" alt="alt.example"
+  if [ "${FIXTURE:-}" = real ]; then
+    # ubuntu-24.04 runner shape: cloud-init comment header with a URL, then a
+    # deb822 stanza whose URIs: points at a mirror list (azure first).
+    printf '%s\n' '## Ubuntu distribution repository' '## See http://help.ubuntu.com/community/UpgradeNotes' \
+      'Types: deb' "URIs: mirror+file:$d/apt-mirrors.txt" 'Suites: noble noble-updates' \
+      'Components: main universe' > "$d/ubuntu.sources"
+    printf 'http://azure.example/ubuntu/\tpriority:1\nhttp://archive.ubuntu.com/ubuntu/\tpriority:2\n' > "$d/apt-mirrors.txt"
+    stub_src="$d/apt-mirrors.txt"
+    [ "${FIXTURE_ALT+set}" = set ] && alt="$FIXTURE_ALT"
+  else
+    echo "deb http://primary.example/ubuntu noble main" > "$d/ubuntu.sources"
+  fi
   : > "$d/log"
   out="$(env APT_GET="$TMP/apt-get" APT_SUDO= APT_ARCHIVES="$d/archives" \
-    APT_SOURCES_FILES="$d/ubuntu.sources" APT_ALT_MIRROR=alt.example \
+    APT_SOURCES_FILES="$d/ubuntu.sources" APT_ALT_MIRROR="$alt" \
     APT_T_CACHED=5 APT_T_PLAIN=5 APT_T_ALT=5 \
-    STUB_LOG="$d/log" STUB_SOURCES="$d/ubuntu.sources" "$@" \
+    STUB_LOG="$d/log" STUB_SOURCES="$stub_src" "$@" \
     bash "$HELPER" ffmpeg at 2>&1)"
   rc=$?
   log="$(cat "$d/log")"
   src="$(cat "$d/ubuntu.sources")"
+  mirrors="$(cat "$d/apt-mirrors.txt" 2>/dev/null)"
 }
 
 if [ ! -f "$HELPER" ]; then
@@ -93,6 +109,38 @@ failed_line="$(grep 'apt-install: FAILED' <<<"$out")"
 [ "$rc" -ne 0 ] && [ "$n" -eq 1 ] && grep -q 'alt.example' <<<"$failed_line" \
   && grep -q 'ffmpeg at' <<<"$failed_line" \
   && ok "total failure prints one line naming mirror and packages" || bad "final failure (rc=$rc n=$n out=$out)"
+
+# 6. real runner sources (HIMMEL-2872 judge j2268a): the comment header names
+#    help.ubuntu.com and the stanza is mirror+file:, so the primary is the first
+#    mirror in the list and the fallback must rewrite that list, not the comments.
+FIXTURE=real STUB_BAD=azure.example run_case c6a
+first_mirror="$(head -n 1 <<<"$mirrors")"
+[ "$rc" -eq 0 ] && grep -q 'alt.example' <<<"$first_mirror" && ! grep -q 'azure.example' <<<"$mirrors" \
+  && grep -q 'help.ubuntu.com' <<<"$src" && grep -q 'azure.example' <<<"$out" && ! grep -q 'help.ubuntu.com' <<<"$out" \
+  && ok "mirror+file: primary is the first listed mirror and the list is rewritten" \
+  || bad "real-runner fallback (rc=$rc first=$first_mirror out=$out)"
+FIXTURE=real STUB_BAD=azure.example STUB_ALL_FAIL=1 run_case c6b
+failed_line="$(grep 'apt-install: FAILED' <<<"$out")"
+[ "$rc" -ne 0 ] && grep -q 'mirrors=azure.example,alt.example ' <<<"$failed_line" \
+  && ok "real-runner failure line names the listed mirror, not a comment URL" || bad "real-runner failure line ($failed_line)"
+
+# 7. default alternate is genuinely different from the primary.
+FIXTURE=real FIXTURE_ALT='' STUB_BAD=azure.example STUB_ALL_FAIL=1 run_case c7a
+grep -q 'mirrors=azure.example,archive.ubuntu.com ' <<<"$out" \
+  && ok "default alternate is archive.ubuntu.com" || bad "default alt ($out)"
+printf '%s\n' 'Types: deb' "URIs: mirror+file:$TMP/c7b/apt-mirrors.txt" > "$TMP/c7b.sources"
+mkdir -p "$TMP/c7b/archives"; printf 'http://archive.ubuntu.com/ubuntu/\tpriority:1\n' > "$TMP/c7b/apt-mirrors.txt"; : > "$TMP/c7b/log"
+out="$(env APT_GET="$TMP/apt-get" APT_SUDO= APT_ARCHIVES="$TMP/c7b/archives" APT_SOURCES_FILES="$TMP/c7b.sources" \
+  APT_T_PLAIN=5 APT_T_ALT=5 STUB_LOG="$TMP/c7b/log" STUB_SOURCES="$TMP/c7b/apt-mirrors.txt" STUB_BAD=archive.ubuntu.com STUB_ALL_FAIL=1 \
+  bash "$HELPER" ffmpeg 2>&1)"
+grep -q 'mirrors=archive.ubuntu.com,us.archive.ubuntu.com ' <<<"$out" \
+  && ok "primary archive.ubuntu.com gets a different default alternate" || bad "distinct default alt ($out)"
+
+# 8. the timeout is behavioural: a hung install is killed, not waited out.
+SECONDS=0
+run_case c8 STUB_HANG=1 STUB_HANG_SECS=8 APT_T_PLAIN=1
+[ "$rc" -eq 0 ] && [ ! -e "$TMP/c8/log.survived" ] && [ "$SECONDS" -lt 6 ] \
+  && ok "hung install is killed by the timeout (not waited out)" || bad "timeout (rc=$rc elapsed=${SECONDS}s survived=$([ -e "$TMP/c8/log.survived" ] && echo yes || echo no))"
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2
