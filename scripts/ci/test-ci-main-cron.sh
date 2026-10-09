@@ -45,6 +45,15 @@ if [ -z "$main_cron" ]; then
 else
   ok "main-sweep cron: $main_cron"
   hours="$(awk '{print $2}' <<< "$main_cron")"
+  # Exactly two crons, and the main one fires daily at a fixed minute: a weekly
+  # or monthly entry with the same hours field would pass the gap check below.
+  ncrons="$(grep -c . <<< "$crons")"
+  if [ "$ncrons" -eq 2 ]; then ok "exactly two schedule crons"
+  else bad "expected exactly two schedule crons, got $ncrons: $crons"; fi
+  case "$(awk '{print $1 "|" $3 " " $4 " " $5}' <<< "$main_cron")" in
+    [0-9]*"|* * *") ok "main-sweep cron fires daily at a fixed minute" ;;
+    *) bad "main-sweep cron is not daily (day/month/weekday must be * * *): '$main_cron'" ;;
+  esac
   case "$hours" in
     *[!0-9,]*|'') bad "main-sweep cron hours field is not a plain comma list: '$hours'" ;;
     *)
