@@ -80,7 +80,7 @@ if [ -n "$claudex" ]; then
     live_labels="$(printf '%s\n' "$entries" | cut -d: -f1)"
     mclaudex=""
     if [ -f "$manifest" ]; then
-        mclaudex="$(jq -r '.legs[] | select(.lane == "claudex" and (.lockless // false) != true) | .label' "$manifest" 2>/dev/null \
+        mclaudex="$(jq -r '.legs[] | select(.lane == "claudex" and (.lockless == true | not)) | .label' "$manifest" 2>/dev/null \
             | grep -Fx -f <(printf '%s\n' "$live_labels") | sort -u | tr '\n' ',')"
     fi
     given="$(printf '%s\n' "${claudex//,/$'\n'}" | awk 'NF' | sort -u | tr '\n' ',')"
@@ -93,16 +93,26 @@ fi
 rc=0
 while IFS=: read -r label nonce _lock _pid; do
     [ -n "$label" ] || continue
-    ldoc=""; lane=unknown; lockless=false
+    ldoc=""; lane=unknown
     if [ -f "$manifest" ]; then
-        mrow="$(jq -r --arg l "$label" '.legs[] | select(.label == $l) | [.doc, (.lane // "unknown"), ((.lockless // false) | tostring)] | @tsv' "$manifest" 2>/dev/null | head -n 1)"
-        IFS=$'\t' read -r ldoc lane lockless <<EOR
-$mrow
+        # A live, locked leg is never a lockless row: the label is matched against the
+        # locked rows only (lockless is the boolean true; anything else is locked and
+        # visible). Two locked rows under one label are ambiguous, so nothing is sent.
+        mrows="$(jq -r --arg l "$label" '.legs[] | select(.label == $l and (.lockless == true | not)) | [.doc, ((.lane // "") | if . == "" then "unknown" else . end)] | @tsv' "$manifest" 2>/dev/null)"
+        nrows=0; [ -z "$mrows" ] || nrows="$(printf '%s\n' "$mrows" | wc -l)"
+        if [ "$nrows" -gt 1 ]; then
+            echo "UNRESOLVED $label ($nrows manifest rows share the label, nothing sent) — relay by hand"
+            continue
+        fi
+        IFS=$'\t' read -r ldoc lane <<EOR
+$mrows
 EOR
+        if [ -z "$ldoc" ] && jq -e --arg l "$label" 'any(.legs[]; .label == $l)' "$manifest" >/dev/null 2>&1; then
+            echo "UNRESOLVED $label (the only manifest row for the label is lockless, nothing sent) — relay by hand"
+            continue
+        fi
     fi
     if [ -z "$ldoc" ]; then echo "SKIPPED $label (no manifest row)"; continue; fi
-    # A lockless row has no token to quote: the LOCKLESS section below carries it.
-    [ "$lockless" != true ] || continue
     case "$lane" in
         native|claudex) ;;
         unknown)
@@ -150,7 +160,7 @@ $entries
 EOF
 # A manifest leg the Live state does not list is reported, never silently dropped.
 if [ -f "$manifest" ]; then
-    mrows="$(jq -r '.legs[] | select((.lockless // false) != true) | "\(.label) \(.doc)"' "$manifest" 2>/dev/null)"
+    mrows="$(jq -r '.legs[] | select(.lockless == true | not) | "\(.label) \(.doc)"' "$manifest" 2>/dev/null)"
     while read -r mlabel mdoc; do
         [ -n "$mlabel" ] || continue
         if ! printf '%s\n' "$entries" | cut -d: -f1 | grep -Fxq -- "$mlabel"; then
@@ -161,7 +171,7 @@ $mrows
 EOF3
     # HIMMEL-5074: lockless watched rows hold no queue lock and no token, so there is
     # nothing to relay; they are listed so the successor watches them by mechanism.
-    lrows="$(jq -r '.legs[] | select((.lockless // false) == true) | "LOCKLESS \(.label) lane=\(.lane // "unknown") doc=\(.doc)"' "$manifest" 2>/dev/null)"
+    lrows="$(jq -r '.legs[] | select(.lockless == true) | "LOCKLESS \(.label) lane=\((.lane // "") | if . == "" then "unknown" else . end) doc=\(.doc)"' "$manifest" 2>/dev/null)"
     if [ -n "$lrows" ]; then
         echo "== lockless watched rows (no relay; the successor's tick judges them by tail marker) =="
         printf '%s\n' "$lrows"

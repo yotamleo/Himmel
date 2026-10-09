@@ -67,7 +67,7 @@ done
 [ -f "$doc" ] || { echo "live-state: no such console doc: $doc" >&2; exit 1; }
 manifest="${doc%.md}.fleet.json"
 [ -f "$manifest" ] || { echo "live-state: no fleet manifest: $manifest" >&2; exit 1; }
-rows="$(jq -r '.legs[] | [.label, .doc, (.lane // "unknown"), ((.lockless // false) | tostring)] | @tsv' "$manifest" 2>/dev/null)" \
+rows="$(jq -r '.legs[] | [.label, .doc, ((.lane // "") | if . == "" then "unknown" else . end), ((.lockless == true) | tostring)] | @tsv' "$manifest" 2>/dev/null)" \
     || { echo "live-state: unreadable fleet manifest: $manifest" >&2; exit 1; }
 
 # The block tick.sh reads: the same awk, over the same section.

@@ -164,4 +164,34 @@ out8="$(bash "$RB" "$DOC5" --successor S5 2>&1)"; rc8=$?
 check "lockless-only console still lists the lockless row" "1" "$(printf '%s\n' "$out8" | grep -c '^LOCKLESS P01 lane=deepseek')"
 check "lockless-only console exits 0" "0" "$rc8"
 
+# --- judge j2224a B1/B1b/N3: label collisions and the lockless predicate.
+# a lockless row ahead of a locked leg with the same label never drops the leg silently
+DOC7="$WORK/DEMO-nextleg-2026-10-09D-console.md"
+# shellcheck disable=SC2016  # the backticks are literal Live state markers
+printf '# console\n\n## Live state\n\nlegs: `N21:tok-twentyone:lock21:2`\nqueue: none\n\n## Results\n' > "$DOC7"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N21","lane":"deepseek","lockless":true},{"doc":"%s","label":"N21","lane":"native"}]}\n' "$LEGP" "$LEGN" > "${DOC7%.md}.fleet.json"
+census DEMO-9-N21-nat-2026-10-09
+out10="$(bash "$RB" "$DOC7" --successor S7 2>&1)"
+check "B1: a locked leg behind a same-label lockless row is still relayed" "1" "$(printf '%s\n' "$out10" | grep -c '^SENDMESSAGE to=DEMO-9-N21-nat-2026-10-09 ::')"
+# two locked rows under one label are ambiguous: UNRESOLVED, nothing sent
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N21","lane":"native"},{"doc":"%s","label":"N21","lane":"claudex"}]}\n' "$LEGN" "$LEGC" > "${DOC7%.md}.fleet.json"
+: > "$WORK/send.log"
+out11="$(bash "$RB" "$DOC7" --successor S7 2>&1)"
+check "B1: two locked rows with one label print UNRESOLVED" "1" "$(printf '%s\n' "$out11" | grep -c '^UNRESOLVED N21 (2 manifest rows')"
+check "B1: an ambiguous label sends nothing" "0 sendlog-bytes=0" "$(printf '%s\n' "$out11" | grep -c '^SENDMESSAGE\|^SENT-INBOX') sendlog-bytes=$(wc -c < "$WORK/send.log" | tr -d ' ')"
+# a live entry whose only manifest row is lockless is reported, not skipped silently
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N21","lane":"deepseek","lockless":true}]}\n' "$LEGP" > "${DOC7%.md}.fleet.json"
+out12="$(bash "$RB" "$DOC7" --successor S7 2>&1)"
+check "B1: a live leg whose only row is lockless prints UNRESOLVED" "1" "$(printf '%s\n' "$out12" | grep -c '^UNRESOLVED N21 ')"
+# B1b: only the boolean true is lockless; the string "true" stays a visible, relayed row
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N21","lane":"native","lockless":"true"}]}\n' "$LEGN" > "${DOC7%.md}.fleet.json"
+out13="$(bash "$RB" "$DOC7" --successor S7 2>&1)"
+check "B1b: a string true is not lockless: the leg is relayed" "1" "$(printf '%s\n' "$out13" | grep -c '^SENDMESSAGE to=DEMO-9-N21-nat-2026-10-09 ::')"
+check "B1b: a string true is not listed as LOCKLESS" "0" "$(printf '%s\n' "$out13" | grep -c '^LOCKLESS')"
+# N3: an empty lane is unknown, not the next field
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N21","lane":""},{"doc":"%s","label":"P01","lane":"","lockless":true}]}\n' "$LEGN" "$LEGP" > "${DOC7%.md}.fleet.json"
+out14="$(bash "$RB" "$DOC7" --successor S7 2>&1)"
+check "N3: an empty lane prints UNRESOLVED-LANE unknown" "1" "$(printf '%s\n' "$out14" | grep -c '^UNRESOLVED-LANE N21 (manifest lane unknown')"
+check "N3: an empty lockless lane lists as unknown" "1" "$(printf '%s\n' "$out14" | grep -c '^LOCKLESS P01 lane=unknown ')"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

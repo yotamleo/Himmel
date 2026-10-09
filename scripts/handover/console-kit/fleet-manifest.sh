@@ -79,7 +79,7 @@ case "$verb" in
     *) usage >&2; exit 2 ;;
 esac
 
-lane=unknown; lockless=false
+lane=unknown; lockless=false; lane_given=false
 if [ "$verb" = add ]; then
     # --lane/--lockless may sit anywhere among the docs; the docs are re-collected
     # one per line so a doc with whitespace is refused below, not word-split.
@@ -91,7 +91,7 @@ if [ "$verb" = add ]; then
                 case "$2" in
                     ''|[!a-z0-9]*|*[!a-z0-9._-]*) echo "fleet-manifest: --lane must be a lowercase word (native, claudex, deepseek, api, ...): $2" >&2; exit 2 ;;
                 esac
-                lane="$2"; shift 2 ;;
+                lane="$2"; lane_given=true; shift 2 ;;
             --lockless) lockless=true; shift ;;
             *)
                 case "$1" in
@@ -137,6 +137,14 @@ now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 for arg in "$@"; do
     if [ "$verb" = add ]; then
         label="$(leg_label "$arg")"
+        # Re-adding a listed doc never rewrites its row: flags that would change the
+        # stored lane or lockless are refused, not silently ignored.
+        conflict="$(printf '%s\n' "$cur" | jq -r --arg d "$arg" --arg ln "$lane" --argjson lg "$lane_given" --argjson ll "$lockless" \
+            '[.legs[] | select(.doc == $d) | select(($lg and ((.lane // "unknown") != $ln)) or ($ll and (.lockless != true)))] | length')" || exit 1
+        if [ "$conflict" -gt 0 ]; then
+            echo "fleet-manifest: $arg is already listed with a different lane/lockless; remove it first, then add it again: $arg" >&2
+            exit 1
+        fi
         cur="$(printf '%s\n' "$cur" | jq --arg d "$arg" --arg l "$label" --arg t "$now" --arg ln "$lane" --argjson ll "$lockless" \
             'if any(.legs[]; .doc == $d) then . else .legs += [{doc: $d, label: $l, added: $t, lane: $ln} + (if $ll then {lockless: true} else {} end)] end')" || exit 1
     else

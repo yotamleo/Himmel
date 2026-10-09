@@ -153,6 +153,20 @@ bash "$SCRIPT" add "$m7" $'/a/x.md\n/b/y.md' >/dev/null 2>&1; rc=$?
 check '7c. a doc argument holding a newline is refused (rc 2), not split into two rows' 2 "$rc"
 check '7c. a newline-holding argument adds no row' 0 "$(jq -r '.legs | length' "$m7" 2>/dev/null || echo 0)"
 
+# N2: re-adding a listed doc with a different lane/lockless is refused, not ignored.
+m8="$tmp/m8.json"
+bash "$SCRIPT" add "$m8" --lane native "$l1" >/dev/null 2>&1
+bash "$SCRIPT" add "$m8" --lane claudex "$l1" >/dev/null 2>&1; rc=$?
+check '7d. re-adding with a different --lane is refused (rc 1)' 1 "$rc"
+check '7d. the refused re-add leaves the lane alone' native "$(jq -r '.legs[0].lane' "$m8")"
+bash "$SCRIPT" add "$m8" --lockless "$l1" >/dev/null 2>&1; rc=$?
+check '7d. re-adding with --lockless on a locked row is refused (rc 1)' 1 "$rc"
+bash "$SCRIPT" add "$m8" --lane native "$l1" >/dev/null 2>&1; rc=$?
+check '7d. re-adding with the same lane stays a no-op (rc 0)' 0 "$rc"
+bash "$SCRIPT" add "$m8" "$l1" >/dev/null 2>&1; rc=$?
+check '7d. re-adding with no flags stays a no-op (rc 0)' 0 "$rc"
+check '7d. still one row' 1 "$(jq '.legs | length' "$m8")"
+
 # 8. usage.
 bash "$SCRIPT" >/dev/null 2>&1; rc=$?
 check '8. no verb is a usage error (rc 2)' 2 "$rc"
