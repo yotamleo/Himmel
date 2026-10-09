@@ -274,13 +274,17 @@ check "11j the flipper flipped in at least 95 percent of trials" "$([ "$(awk '$1
 
 # 11k (judge j2228e) short write: under RLIMIT_FSIZE the temp-file write is cut short. It must
 # exit 4 and leave the native config byte-identical, never rename a truncated temp over it.
-swh="$tmp/swhome"; swwt="$swh/.himmel/eval/x/wt1"; mkdir -p "$swwt"
-node -e 'const o={keep:"x".repeat(20000),projects:{}};require("fs").writeFileSync(process.argv[1],JSON.stringify(o,null,2)+"\n")' "$swh/.claude.json"
-swwant="$(cksum < "$swh/.claude.json")"
-rc=0; LEG_PRETRUST_HOME="$swh" prlimit --fsize=8192 bash "$SCRIPT" native "$swwt" >/dev/null 2>&1 || rc=$?
-check "11k short write (native, fsize below config): exit 4" "$rc" "4"
-check "11k short write: config byte-identical" "$(cksum < "$swh/.claude.json")" "$swwant"
-check "11k short write: no temp file left" "$(find "$swh" -maxdepth 1 -name "*tmp-pretrust*" | wc -l | tr -d " ")" "0"
+if ! command -v prlimit >/dev/null 2>&1; then
+  echo "SKIP 11k short write: prlimit (util-linux) not available"
+else
+  swh="$tmp/swhome"; swwt="$swh/.himmel/eval/x/wt1"; mkdir -p "$swwt"
+  node -e 'const o={keep:"x".repeat(20000),projects:{}};require("fs").writeFileSync(process.argv[1],JSON.stringify(o,null,2)+"\n")' "$swh/.claude.json"
+  swwant="$(cksum < "$swh/.claude.json")"
+  rc=0; LEG_PRETRUST_HOME="$swh" prlimit --fsize=8192 bash "$SCRIPT" native "$swwt" >/dev/null 2>&1 || rc=$?
+  check "11k short write (native, fsize below config): exit 4" "$rc" "4"
+  check "11k short write: config byte-identical" "$(cksum < "$swh/.claude.json")" "$swwant"
+  check "11k short write: no temp file left" "$(find "$swh" -maxdepth 1 -name "*tmp-pretrust*" | wc -l | tr -d " ")" "0"
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASS - test-leg-pretrust.sh"; exit 0; fi
