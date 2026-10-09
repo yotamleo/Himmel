@@ -22,7 +22,8 @@
 #   26j  a git that names no toplevel (a test's fake git) is no mismatch
 #   26k  caller_top: a git printing nothing is "no tree known" (HIMMEL-5111)
 #   26l  CDPATH cannot steer the guard's cd or the scanned root
-#   26m  GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY do not reach the suites
+#   26m  GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY / GIT_ALTERNATE_OBJECT_DIRECTORIES /
+#        GIT_CEILING_DIRECTORIES do not reach the suites
 #   26n  a runner outside any work tree + a scan root inside one -> rc 6 (fail-closed)
 #   26o  the scripts default is applied before the guard
 #
@@ -209,18 +210,18 @@ else
   fail "26k: rc=$rc output: $out"
 fi
 
-# --- 26m. GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY do not reach the suites ---------
+# --- 26m. GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY (+ ALTERNATE, CEILING: HIMMEL-5120) do not reach the suites
 ENVPROBE="$(fixture_mktemp_dir)" || exit 1
 ENVOUT="$ENVPROBE/seen.txt"
 cat > "$ENVPROBE/test-envprobe.sh" <<'EOF'
 #!/usr/bin/env bash
-printf 'index=%s objdir=%s\n' "${GIT_INDEX_FILE-unset}" "${GIT_OBJECT_DIRECTORY-unset}" > "$ENVPROBE_OUT"
+printf 'index=%s objdir=%s alt=%s ceil=%s\n' "${GIT_INDEX_FILE-unset}" "${GIT_OBJECT_DIRECTORY-unset}" "${GIT_ALTERNATE_OBJECT_DIRECTORIES-unset}" "${GIT_CEILING_DIRECTORIES-unset}" > "$ENVPROBE_OUT"
 exit 0
 EOF
-out=$(cd "$SRC_ROOT" && env -u SUITE_TIER_MODE ENVPROBE_OUT="$ENVOUT" GIT_INDEX_FILE=/nonexistent/index GIT_OBJECT_DIRECTORY=/nonexistent/objects bash "$RUNNER" "$ENVPROBE" 2>&1); rc=$?
+out=$(cd "$SRC_ROOT" && env -u SUITE_TIER_MODE ENVPROBE_OUT="$ENVOUT" GIT_INDEX_FILE=/nonexistent/index GIT_OBJECT_DIRECTORY=/nonexistent/objects GIT_ALTERNATE_OBJECT_DIRECTORIES=/nonexistent/alt GIT_CEILING_DIRECTORIES=/nonexistent bash "$RUNNER" "$ENVPROBE" 2>&1); rc=$?
 seen=$(cat "$ENVOUT" 2>/dev/null || true)
-if [ "$rc" -eq 0 ] && [ "$seen" = "index=unset objdir=unset" ]; then
-  pass "26m: GIT_INDEX_FILE and GIT_OBJECT_DIRECTORY are cleared with the other GIT_* vars"
+if [ "$rc" -eq 0 ] && [ "$seen" = "index=unset objdir=unset alt=unset ceil=unset" ]; then
+  pass "26m: GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES and GIT_CEILING_DIRECTORIES are cleared with the other GIT_* vars"
 else
   fail "26m: rc=$rc seen='$seen' output: $out"
 fi

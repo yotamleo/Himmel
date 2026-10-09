@@ -204,8 +204,12 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # inherit it too; the runner always means the repo of its own cwd, so drop them
 # (HIMMEL-5104). GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY go with them: the suites
 # build throwaway repos and an inherited index or object store points those at
-# the caller's (HIMMEL-5111).
-unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+# the caller's (HIMMEL-5111). GIT_ALTERNATE_OBJECT_DIRECTORIES adds an object
+# store the same way, and GIT_CEILING_DIRECTORIES stops the work-tree walk-up the
+# suites' own fixtures rely on (HIMMEL-5120). GIT_CONFIG_* is deliberately left:
+# git_test_env_pin_perf below sets the pins suites depend on through it.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES
 # An empty answer is "no tree known" (a git that prints nothing would otherwise
 # be cd'd into IN PLACE and name the caller's cwd as a toplevel), so only a
 # printed path counts (HIMMEL-5111, the same shape as the scan-root guard below).
@@ -2856,7 +2860,8 @@ fi
 # ponytail: when git cannot name a toplevel for the scan root at all (dubious
 # ownership of just that tree, GIT_CEILING_DIRECTORIES above it) the guard fails
 # open, because "no tree known" is indistinguishable from "not a tree";
-# upgrade path: a `git rev-parse --git-dir` probe that tells the two apart.
+# upgrade path: a `git rev-parse --git-dir` probe that tells the two apart
+# (HIMMEL-5120).
 #
 # The scripts default is applied HERE, before the guard, so the default root is
 # checked like an explicit one and the guard never `cd ""`s in place
@@ -3388,6 +3393,73 @@ shard_assigned=0   # suites this shard claimed; 0 = an empty shard, a pass (HIMM
 # HIMMEL-2517 — how many failures were rc=127 (command or path not found).
 rc127=0
 failed_suites=""
+# HIMMEL-5116 — a suite that fails is re-run ONCE, alone. Passing on the retry
+# is a FLAKE: neither PASS nor FAIL, counted and listed in the summary, and
+# appended to a jsonl ledger (suite, case lines, sha, run id, ts) that CI uploads
+# with FAIL_LOG_DIR and the console tick reads locally. A second flake of one
+# suite inside SUITE_FLAKE_WINDOW_DAYS prints a loud "file a ticket" line (no
+# Jira call from CI). A suite whose header carries `# no-retry` is never
+# retried (a guard whose flake would mask a real race). A suite the watchdog
+# killed at its cap is never retried either: it has no observed exit status and
+# a second cap would double its cost.
+flake=0
+flaked_suites=""
+SUITE_FLAKE_WINDOW_DAYS="${SUITE_FLAKE_WINDOW_DAYS:-7}"
+case "$SUITE_FLAKE_WINDOW_DAYS" in ''|*[!0-9]*) SUITE_FLAKE_WINDOW_DAYS=7 ;; esac
+if [ -z "${SUITE_FLAKE_LEDGER:-}" ]; then
+  if [ -n "${FAIL_LOG_DIR:-}" ]; then
+    SUITE_FLAKE_LEDGER="$FAIL_LOG_DIR/flake-ledger.jsonl"
+  elif [ -n "${HOME:-}" ]; then
+    SUITE_FLAKE_LEDGER="$HOME/.himmel/suite-flake-ledger.jsonl"
+  else
+    SUITE_FLAKE_LEDGER=""
+  fi
+fi
+
+# _suite_no_retry <suite> — 0 when the first 20 lines carry a `# no-retry` mark.
+_suite_no_retry() {
+  head -n 20 "$1" 2>/dev/null | grep -qE '^#[[:space:]]*no-retry([[:space:]:]|$)'
+}
+
+# _flake_json_str — one stdin line as the inside of a JSON string.
+_flake_json_str() {
+  tr '\n\t' '  ' | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# _flake_record <suite-relpath> <first-rc> <first-log> — appends the ledger row
+# and prints the repeat-flake line when the suite already flaked inside the
+# window. Never changes the run's verdict: a ledger that cannot be written WARNs.
+_flake_record() {
+  local _s _cases _now _cut _prior _row
+  _s=$(printf '%s' "$1" | _flake_json_str)
+  _cases=$(grep -E '^[[:space:]]*(not ok|FAIL|\[FAIL\])' "$3" 2>/dev/null | head -n 3 | tr '\n' '|' | cut -c1-300 | _flake_json_str)
+  _now=$(date +%s 2>/dev/null || echo 0)
+  if [ -z "$SUITE_FLAKE_LEDGER" ]; then
+    printf '[NOTE] %s — flake not recorded: no ledger path (set SUITE_FLAKE_LEDGER)\n' "$1"
+    return 0
+  fi
+  if [ -L "$SUITE_FLAKE_LEDGER" ]; then
+    printf 'WARN: %s is a symlink — refusing to append the flake ledger row there.\n' "$SUITE_FLAKE_LEDGER" >&2
+    return 0
+  fi
+  _cut=$(( _now - SUITE_FLAKE_WINDOW_DAYS * 86400 ))
+  _prior=0
+  if [ -f "$SUITE_FLAKE_LEDGER" ]; then
+    _prior=$(awk -v s="\"suite\":\"$_s\"" -v min="$_cut" \
+      'index($0, s) && match($0, /"ts":[0-9]+/) { if (substr($0, RSTART + 5, RLENGTH - 5) + 0 >= min) n++ } END { print n + 0 }' \
+      "$SUITE_FLAKE_LEDGER" 2>/dev/null) || _prior=0
+  fi
+  _row=$(printf '{"suite":"%s","case":"%s","rc":%s,"sha":"%s","run":"%s","ts":%s}' \
+    "$_s" "$_cases" "$2" "$REPORT_HEAD" "$(printf '%s' "${GITHUB_RUN_ID:-}" | _flake_json_str)" "$_now")
+  mkdir -p "$(dirname "$SUITE_FLAKE_LEDGER")" 2>/dev/null
+  if ! printf '%s\n' "$_row" >> "$SUITE_FLAKE_LEDGER" 2>/dev/null; then
+    printf 'WARN: could not append the flake ledger row to %s\n' "$SUITE_FLAKE_LEDGER" >&2
+  fi
+  if [ "${_prior:-0}" -ge 1 ]; then
+    printf '[FLAKE-TICKET] file a ticket: %s has flaked %s time(s) before inside %s days — a repeat flake is a defect, not noise (HIMMEL-5116; no Jira call is made from CI)\n' \
+      "$1" "$_prior" "$SUITE_FLAKE_WINDOW_DAYS"
+  fi
+}
 timed_out=0
 cap_exceeded_clean=0
 unrun_suites=""
@@ -3932,6 +4004,12 @@ while IFS= read -r suite <&3; do
     continue
   fi
 
+  # HIMMEL-5116: attempt 1 is the normal run; a failed attempt 1 jumps back here
+  # once, for attempt 2. The body is not re-indented, to keep this diff reviewable.
+  _attempt=1
+  first_rc=""
+  first_log=""
+  while :; do
   log=$(mktemp)
   # Derived, not a second mktemp: same directory, same lifetime, one less fork.
   rcfile="$log.rc"
@@ -4024,11 +4102,34 @@ while IFS= read -r suite <&3; do
   # rm -rf fail, and that leftover is exactly what tmp-sweep.sh collects later.
   [ -n "$suite_tmp" ] && rm -rf "$suite_tmp" 2>/dev/null
 
+  if [ "$rc" -ne 0 ] && [ "$capped" -eq 0 ] && [ "$_attempt" -eq 1 ] && ! _suite_no_retry "$suite"; then
+    printf '[RETRY] %s failed (rc=%s); re-running it once (HIMMEL-5116)\n' "$suite" "$rc"
+    echo '----- first attempt, last 40 lines -----'
+    tail -n 40 "$log" | sed 's/^/    /'
+    echo '--------------------------'
+    first_rc=$rc
+    first_log="$log"
+    _attempt=2
+    continue
+  fi
+  break
+  done
+
   dur=$(( SECONDS - start ))
   ran=$((ran + 1))
   manifest_add "ran $rc ${mf_rel:-}"
 
-  if [ "$rc" -eq 0 ]; then
+  if [ "$rc" -eq 0 ] && [ "$_attempt" -eq 2 ]; then
+    flake=$((flake + 1))
+    flaked_suites="${flaked_suites}  ${suite} (first run rc=${first_rc}, passed on retry)
+"
+    printf '[FLAKE] %s (first run rc=%s, passed on retry, %ss)\n' "$suite" "$first_rc" "$dur"
+    _flake_record "$relpath" "$first_rc" "$first_log"
+    if [ -n "${FAIL_LOG_DIR:-}" ]; then
+      mkdir -p "$FAIL_LOG_DIR"
+      cp "$first_log" "$FAIL_LOG_DIR/$(printf '%s' "$relpath" | sed 's/_/_u/g; s#/#_s#g').flake.log" 2>/dev/null
+    fi
+  elif [ "$rc" -eq 0 ]; then
     pass=$((pass + 1))
     printf '[PASS] %s (%ss)\n' "$suite" "$dur"
     _log_has_skip_line "$log" && skipped_ran=$((skipped_ran + 1))
@@ -4113,6 +4214,7 @@ while IFS= read -r suite <&3; do
     fi
   fi
   rm -f "$log"
+  [ -z "$first_log" ] || rm -f "$first_log" "$first_log.rc"
 done 3< "$suites_file"
 
 if [ "$list_only" -eq 0 ] && [ "$sentinel_owner" -eq 1 ] && [ "$budget_expired" -eq 0 ]; then
@@ -4147,6 +4249,10 @@ if [ "$list_only" -eq 1 ]; then
 fi
 printf ' PASS: %s\n SKIP: %s\n FAIL: %s\n' "$pass" "$skip" "$fail"
 printf ' skipped=%s (suites counted in PASS that printed a SKIP line)\n' "$skipped_ran"
+if [ "$flake" -gt 0 ]; then
+  printf ' FLAKE: %s (failed once, passed on the single retry; not counted in PASS or FAIL)\n' "$flake"
+  printf 'Flaked suites (ledger: %s):\n%s' "${SUITE_FLAKE_LEDGER:-none}" "$flaked_suites"
+fi
 if [ "$timed_out" -gt 0 ]; then
   printf ' TIMED OUT: %s (counted in FAIL)\n' "$timed_out"
 fi
@@ -4237,6 +4343,10 @@ if [ -n "$report_pr" ]; then
   # glued onto the end of the FAIL line instead of on its own line. Purely
   # cosmetic (base-status.sh's FAIL:/TRUNCATED: matching is glob-based and
   # unaffected either way), fixed for a readable posted comment.
+  if [ "$flake" -gt 0 ]; then
+    summary_block="${summary_block}
+$(printf ' FLAKE: %s (failed once, passed on the single retry; not counted in PASS or FAIL)' "$flake")"
+  fi
   if [ "$timed_out" -gt 0 ]; then
     summary_block="${summary_block}
 $(printf ' TIMED OUT: %s (counted in FAIL)' "$timed_out")"
@@ -4394,5 +4504,9 @@ if [ "$ran" -eq 0 ]; then
   printf 'ERROR: no suites ran under scan root "%s" (all discovered suites were skipped) — refusing to report green.\n' "$scan" >&2
   exit 1
 fi
-echo "OK: all $ran run suites passed ($skip skipped) skipped=$skipped_ran"
+if [ "$flake" -gt 0 ]; then
+  echo "OK: all $ran run suites passed ($flake of them only on a retry — FLAKE, see the ledger) ($skip skipped) skipped=$skipped_ran"
+else
+  echo "OK: all $ran run suites passed ($skip skipped) skipped=$skipped_ran"
+fi
 exit 0
