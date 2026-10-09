@@ -328,7 +328,7 @@ for entry in $(git -C "$REPO_ROOT" grep -l -F '/anchor-handoff.sh" || exit 2' --
 done
 # Pin the entry set (HIMMEL-4739): a bare count let a new entry script slip in
 # or an old one drop out unnoticed. Adding an entry script means adding it here.
-t25_want="scripts/cr/clear-cr-marker.sh scripts/cr/cr-scores.sh scripts/cr/doc-freshness-advisory.sh scripts/cr/docs-audit-panel.sh scripts/cr/impacted-suites.sh scripts/cr/known-findings.sh scripts/cr/ledger-append.sh scripts/cr/orphan-check.sh scripts/cr/panel-first-pass.sh scripts/cr/review-round.sh scripts/cr/write-verdicts.sh scripts/handover/console-kit/go.sh scripts/handover/console-kit/write-verdict.sh scripts/handover/merge-on-green.sh"
+t25_want="scripts/cr/clear-cr-marker.sh scripts/cr/cr-scores.sh scripts/cr/doc-freshness-advisory.sh scripts/cr/docs-audit-panel.sh scripts/cr/impacted-suites.sh scripts/cr/known-findings.sh scripts/cr/ledger-append.sh scripts/cr/orphan-check.sh scripts/cr/panel-first-pass.sh scripts/cr/review-round.sh scripts/cr/write-verdicts.sh scripts/handover/console-kit/go.sh scripts/handover/console-kit/grant-round.sh scripts/handover/console-kit/write-verdict.sh scripts/handover/merge-on-green.sh"
 t25_got=$(git -C "$REPO_ROOT" grep -l -F '/anchor-handoff.sh" || exit 2' -- scripts/cr scripts/handover ':!*test-*' | sort | tr '\n' ' ' | sed 's/ $//')
 check "$t25_got" "$t25_want" "T25 hand-off entry set matches the pinned list ($t25_n found)"
 
