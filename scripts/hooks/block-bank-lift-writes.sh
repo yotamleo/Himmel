@@ -1476,8 +1476,7 @@ check_extract_coarse() {
 # check_interp_archive <args...>: `python -m tarfile|zipfile -e <archive>
 # [<dest>]` extracts like tar/unzip (HIMMEL-5094).
 check_interp_archive() {
-    local a mod="" st=0 ex=0 pre
-    local -a ops=() dests=()
+    local a mod="" st=0 pre n=0 lt=0
     for a in "$@"; do
         if [ -z "$mod" ]; then
             if [ "$st" = 1 ]; then mod="$a"; continue; fi
@@ -1496,13 +1495,18 @@ check_interp_archive() {
             esac
             continue
         fi
-        case "$a" in -e|--extract) ex=1 ;; -*) ;; *) ops+=("$a") ;; esac
+        case "$a" in
+            -l|--list|-t|--test) lt=1 ;;
+            -*) n=1 ;;
+        esac
     done
     case "$mod" in tarfile|zipfile) ;; *) return 0 ;; esac
-    [ "$ex" = 1 ] || return 0
+    # Only a pure list/test passes: every other option (-e and its
+    # abbreviations, a combined cluster, --filter VALUE, create) denies, with no
+    # operand modelling (fail closed).
+    [ "$lt" = 1 ] && [ "$n" = 0 ] && return 0
     EXTRACT_SEEN=1
-    [ "${#ops[@]}" -ge 2 ] && dests+=("${ops[1]}")
-    _dest_verdict "python -m $mod" 0 ${dests[@]+"${dests[@]}"}
+    deny "python -m $mod is allowed only as a pure list or test (-l/--list/-t/--test); any other form may extract into HOME or ~/.himmel"
 }
 
 # _homeish_word <word>: the word (or its -oVALUE / --opt=VALUE value) names
@@ -1531,37 +1535,34 @@ _text_names_home() {
     return 1
 }
 
-# _cd_home_in <text>: a cd/pushd in the text goes to a HOME bank-lift target.
-_cd_home_in() {
-    local t w p=0
-    t="${1//[^[:alnum:]_.\/~\$\{\}:+=-]/ }"
-    for w in $t; do
-        if [ "$p" = 1 ]; then
-            case "$w" in -*) continue ;; esac
-            _text_names_home "$w" && return 0
-            p=0
-        fi
-        case "$w" in cd|pushd) p=1 ;; esac
-    done
-    return 1
-}
+# DYN_DIR_RE: a directory-changing word (cd, pushd, popd, chdir, a CDPATH
+# assignment, env -C/--chdir, sudo -D/-C). It is read on the text with its
+# quotes and backslashes removed too, so 'cd', c\d and "c"d count (HIMMEL-5094).
+DYN_DIR_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)|CDPATH|chdir|(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*[CD]'
 
-# _cd_unknown_in <text>: a cd/pushd in the text has no operand (a bare cd goes
-# to HOME) or a computed one ($D, $(..), `..`: it may hold HOME), the two cwd
-# cases the literal-tool path already treats as HOME/unknown (HIMMEL-5094).
-_cd_unknown_in() {
-    local nl=$'\n' bare dyn
-    bare="(^|[^A-Za-z0-9_.-])(cd|pushd)[[:blank:]]*(-[A-Za-z-]*[[:blank:]]*)*([;&|)${nl}]|\$)"
-    dyn="(^|[^A-Za-z0-9_.-])(cd|pushd)[[:blank:]]+(-[A-Za-z-]*[[:blank:]]+)*[\"']?[^[:space:];&|]*[\$\`]"
-    [[ "$1" =~ $bare ]] && return 0
-    [[ "$1" =~ $dyn ]]
+# _dyn_ctx: classify the whole command ONCE (cached in DYN_CTX): no archive
+# word (none), a cwd at HOME or the bank-lift dir (cwd), any directory-changing
+# word (dir), else archive (arc). Per-clause work stays constant (perf).
+DYN_CTX=""
+SEP=$'\037'
+DYN_SAFE="$SEP"
+_dyn_ctx() {
+    [ -z "$DYN_CTX" ] || return 0
+    DYN_CTX=none
+    [[ "$CMD" =~ $EXTRACT_WORD_RE ]] || return 0
+    DYN_CTX=arc
+    case "$(_dir_kind "$CWD")" in HOME|HIMMEL|STATE) DYN_CTX=cwd; return 0 ;; esac
+    local bare="${CMD//[\\\"\']/}"
+    if [[ "$CMD" =~ $DYN_DIR_RE ]] || [[ "$bare" =~ $DYN_DIR_RE ]]; then DYN_CTX=dir; fi
+    return 0
 }
 
 # _dyn_cmd_check <command-word> <args...>: a command word held in a variable
 # or substitution cannot be read (HIMMEL-5094). It denies when an argument
 # names HOME/~/.himmel, or when the command also names an archive tool and
-# either a computed argument beside a HOME word, or a cwd (or a cd) at HOME or
-# the bank-lift dir.
+# there is a cwd at HOME or the bank-lift dir, ANY directory-changing word, or
+# ANY computed argument. Fail closed, no operand parsing: the literal-tool
+# path's verdict, applied to a command word it cannot read.
 _dyn_cmd_check() {
     local w="$1" a dynarg=0
     shift
@@ -1569,21 +1570,22 @@ _dyn_cmd_check() {
     case "$w" in *'$'*|*'`'*) ;; *) return 0 ;; esac
     case "$(_expand "$w")" in *'$'*|*'`'*) ;; *) return 0 ;; esac
     for a in "$@"; do
-        _homeish_word "$a" && deny "a command word held in a variable or substitution ($w) is handed HOME or ~/.himmel ($a), so it may be an extractor; name the command literally"
+        # A word already judged not HOME-ish is not judged again (the cwd is
+        # fixed for the command), so a long chain pays once per distinct word.
+        if [[ "$DYN_SAFE" != *"$SEP$a$SEP"* ]]; then
+            _homeish_word "$a" && deny "a command word held in a variable or substitution ($w) is handed HOME or ~/.himmel ($a), so it may be an extractor; name the command literally"
+            DYN_SAFE="$DYN_SAFE$a$SEP"
+        fi
         _is_dynamic "$a" && dynarg=1
     done
-    if [[ "$CMD" =~ $EXTRACT_WORD_RE ]]; then
-        if [ "$dynarg" = 1 ] && _text_names_home "$CMD"; then
-            deny "a command word held in a variable or substitution ($w) is handed a computed argument beside an archive tool and a HOME spelling, so it may extract into HOME; name the command and destination literally"
-        fi
-        case "$(_dir_kind "$CWD")" in HOME|HIMMEL|STATE) deny "a command word held in a variable or substitution ($w) runs beside an archive tool in HOME or the bank-lift dir, so it may extract there; name the command literally" ;; esac
-        if _cd_unknown_in "$CMD"; then
-            deny "a command word held in a variable or substitution ($w) runs beside an archive tool after a bare cd (HOME) or a cd to a computed directory, so it may extract into HOME; name the command literally"
-        fi
-        if _cd_home_in "$CMD"; then
-            deny "a command word held in a variable or substitution ($w) runs beside an archive tool after a cd into HOME or the bank-lift dir, so it may extract there; name the command literally"
-        fi
-    fi
+    _dyn_ctx
+    case "$DYN_CTX" in
+        cwd) deny "a command word held in a variable or substitution ($w) runs beside an archive tool in HOME or the bank-lift dir, so it may extract there; name the command literally" ;;
+        dir) deny "a command word held in a variable or substitution ($w) runs beside an archive tool and a directory-changing word (cd, pushd, popd, CDPATH, env -C, sudo -D), so the cwd is unknown and it may extract into HOME; name the command and destination literally" ;;
+        arc) if [ "$dynarg" = 1 ]; then
+                deny "a command word held in a variable or substitution ($w) is handed a computed argument beside an archive tool, so it may extract into HOME; name the command and destination literally"
+            fi ;;
+    esac
     return 0
 }
 
