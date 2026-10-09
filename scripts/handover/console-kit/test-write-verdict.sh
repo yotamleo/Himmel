@@ -146,6 +146,12 @@ check "3: missing evidence refused rc 2" "$rc" 2
 : > "$evd/empty.md"
 rc=0; wv q3 GO "$SHA_A" --evidence-file "$evd/empty.md" >/dev/null 2>&1 || rc=$?
 check "3: empty evidence refused rc 2" "$rc" 2
+printf 'evidence\0tail\n' > "$evd/nul.md"
+rc=0; wv q3 GO "$SHA_A" --evidence-file "$evd/nul.md" >/dev/null 2>&1 || rc=$?
+check "3: NUL-bearing evidence refused rc 2 (HIMMEL-4984)" "$rc" 2
+printf 'evidence\033[31mred\n' > "$evd/ctl.md"
+rc=0; wv q3 GO "$SHA_A" --evidence-file "$evd/ctl.md" >/dev/null 2>&1 || rc=$?
+check "3: control-byte evidence refused rc 2 (HIMMEL-4984)" "$rc" 2
 rc=0; wv q3 GO "$SHA_A" >/dev/null 2>&1 || rc=$?
 check "3: no --evidence-file refused rc 2" "$rc" 2
 rc=0; wv q3 GO "$SHA_A" --evidence-file "$ev" --judge '../x' >/dev/null 2>&1 || rc=$?

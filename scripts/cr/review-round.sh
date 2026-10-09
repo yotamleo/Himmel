@@ -405,14 +405,16 @@ judge_nogo_record() (
                 exit 1
             fi
         fi
-        hit="" bad=0 macbad=0
+        hit="" bad=0 macbad=0 snapfail=0
         for f in "$qdir"/*.md; do
             [ -e "$f" ] || [ -L "$f" ] || continue
             if [ -L "$f" ] || [ ! -f "$f" ]; then bad=1; break; fi
             name="${f##*/}"; name="${name%.md}"
             case "$name" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) bad=1; break ;; esac
             # HIMMEL-4984: one read; the mac and every field come from this copy.
-            go_verdict_snapshot "$f" || { bad=1; break; }
+            # A record that cannot be read whole may be a NO-GO: its qid stays in
+            # the class history (the class check then fails closed on it).
+            if ! go_verdict_snapshot "$f"; then snapfail=1; bad=1; break; fi
             snap=$GO_VERDICT_SNAP
             l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8="" l9="" l10="" l11=""
             { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4
@@ -443,6 +445,7 @@ EOF_SNAP
                 fi
             fi
         done
+        [ "$snapfail" -eq 0 ] || check_hits="${check_hits:+$check_hits }$qid/unreadable"
         if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then
             check_hits="${check_hits:+$check_hits }$hit"
             if [ "$consumed" -eq 0 ] && [ "$macbad" -eq 0 ] && [ -n "$bound" ]; then hits="${hits:+$hits }$bound"; fi
@@ -529,7 +532,12 @@ judge_scope_record() (
     # not the judges' last word.
     for nf in "$dir"/*/*.md; do
         [ -f "$nf" ] && [ ! -L "$nf" ] || continue
-        nl8=$(sed -n '8p' "$nf" 2>/dev/null | tr -d '\r')
+        # A record that cannot be read whole may be a NO-GO: it vetoes, never skips.
+        if ! go_verdict_snapshot "$nf"; then
+            echo "review-round: ${nf#"$dir"/} cannot be read whole (unreadable, empty or NUL) - the scope round is refused (HIMMEL-4984)" >&2
+            exit 8
+        fi
+        nl8=$(printf '%s' "$GO_VERDICT_SNAP" | sed -n '8p' | tr -d '\r')
         case "$nl8" in
             "**NO-GO** for head \`$want\`"|"**NO-GO** for head \`$want\`.")
                 echo "review-round: ${nf#"$dir"/} rules NO-GO for $want - the scope round is refused (HIMMEL-4984)" >&2
@@ -557,7 +565,10 @@ judge_scope_record() (
             name="${f##*/}"; name="${name%.md}"
             case "$name" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) bad=1; break ;; esac
             # HIMMEL-4984: one read; the mac and every field come from this copy.
-            go_verdict_snapshot "$f" || { bad=1; break; }
+            if ! go_verdict_snapshot "$f"; then
+                echo "review-round: ${f#"$dir"/} cannot be read whole (unreadable, empty or NUL) - the scope round is refused (HIMMEL-4984)" >&2
+                exit 8
+            fi
             snap=$GO_VERDICT_SNAP
             l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8="" l9="" l10="" l11=""
             { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4

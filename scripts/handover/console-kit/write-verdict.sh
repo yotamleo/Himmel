@@ -184,6 +184,12 @@ if [ ! -f "$EVIDENCE" ] || [ ! -r "$EVIDENCE" ] || [ ! -s "$EVIDENCE" ]; then
     echo "write-verdict: evidence file '$EVIDENCE' is missing, unreadable, not a regular file or empty" >&2
     exit 2
 fi
+# HIMMEL-4984: a record is text. A NUL or other control byte (tab, LF and CR
+# stay) would make every consumer's whole-file read refuse the record.
+if [ "$(wc -c < "$EVIDENCE")" != "$(LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' < "$EVIDENCE" | wc -c)" ]; then
+    echo "write-verdict: evidence file '$EVIDENCE' holds a NUL or non-text control byte - refusing (HIMMEL-4984)" >&2
+    exit 2
+fi
 # HIMMEL-4885: every new NO-GO names the finding class before it can buy
 # a delta round. GO evidence need not carry a class. Keep one unambiguous
 # field; unknown labels and empty members cannot become a fresh class.

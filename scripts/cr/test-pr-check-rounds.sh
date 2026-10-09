@@ -1207,7 +1207,7 @@ assert_has "$cr_out" "option-parsing" "class repeat refusal names the class"
 assert_has "$cr_out" "layer-decision:" "class repeat refusal names the way out"
 # Keep the first head's history on this branch, but use a different class
 # for other positive controls so unrelated fixture qids cannot stop them.
-for class_case in different-class-allowed layer-decision-unlocks other-repeat-refused class-set-overlap-refused legacy-classless-nogo-never-matches finding-trigger-history-retained second-candidate-repeat-refused candidate-class-history-retained unsigned-nogo-still-vetoes forged-layer-decision-refused foreign-pr-layer-decision-refused; do
+for class_case in different-class-allowed layer-decision-unlocks other-repeat-refused class-set-overlap-refused legacy-classless-nogo-never-matches finding-trigger-history-retained second-candidate-repeat-refused candidate-class-history-retained unsigned-nogo-still-vetoes forged-layer-decision-refused foreign-pr-layer-decision-refused unreadable-sibling-fails-closed; do
     cc_panel=clean
     [ "$class_case" != finding-trigger-history-retained ] || cc_panel=suggestion
     three_rounds "$class_case" "$cc_panel"
@@ -1224,6 +1224,7 @@ for class_case in different-class-allowed layer-decision-unlocks other-repeat-re
         other-repeat-refused) cc_first_class=other; cc_next_class=other ;;
         class-set-overlap-refused) cc_first_class='shell-parsing, option-parsing'; cc_next_class='reader-allowlist, shell-parsing' ;;
         legacy-classless-nogo-never-matches) cc_want=0 ;;
+        unreadable-sibling-fails-closed) cc_next_class=cwd-indirection ;;
     esac
     printf 'class: %s\n\nfirst finding\n' "$cc_first_class" > "$jev/judge-evidence.md"
     judge "$class_case-first" NO-GO "$cc_first"
@@ -1263,13 +1264,22 @@ for class_case in different-class-allowed layer-decision-unlocks other-repeat-re
             bash "$fx/scripts/handover/console-kit/write-verdict.sh" "a-$class_case-next" NO-GO "$cc_second" \
             --pr 2 --evidence-file "$jev/judge-evidence.md" >/dev/null 2>"$tmp/judge-foreign.err" || fail "judge writes foreign-pr record"
     fi
+    if [ "$class_case" = unreadable-sibling-fails-closed ]; then
+        # HIMMEL-4984: a repeated-class NO-GO whose qid also holds an empty (unreadable
+        # whole) sibling keeps its qid in the class history; the round is refused,
+        # not granted on the readable different-class record alone.
+        printf 'class: option-parsing\n\nrepeat in a qid with a broken sibling\n' > "$jev/judge-evidence.md"
+        judge "b-$class_case" NO-GO "$cc_second"
+        : > "$vscope/b-$class_case/z-empty.md"
+    fi
     # HIMMEL-4984: an unsigned NO-GO buys no round but still feeds the class veto.
     [ "$class_case" != unsigned-nogo-still-vetoes ] || sed -i.bak '/^mac: /d' "$vscope/$class_case-next/judge.md"
     cc_out="$(start_round "$cc_third" clean "$class_case")"; cc_rc=$?
     assert_eq "$cc_rc" "$cc_want" "$class_case"
+    rm -f "$vscope/b-$class_case/z-empty.md"
     if [ "$cc_want" = 8 ]; then
         assert_eq "$(cat "$git_dir/cr-review-rounds/$class_case.round")" "4" "$class_case leaves counter unchanged"
-        assert_has "$cc_out" "layer-decision:" "$class_case names decision remedy"
+        [ "$class_case" = unreadable-sibling-fails-closed ] || assert_has "$cc_out" "layer-decision:" "$class_case names decision remedy"
     fi
 done
 # A consumed qid cannot buy another round, but later NO-GOs in that
@@ -1590,7 +1600,7 @@ rm -rf "$vscope/sg-1"
 
 # HIMMEL-4984: a record admits a scope round only when it carries a valid mac
 # and binds to this branch and PR; any NO-GO for the new head blocks it.
-for sx_case in sx-ok sx-unsigned sx-edited sx-other-pr sx-other-branch sx-nogo-beside; do
+for sx_case in sx-ok sx-unsigned sx-edited sx-other-pr sx-other-branch sx-nogo-beside sx-unreadable-sibling; do
     three_rounds "$sx_case" clean
     sx_r3="$cap_r3_head"
     scope_commit "$sx_case" "tests/test-$sx_case.sh"
@@ -1610,12 +1620,16 @@ for sx_case in sx-ok sx-unsigned sx-edited sx-other-pr sx-other-branch sx-nogo-b
     case "$sx_case" in
         sx-unsigned) sed -i.bak '/^mac: /d' "$vscope/$sx_case/judge.md"; rm -f "$vscope/$sx_case/judge.md.bak" ;;
         sx-edited) sed -i.bak 's/no production path/no prod/' "$vscope/$sx_case/judge.md"; rm -f "$vscope/$sx_case/judge.md.bak" ;;
+        sx-unreadable-sibling)
+            # a record that cannot be read whole may be a NO-GO: it vetoes, never skips
+            mkdir -p "$vscope/$sx_case-other"; : > "$vscope/$sx_case-other/judge.md" ;;
         sx-nogo-beside)
             printf 'class: tool-defaults\n\na NO-GO for the same head\n' > "$jev/judge-evidence.md"
             judge "$sx_case-nogo" NO-GO "$sx_head" ;;
     esac
     sx_rc=0; start_round "$sx_head" clean "$sx_case" >/dev/null || sx_rc=$?
     assert_eq "$sx_rc" "$sx_want" "$sx_case"
+    rm -rf "$vscope/$sx_case-other"
     [ "$sx_want" = 0 ] || assert_eq "$(cat "$git_dir/cr-review-rounds/$sx_case.round")" "3" "$sx_case leaves counter unchanged"
 done
 

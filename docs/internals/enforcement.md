@@ -3159,7 +3159,11 @@ scope paths). A `layer-decision:` lifts the HIMMEL-4885 repeated-class stop only
 from a record whose mac verified (an unsigned NO-GO still feeds the classes and
 still vetoes, but cannot unlock). Every consumer reads a record once and
 verifies and parses that one copy (`go_verdict_snapshot`), so a rewrite between
-the check and the read cannot reuse a verified mac. `go_trust_verdict` also refuses a scope-round record
+the check and the read cannot reuse a verified mac. A record that cannot be read
+whole (unreadable, empty, NUL byte) fails closed: `go_trust_verdict` refuses (rc 2)
+and the scope round is refused rather than skip it, and `judge_nogo_record` keeps its
+qid in the repeated-class history; `write-verdict.sh` refuses NUL and other
+non-text control bytes in evidence. `go_trust_verdict` also refuses a scope-round record
 (`delta-scope:` / `delta-from:`), and `review-round.sh` binds scope records to
 the branch's PR/branch and lets any NO-GO for the new head block the scope round.
 Records written before this change are unsigned and are refused; re-run

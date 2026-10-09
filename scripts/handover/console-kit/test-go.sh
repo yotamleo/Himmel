@@ -499,6 +499,34 @@ rc=0; HANDOVER_DIR="$ROOT18" bash "$SCRIPT" --trust-reviewed M4 95 "$SHA" >/dev/
 check "4984: a signed GO still satisfies --trust-reviewed -> exit 0" "$rc" "0"
 VPR=
 
+# --- 19. HIMMEL-4984: a sibling record that cannot be read whole vetoes -------
+# A signed GO beside a sibling that is NUL-bearing, empty or mode 000 must not be
+# admitted: the sibling may be a NO-GO that main would honour (fail closed).
+ROOT19="$tmp/root19"; mkdir -p "$ROOT19"
+t19() {  # <label> <qid> - expect a refusal naming the unreadable record
+  local rc=0
+  out="$(HANDOVER_DIR="$ROOT19" bash "$SCRIPT" --trust-reviewed "$2" 96 "$SHA" 2>&1)" || rc=$?
+  check "4984: $1 -> exit 5" "$rc" "5"
+  contains "4984: $1 -> says why" "$out" "cannot be read whole"
+  check "4984: $1 -> nothing written" "$(find "$ROOT19/.locks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+}
+VPR=96
+verdict "$ROOT19" N1 "**GO** for head \`$SHA\`."
+verdict "$ROOT19" N1 "**NO-GO** for head \`$SHA\`." zz-nogo
+printf 'x\0y\n' >> "$ROOT19/$VSCOPE/verdicts/N1/zz-nogo.md"
+t19 "a NUL-bearing sibling beside a signed GO" N1
+verdict "$ROOT19" N2 "**GO** for head \`$SHA\`."
+: > "$ROOT19/$VSCOPE/verdicts/N2/zz-empty.md"
+t19 "an empty sibling beside a signed GO" N2
+verdict "$ROOT19" N3 "**GO** for head \`$SHA\`."
+verdict "$ROOT19" N3 "**NO-GO** for head \`$SHA\`." zz-locked
+chmod 000 "$ROOT19/$VSCOPE/verdicts/N3/zz-locked.md"
+if [ "$(id -u)" != 0 ]; then
+  t19 "a mode-000 sibling beside a signed GO" N3
+fi
+chmod 600 "$ROOT19/$VSCOPE/verdicts/N3/zz-locked.md"
+VPR=
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-go.sh"

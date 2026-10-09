@@ -155,7 +155,8 @@ go_verdict_scope() (
 # in <go-root>/<user>/<bucket>/verdicts/<qid>/ — ONLY the scope go_verdict_scope
 # resolves for <anchor> (HIMMEL-4589: another user's or repo's verdict dir, which
 # a judge there can write for any qid, never counts; an unresolved scope refuses)
-# — no file is unparsed, none is NO-GO for <head-sha>, and at least one is GO for
+# — no file is unparsed or unreadable whole (HIMMEL-4984: an unreadable, empty or
+# NUL-bearing record refuses, never skips), none is NO-GO for <head-sha>, and at least one is GO for
 # <head-sha>. A verdict for another head is ignored (an earlier round). Fail
 # closed: a GO naming no head, trailing text, or no verdict line refuses. rc 2 =
 # refused, the reason on stdout. Read-only.
@@ -189,7 +190,12 @@ go_trust_verdict() {
     for f in "$root/$scope/verdicts/$qid"/*.md; do
         [ -f "$f" ] || continue
         # HIMMEL-4984: one read; the mac, the scope check and every field come from it.
-        go_verdict_snapshot "$f" || continue
+        # A record that cannot be read whole (unreadable, empty, NUL byte) vetoes:
+        # it may be a NO-GO main would honour, so it is never skipped.
+        if ! go_verdict_snapshot "$f"; then
+            printf 'the verdict in %s cannot be read whole (unreadable, empty or holds a NUL byte) — refusing rather than skip a record that may be a NO-GO (HIMMEL-4984).\n' "$f"
+            return 2
+        fi
         snap=$GO_VERDICT_SNAP
         line=$(printf '%s' "$snap" | tr -d '\r' | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }')
         word=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `[0-9a-f]{40}`\.?$/\1/p')
@@ -454,6 +460,10 @@ go_verdict_mac_ok() {
 # GO_VERDICT_SNAP (a trailing sentinel keeps the final newline). A caller
 # verifies the mac and parses its fields from this one copy, so a rewrite
 # between the two reads cannot make a verified mac vouch for different bytes.
+# Returns non-zero when the file is unreadable, empty or holds a NUL byte. That
+# is a failure, not "no record": a trust consumer treats it as a veto (a record
+# it cannot read whole may be a NO-GO), and only a caller that is itself
+# building a refusal may treat it as a bad record.
 go_verdict_snapshot() {
     local tmp size kept
     GO_VERDICT_SNAP=""
