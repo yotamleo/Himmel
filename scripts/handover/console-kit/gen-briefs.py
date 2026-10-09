@@ -14,7 +14,9 @@ legs.json is a list of objects. Required keys per leg: label (N<k>), keys
 (ticket keys, first is the doc's), slug, branch (type/slug), title, desc, why,
 prior, scope, scope_short, commit. Optional: hook (true: the launcher exports
 the hook-integrity bypass, the brief says so; default false), judge (true: the
-console runs an opus judge before GO; default false), extra (appended to the
+console runs an opus judge before GO; default false), env (true: the ticket touches CI, infra or the
+environment, so the RED-first contract requires a fixture copied from the real environment; default
+false), extra (appended to the
 RED-first contract line), model (default claude-sonnet-5-5), lane (the manifest
 lane the printed add line passes as --lane; default native, the lane of the
 launchers written here). The brief follows
@@ -41,6 +43,8 @@ HOOK_LINE = ("> - **Native lane.** You are launched with the hook-integrity bypa
 PLAIN_LINE = "> - **Native lane, no bypass.**"
 JUDGE_LINE = ("This touches a guard/gate, so the console runs an opus judge before GO. If your diff touches a pattern in "
               "`scripts/ci/ci-trust-paths.txt`, say so in READY (trust-reviewed GO).")
+ENV_LINE = ("This ticket touches CI, infra or the environment: one test row's fixture must be copied from the real environment "
+            "(this PR's CI log, the upstream image config), not hand-written, and RED before the fix.")
 TRUST_LINE = "If your diff touches a pattern in `scripts/ci/ci-trust-paths.txt`, say so in READY (trust-reviewed GO)."
 
 
@@ -95,7 +99,7 @@ template_version: 3
 
 > **Contract:**
 > 1. LIVE; paste `git log -1 --format=%H` + base-ancestor check via `append-results.sh` (never `>` in a bullet).
-> 2. Do exactly what the ticket asks, smallest correct change. RED first: a failing test row reproducing the defect, shown failing before the fix. {extra}
+> 2. Do exactly what the ticket asks, smallest correct change. RED first: a failing test row reproducing the defect, shown failing before the fix. {extra}{envline}
 > 3. Impacted suites: `scripts/cr/impacted-suites.sh` over your diff, a verdict per suite. Run them, and the full suite of every file you touched, BEFORE opening the PR: a CI fix after the third review round cannot be re-reviewed without the operator.
 > 4. Ship: commit `{commit}`; FIRST-commit trailers `Platforms tested: linux` (shell/script diffs), `Security reviewed: manual — <what you checked>` (non-docs code); `## Ticket coverage` in the PR body (`ready-check.sh --only 7 <pr>`); completes-ticket: yes (if the PR title carries a second key, say so after MERGED so the console closes it). /pr-check (≤3 rounds), CI green, `ready-check.sh <pr> <full-head>`, then `READY <pr> <full-40-hex-head> GREEN` to the console quoting your token. {judge} Merge only on GO with `merge-on-green.sh --jira-transition`. MERGED, `cd` out, WRAPPED, release the lock, `bash scripts/handover/wrap-subtree-check.sh`.
 > 5. CI: a shell-unit shard dying with exit 124 in apt-get before any suite ran is a known mirror flake (HIMMEL-2872); you may `gh run rerun <id> --failed` once per run and report it.
@@ -108,7 +112,7 @@ template_version: 3
 """.format(wt=l['wt'], desc=l['desc'], keystr=' + '.join(keys), title=l['title'], n=n, model=l['model'], date=ctx['date'],
            branch=l['branch'], base=ctx['base'], nonce=l['nonce'], console=ctx['console'], hroot=ctx['hroot'],
            hookline=HOOK_LINE if l['hook'] else PLAIN_LINE, gets=gets, why=l['why'], prior=l['prior'],
-           extra=l.get('extra', ''), commit=l['commit'], judge=JUDGE_LINE if l['judge'] else TRUST_LINE,
+           extra=l.get('extra', ''), envline=(' ' + ENV_LINE) if l.get('env') else '', commit=l['commit'], judge=JUDGE_LINE if l['judge'] else TRUST_LINE,
            scope=l['scope'], others=others, also=also)
 
 

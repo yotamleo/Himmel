@@ -37,6 +37,16 @@ guessing past it. A judge that cannot say no on a known-bad finding is not
 evidence; do not let a completion condition or a leading prompt talk you
 into confirming something the evidence does not support.
 
+## Checklist for a code, CI or infra diff
+
+Apply the "Judge checklist" in `docs/handover/judge-brief-template.md`: real
+environment evidence (the PR's CI log, upstream config) over fixtures; a
+mutation spot-check for every guard, gate or timeout (remove it, a test must go
+RED); the recurring classes (env override away from its reader, fail-open
+default, silent rc-0 drop, symlink replaced not refused, a cross-process string
+compare without `TZ` and `LC_ALL` pinned); and the tree-scan
+suites run in full for an added script, ledger, launch site or `.ps1`.
+
 ## What to return
 
 A verdict, not an action: your answer states what you were asked, what you
