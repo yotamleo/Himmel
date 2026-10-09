@@ -835,6 +835,9 @@ jobs:
       # No `.list`/`.sources` suffix on the glob: ubuntu-24.04 runner images
       # ship these as deb822 `.sources` files, not legacy one-line `.list`
       # files, and a suffix-anchored glob silently matched nothing.
+      # HIMMEL-4912: install bubblewrap (and socat, which the live pilot-4869
+      # jail checks drive) here too so Linux corpus/replay suites exercise the
+      # real containment boundary rather than capability-skip.
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
         # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Each apt call
@@ -850,14 +853,20 @@ jobs:
           # HIMMEL-4073: try the plain install first (the runner's package
           # index is usually fresh enough); only a failure pays for an index
           # refresh and a retry. Each branch logs which path ran.
-          if sudo timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 at; then
+          if sudo timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 at bubblewrap socat; then
             echo "at/atd install: plain install succeeded, index refresh skipped"
           else
             echo "at/atd install: plain install failed, falling back to index refresh + retry"
             sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
-            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at
+            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at bubblewrap socat
           fi
           sudo systemctl enable --now atd || sudo service atd start || true
+      # HIMMEL-4912: ubuntu-24.04 refuses unprivileged user namespaces by default
+      # (AppArmor), so bwrap fails with `RTM_NEWADDR: Operation not permitted` and
+      # the sandboxed suites fail or hit their caps. Same step as claude-startup.
+      - name: Allow unprivileged user namespaces (Linux — bwrap sandbox)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
       # and fails closed ("required test tool not found before PATH scrub:
@@ -928,6 +937,9 @@ jobs:
         env:
           FAIL_LOG_DIR: failed-suite-logs
           SUITE_TIER_MODE: ${{ github.event_name == 'schedule' && 'all' || 'fast' }}
+          # HIMMEL-4912: the shards (60 min) always run the fast guard-corpus
+          # subset; the full replay runs in the schedule-only guard-corpus-full job.
+          GUARD_CORPUS_TIER: fast
           SUITE_CHANGED_SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
           SUITE_IMPACTED_FROM_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref == github.event.repository.default_branch && github.event.pull_request.base.sha || '' }}
           SUITE_MANIFEST: shard-manifest/manifest-shard${{ matrix.shard }}.txt
@@ -1137,3 +1149,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci/shell-extended-nightly-issue.sh 1 "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  # HIMMEL-4912: the full guard-corpus replay (every row in a fresh bwrap
+  # sandbox) takes ~143 min on a CI runner (1407s local x ~6; unmeasured here
+  # until the first nightly), far past the 60-min shell-unit-shard cap, so it
+  # runs in its own schedule-only job instead of a shard. PR CI and the
+  # nightly shards run the fast subset (GUARD_CORPUS_TIER=fast). The 240-min
+  # cap is the estimate x1.7; a red here is the nightly's own signal and
+  # gates no PR.
+  # ponytail: one job, serial; upgrade path: shard the replay (HIMMEL-5055).
+  guard-corpus-full:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install bubblewrap + socat
+        run: |
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends bubblewrap socat
+      - name: Allow unprivileged user namespaces (bwrap sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Full guard-corpus replay
+        run: bash scripts/eval/guard-corpus/test-guard-corpus.sh

@@ -289,6 +289,27 @@ _suite_timeout_for() {
   fi
 
   case "${1#./}" in
+    scripts/eval/guard-corpus/test-guard-corpus.sh|*/scripts/eval/guard-corpus/test-guard-corpus.sh)
+      # HIMMEL-4912: runtime IPC masking scans before every fresh hook sandbox.
+      # Full replay: 1407s local sequential, 1437s timed (2026-10-08); PR CI
+      # killed it at 3000s with the replay unfinished (run 37840193447, shard
+      # 6), so the CI figure is ~6x local (~8600s). Fast tier (PR CI) runs the
+      # suite's subset: 117s local, 745-1004s on CI; the cap (1800s, x1.8 of the
+      # slowest) kills a regression so a hung subset cannot hold a shard. Do not cache scans or drop
+      # masks to fit the generic 600s cap.
+      # ponytail: the full-tier cap is the CI estimate x1.25 and unmeasured on
+      # CI, upgrade path: shard the full replay and re-measure (HIMMEL-5055).
+      # The nightly shards run tier all with GUARD_CORPUS_TIER=fast: the full
+      # replay runs in the scheduled-only guard-corpus-full job, not a 60-min shard.
+      if [ "${SUITE_TIER_MODE:-all}" = fast ] || [ "${GUARD_CORPUS_TIER:-}" = fast ]; then printf '1800'; else printf '10800'; fi ;;
+    scripts/hooks/test-block-destructive-commands.sh|*/scripts/hooks/test-block-destructive-commands.sh)
+      # HIMMEL-4912: every fixture now starts a fresh bwrap sandbox. Linux with
+      # bwrap working measured 263s alone (2026-10-08). On the CI runner (bwrap
+      # working after the ci.yml userns sysctl) the suite was killed at the
+      # 1200s cap with ~80% of its fixtures done (PR 2177 shard 1, run
+      # 37828342755), so ~1500s there; 3000s is that x2 (the loaded-budget rule,
+      # same as the guard-corpus arm above).
+      printf '3000' ;;
     scripts/handover/test-arm-resume-identity.sh|*/scripts/handover/test-arm-resume-identity.sh)
       # HIMMEL-2120 Task-6 fresh-boot idle benchmark (2026-08-27): new idle
       # 814s, rc=0 (reproduced at 802s, rc=0, same day). The prior 08-26 idle
@@ -808,7 +829,14 @@ esac
 # the second layer for direct invocation (belt and braces, HIMMEL-1788).
 # Env-overridable (SUITE_REQUIRE_TOOL) so the self-test can drive the skip
 # branch deterministically on hosts that DO have the tool.
+_sandbox_tool=bwrap
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  Darwin) _sandbox_tool=sandbox-exec ;;
+esac
 SUITE_REQUIRE_TOOL_DEFAULT="
+scripts/lib/test-sandbox-run.sh  $_sandbox_tool  # real corpus confinement boundary (HIMMEL-4912)
+scripts/eval/guard-corpus/test-guard-corpus.sh  $_sandbox_tool  # every replay hook runs confined (HIMMEL-4912)
+scripts/hooks/test-block-destructive-commands.sh  $_sandbox_tool  # destructive-shaped fixtures are classified only behind the sandbox (HIMMEL-4912)
 scripts/test-claude-openrouter-pwsh.sh  pwsh  # PowerShell twin smoke suite for claude-openrouter.ps1 (HIMMEL-1792); runs wherever pwsh exists, loud-skips where it does not
 scripts/lib/test-native-auth-pin-pwsh.sh  pwsh  # PowerShell twin suite for native-auth-pin.ps1 (HIMMEL-1867); runs wherever pwsh exists, loud-skips where it does not
 scripts/telegram/test-phi-egress-guard-parity.sh  bun  # cross-language parity check (scripts/claude-glm vs scripts/telegram/phi-egress-guard.ts) (HIMMEL-2204); runs wherever bun exists, loud-skips where it does not
@@ -1037,6 +1065,11 @@ capability_lookup() {
     [ -n "$_path" ] || continue
     if suite_entry_matches "$_path" "$needle"; then
       _cap_reason=${_line#*# }
+      if [ "$_sandbox_tool" = sandbox-exec ] && [ "$_cap_tool" = sandbox-exec ] \
+          && ! command -v sandbox-exec >/dev/null 2>&1; then
+        printf 'ERROR: required Darwin sandbox-exec missing; refusing corpus suite skip\n' >&2
+        exit 125
+      fi
       return 0
     fi
   done <<EOF

@@ -324,6 +324,15 @@ An observation meant to be "clean" runs through `scripts/lib/clean-sandbox.sh
 [--keep VAR]... -- <cmd>` (`env -i`, prints the env it passed), never a
 hand-rolled `HOME=… cmd`, which keeps every other operator variable.
 
+**Corpus/replay tests run through the sandbox runner; execution of destructive
+commands is VM-only (HIMMEL-4886).** Use `bash scripts/lib/sandbox-run.sh --
+<command> [args...]` for corpus/replay classification (HIMMEL-4912). A missing
+bubblewrap or unavailable namespace on Linux, or missing/unusable sandbox-exec
+profile on Darwin, is a refusal, never permission to run unsandboxed. Darwin
+confines writes to private scratch and denies network; it does not claim Linux
+namespace/resource isolation. The only executing station canary is a harmless touch inside a
+throwaway tmp directory.
+
 **Impacted suites = every suite that references a file you touched**
 (`git grep -l` from the worktree), not the suites in the directory you edited.
 `bash scripts/cr/impacted-suites.sh` lists them; with no argument it uses
