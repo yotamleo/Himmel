@@ -97,6 +97,7 @@ chmod +x "$TMP/bin/claude"
 cat >"$TMP/bin/preflight" <<'FAKE'
 #!/usr/bin/env bash
 echo "bank-preflight: five_hour=${LQ_FAKE_5H:-10.0} seven_day=3.0" >&2
+[ -z "${LQ_FAKE_PFENV:-}" ] || env >>"$LQ_FAKE_PFENV"
 if [ -n "${LQ_FAKE_PROCEED_N:-}" ]; then
   echo x >>"$LQ_FAKE_CALLS"
   [ "$(wc -l <"$LQ_FAKE_CALLS")" -le "$LQ_FAKE_PROCEED_N" ] || { echo SKIPPED-BANK; exit 0; }
@@ -243,6 +244,12 @@ check "LQ_LANE_BIN does not replace the api launcher" '[ ! -e "$TMP/poison.ran" 
 rm -f "$APIENV" "$TMP/poison.ran"
 api_run "$TMP/out-api9" --no-judge --tasks cr-fix >"$TMP/api9.log" 2>&1
 check "LQ_REPO's launcher never runs on the api lane" '[ ! -e "$TMP/poison.ran" ] && [ -s "$APIENV" ]'
+
+# judge B1 class sweep: the bank preflight (a LQ_PREFLIGHT / LQ_REPO-selected script) runs on the api lane too,
+# so it must not hold the key either.
+rm -f "$TMP/pf.env"
+LQ_FAKE_PFENV="$TMP/pf.env" api_run "$TMP/out-api10" --no-judge --tasks cr-fix >"$TMP/api10.log" 2>&1
+check "the bank preflight runs without the API key and lane selectors on the api lane" '[ -s "$TMP/pf.env" ] && ! grep -q "^ANTHROPIC_API_KEY=" "$TMP/pf.env" && ! grep -q "^HIMMEL_API_" "$TMP/pf.env"'
 
 # HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
 printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"

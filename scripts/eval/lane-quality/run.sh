@@ -125,7 +125,12 @@ redact() {
 
 bank_read() { # prints "<token> <five_hour>"
   local out tok five
-  out="$("$PREFLIGHT" 2>&1)"
+  # the preflight path is env-selectable (LQ_PREFLIGHT, LQ_REPO): on the api lane it runs without the key
+  if [ "${LANE:-}" = api ]; then
+    out="$(bash "$HERE/../../api-lane/strip-env.sh" -- "$PREFLIGHT" 2>&1)"
+  else
+    out="$("$PREFLIGHT" 2>&1)"
+  fi
   tok="$(printf '%s\n' "$out" | grep -Eo '^(PROCEED|SKIPPED-[A-Z]+|BANK-[A-Z]+)$' | tail -1)"
   five="$(printf '%s\n' "$out" | sed -n 's/.*five_hour=\([0-9.?]*\).*/\1/p' | tail -1)"
   echo "${tok:-BANK-UNKNOWN} ${five:-?}"
