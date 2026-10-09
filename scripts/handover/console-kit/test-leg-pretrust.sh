@@ -230,6 +230,26 @@ rc=0; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || 
 check "11h native + symlinked sidecar: exit 0" "$rc" "0"
 check "11h victim untouched" "$(vsum)" "$want"
 rm -f "$cfg.leg-pretrust.owner"
+# 11i (judge j2228b) swap-after-check: a writer of the row dir waits for the owner sidecar (the
+# bash checks have passed and the lock is held), then atomically swaps .claude.json for a symlink.
+# The node write must not follow it: victim byte-identical, every trial.
+swapped=0
+for t in 1 2 3 4 5; do
+  rm -rf "$jc" "$vic"; mkdir -p "$jc" "$vic"
+  printf '%s' '{"keep":"me"}' > "$vic/v.json"; printf 'precious\n' > "$vic/v.txt"; want="$(vsum)"
+  printf '%s' '{}' > "$jc/.claude.json"
+  ( n=0; while [ "$n" -lt 400 ]; do
+      if [ -e "$jc/.claude.json.leg-pretrust.owner" ]; then
+        ln -s "$vic/v.json" "$jc/.swap" && mv -T "$jc/.swap" "$jc/.claude.json"; exit 0
+      fi
+      n=$((n + 1)); sleep 0.01
+    done ) & apid=$!
+  rc=0; LEG_PRETRUST_CONFIG="$jc/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+  wait "$apid" 2>/dev/null
+  [ -L "$jc/.claude.json" ] && swapped=$((swapped + 1))
+  check "11i trial $t victim untouched" "$(vsum)" "$want"
+done
+check "11i the swap really happened in every trial" "$swapped" "5"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASS - test-leg-pretrust.sh"; exit 0; fi

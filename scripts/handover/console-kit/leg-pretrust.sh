@@ -91,7 +91,7 @@ if [ -n "${LEG_PRETRUST_CONFIG:-}" ]; then
     cfgdir="$(cd -P "$(dirname "$cfg")" 2>/dev/null && pwd -P)" || cfgdir=""
     [ -n "$cfgdir" ] || { echo "leg-pretrust: lane config dir absent (launcher not seeded yet): $(dirname "$cfg")" >&2; exit 4; }
     case "$cfgdir" in
-        "$home"|"$home/.claude-codex"|"$home/.claude-openrouter"|"$home/.claude-deepseek") refuse "LEG_PRETRUST_CONFIG is a real lane config" ;;
+        "$home"|"$home/.claude-codex"|"$home/.claude-openrouter"|"$home/.claude-deepseek"|"$home/.claude-glm"|"$home/.claude-routed") refuse "LEG_PRETRUST_CONFIG is a real lane config" ;;
     esac
     [ -O "$cfgdir" ] || refuse "LEG_PRETRUST_CONFIG dir is not owned by the current user"
     for f in "$cfg" "$cfg.lock" "$cfg.leg-pretrust.owner"; do
@@ -146,25 +146,34 @@ rm -f "$owner" 2>/dev/null
 # Release only a lock we still own: a reclaimed-then-retaken lock is the successor's.
 trap '[ "$(cat "$owner" 2>/dev/null)" = "$$" ] && { rm -f "$owner"; rmdir "$lock" 2>/dev/null; }; true' EXIT
 
-WT_KEY="$abs" WT_CONFIG="$cfg" node -e '
+WT_KEY="$abs" WT_CONFIG="$cfg" WT_SEAM="${LEG_PRETRUST_CONFIG:+1}" node -e '
 const fs = require("fs");
 const key = process.env.WT_KEY;
 // A symlinked config is written THROUGH (the link stays); the rename targets the real file.
 let p = process.env.WT_CONFIG;
+// Seam mode: the jailed lane can swap the config for a symlink after bash checked it, so
+// refuse a link here (lstat) and read through O_NOFOLLOW; the rename replaces a link, never follows it.
+const seam = process.env.WT_SEAM === "1";
+const refuseLink = () => { console.error("leg-pretrust: " + p + " is a symlink (seam mode) - refusing"); process.exit(3); };
+try { if (seam && fs.lstatSync(p).isSymbolicLink()) refuseLink(); } catch (e) { if (e.code !== "ENOENT") throw e; }
 try { if (fs.lstatSync(p).isSymbolicLink()) p = fs.realpathSync(p); } catch (e) {
     if (e.code !== "ENOENT") { console.error("leg-pretrust: cannot resolve " + p + " (" + e.message + ")"); process.exit(4); }
     try { fs.lstatSync(p); console.error("leg-pretrust: " + p + " is a dangling symlink - refusing to write"); process.exit(4); } catch (_) {}
 }
 const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-const sig = () => { try { const s = fs.statSync(p); return s.mtimeMs + ":" + s.size; } catch (_) { return "none"; } };
+const sig = () => { try { const s = seam ? fs.lstatSync(p) : fs.statSync(p); return s.mtimeMs + ":" + s.size; } catch (_) { return "none"; } };
 // Live claude sessions write this file without our lock, so re-check its
 // mtime+size right before the rename and redo the read-modify-write if it moved.
 for (let attempt = 0; attempt < 5; attempt++) {
     const before = sig();
     let j = {};
     try {
-        j = JSON.parse(fs.readFileSync(p, "utf8"));
+        if (seam) {
+            const rfd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+            try { j = JSON.parse(fs.readFileSync(rfd, "utf8")); } finally { fs.closeSync(rfd); }
+        } else j = JSON.parse(fs.readFileSync(p, "utf8"));
     } catch (e) {
+        if (e.code === "ELOOP") refuseLink();
         if (e.code !== "ENOENT") {
             console.error("leg-pretrust: cannot use " + p + " (" + e.message + ") - refusing to overwrite");
             process.exit(4);
@@ -181,10 +190,11 @@ for (let attempt = 0; attempt < 5; attempt++) {
     const tmp = p + ".tmp-pretrust-" + process.pid;
     // Keep the mode as found (claude does the same); a new file gets the 0600 default claude uses.
     let mode = 0o600;
-    try { mode = fs.statSync(p).mode & 0o777; } catch (_) {}
+    try { mode = (seam ? fs.lstatSync(p) : fs.statSync(p)).mode & 0o777; } catch (_) {}
     try {
-        fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n", { mode: 0o600, flag: "wx" });
-        fs.chmodSync(tmp, mode);
+        // fchmod the fd we created (wx), not the path: a path can be swapped between calls.
+        const wfd = fs.openSync(tmp, "wx", 0o600);
+        try { fs.fchmodSync(wfd, mode); fs.writeSync(wfd, JSON.stringify(j, null, 2) + "\n"); } finally { fs.closeSync(wfd); }
         if (sig() !== before) { fs.unlinkSync(tmp); continue; }
         fs.renameSync(tmp, p);
         process.exit(0);
