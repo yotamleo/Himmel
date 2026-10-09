@@ -901,5 +901,7 @@ check "overload: operator message names the only-lane-down case" "$(grep -c 'onl
 check "empty response -> empty-response" "$(printf '%s' "$cls_empty" | cut -d'|' -f1,2)" "1|empty-response"
 check "genuine review lacking headings -> malformed-output" "$(printf '%s' "$cls_mal" | cut -d'|' -f1,2)" "1|malformed-output"
 check "the three fixtures land in three different classes" "$(printf '%s\n' "$cls_up" "$cls_empty" "$cls_mal" | cut -d'|' -f2 | sort -u | wc -l | tr -d '[:space:]')" "3"
+cls_kw="$(cls_run 'Add a test for rate limiting and the throttle path before merging.')"
+check "short headingless review that merely mentions rate limiting/quota/429 -> malformed-output" "$(printf '%s' "$cls_kw" | cut -d'|' -f1,2)" "1|malformed-output"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

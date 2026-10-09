@@ -878,8 +878,8 @@ if [ "$rc" -ne 0 ]; then
     # wording not listed here stays malformed-output until the shape is added.
     _cfp_up=0
     if [ "$(printf '%s' "$raw" | wc -c | tr -d '[:space:]')" -le 600 ] \
-        && ! printf '%s\n' "$raw" | grep -qE '^[[:space:]]*(- \[|#{1,6} )' \
-        && printf '%s\n' "$raw" | grep -qiE 'API call failed|overloaded|rate[ -]?limit|quota|unauthori[sz]ed|try again later|service unavailable|internal server error|bad gateway|(^|[^0-9-])(401|403|429|5[0-9][0-9])([^0-9]|$)'; then
+        && ! grep -qE '^[[:space:]]*(- \[|#{1,6} )' <<< "$raw" \
+        && grep -qiE 'API call failed|overloaded|(rate[ -]?limit|quota)[^.]{0,20}(exceeded|reached|exhausted)|too many requests|unauthori[sz]ed|try again later|service unavailable|internal server error|bad gateway|(http|status|error|code)[^0-9]{0,12}(401|403|429|5[0-9][0-9])([^0-9]|$)' <<< "$raw"; then
         _cfp_up=1
     fi
     # Raw-output log intentionally NOT cleaned up — it is the fail-open diagnostic artifact.
