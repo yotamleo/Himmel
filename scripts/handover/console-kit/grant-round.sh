@@ -215,19 +215,28 @@ cp -p "$round_f" "$round_f.bak-$ts" || fail 5 "could not back up $round_f"
 tmp_verd="$verd_f.tmp.$$"
 pre_verd="$verd_f.pre.$$"
 if [ -e "$verd_f" ]; then cp -p "$verd_f" "$pre_verd" || fail 5 "could not back up $verd_f"; fi
+tmp_round="$round_f.tmp.$$"
+# Both new files are fully written before either is renamed, so the only window
+# left is the two renames. A SIGKILL inside it leaves the qid spent with no round
+# granted (fail-closed: no extra round); the .round backup and cr-reset recover it.
 if ! { cat "$verd_f" 2>/dev/null || [ ! -e "$verd_f" ]; } > "$tmp_verd" \
     || ! printf '%s %s %s\n' "$HEAD_SHA" "$HEAD_SHA" "$record" >> "$tmp_verd" \
-    || ! mv "$tmp_verd" "$verd_f"; then
-    rm -f "$tmp_verd" "$pre_verd"
+    || ! printf '2\n' > "$tmp_round"; then
+    rm -f "$tmp_verd" "$tmp_round" "$pre_verd"
+    fail 5 "cannot stage the grant for $branch"
+fi
+# The qid must not stay spent on a round that was never granted.
+undo() { if [ -e "$pre_verd" ]; then mv "$pre_verd" "$verd_f"; else rm -f "$verd_f"; fi; rm -f "$tmp_round"; }
+trap 'undo; release; exit 5' INT TERM HUP
+if ! mv "$tmp_verd" "$verd_f"; then
+    rm -f "$tmp_verd" "$tmp_round" "$pre_verd"
     fail 5 "cannot record the judge record $record as consumed for $branch"
 fi
-tmp_round="$round_f.tmp.$$"
-if ! printf '2\n' > "$tmp_round" || ! mv "$tmp_round" "$round_f"; then
-    rm -f "$tmp_round"
-    # The qid must not stay spent on a round that was never granted.
-    if [ -e "$pre_verd" ]; then mv "$pre_verd" "$verd_f"; else rm -f "$verd_f"; fi
+if ! mv "$tmp_round" "$round_f"; then
+    undo
     fail 5 "cannot persist the granted round for $branch"
 fi
+trap - INT TERM HUP
 rm -f "$pre_verd"
 printf '%s pr=%s branch=%s head=%s record=%s round=%s->2 by=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$PR" "$branch" "$HEAD_SHA" "$record" "$round" "${CLAUDE_CODE_SESSION_ID:-unknown}" >> "$audit_f" \
