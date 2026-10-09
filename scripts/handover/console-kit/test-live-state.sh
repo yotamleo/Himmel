@@ -174,5 +174,24 @@ tick_out="$(TICK_STATE_DIR="$tmp/tickstate" TICK_TMPDIR="$tmp" TICK_LAUNCH_DIR="
 case "$tick_out" in *'livestate=ok'*) r=ok ;; *) r="[$tick_out]" ;; esac
 check '13. tick.sh reads the rendered Live state as livestate=ok' ok "$r"
 
+# 14. HIMMEL-5074: a lockless manifest row gets its own `lockless:` line, not a
+# "holds no lock" omission, and a rerun replaces the line instead of stacking it.
+lk="$HANDOVER_DIR/b/HIMMEL-nextleg-L-console.md"
+lkd="$HANDOVER_DIR/b/HIMMEL-4869-N90-pilot.md"
+: > "$lkd"
+printf '# c\n\n## Live state\n\nlegs: none\nlockless: stale (x) /old; \nqueue: none\n\n## Results\n' > "$lk"
+bash "$FM" add "${lk%.md}.fleet.json" "$d1" >/dev/null 2>&1
+bash "$FM" add "${lk%.md}.fleet.json" --lane deepseek --lockless "$lkd" >/dev/null 2>&1
+lk_err="$(bash "$SCRIPT" "$lk" --nonce N61=n14 --pid N61=14 2>&1 >/dev/null)"
+check '14. the lockless row is listed with its lane and doc' "lockless: N90 (deepseek) $lkd" "$(grep '^lockless:' "$lk")"
+check '14. the stale lockless line is replaced, not stacked' 1 "$(grep -c '^lockless:' "$lk")"
+case "$lk_err" in *N90*) r=noise ;; *) r=quiet ;; esac
+check '14. a lockless row is not reported as a leg that holds no lock' quiet "$r"
+check '14. the legs: line carries only the locked leg' 'legs: `N61:n14:tok-one:14`' "$(grep '^legs:' "$lk")"
+check '14. the queue: field is untouched' 'queue: none' "$(grep '^queue:' "$lk")"
+bash "$FM" remove "${lk%.md}.fleet.json" N90 >/dev/null 2>&1
+bash "$SCRIPT" "$lk" >/dev/null 2>&1
+check '14. with no lockless row the line is dropped' 0 "$(grep -c '^lockless:' "$lk")"
+
 [ "$t1" = tok-one ] || { echo "FAIL - setup: lock token [$t1]"; fails=$((fails+1)); }
 [ "$fails" -eq 0 ] && echo "PASS" || { echo "$fails FAILED"; exit 1; }

@@ -122,6 +122,32 @@ printf '' > "$s"
 bash "$SCRIPT" list "$s" >/dev/null 2>&1; rc=$?
 check '7b. list refuses an empty file (rc 1)' 1 "$rc"
 
+# 7c. HIMMEL-5074: add stores --lane and --lockless; a missing lane is `unknown`.
+m5="$tmp/lane.fleet.json"
+l1="$tmp/HIMMEL-5-N70-x.md"; l2="$tmp/HIMMEL-5-N71-y.md"; l3="$tmp/HIMMEL-5-P01-z.md"; l4="$tmp/HIMMEL-5-N72-w.md"
+bash "$SCRIPT" add "$m5" "$l1" >/dev/null 2>&1
+check '7c. a missing --lane is stored unknown, never guessed' unknown "$(jq -r '.legs[0].lane' "$m5")"
+check '7c. a missing --lockless stores no lockless key' null "$(jq -r '.legs[0].lockless // "null"' "$m5")"
+bash "$SCRIPT" add "$m5" --lane claudex "$l2" >/dev/null 2>&1; rc=$?
+check '7c. add --lane claudex succeeds' 0 "$rc"
+check '7c. the lane is stored' claudex "$(jq -r --arg d "$l2" '.legs[] | select(.doc == $d) | .lane' "$m5")"
+bash "$SCRIPT" add "$m5" "$l3" --lane deepseek --lockless >/dev/null 2>&1; rc=$?
+check '7c. flags after the doc are accepted' 0 "$rc"
+check '7c. --lockless is stored as true' true "$(jq -r --arg d "$l3" '.legs[] | select(.doc == $d) | .lockless' "$m5")"
+check '7c. the lockless row also keeps its lane' deepseek "$(jq -r --arg d "$l3" '.legs[] | select(.doc == $d) | .lane' "$m5")"
+bash "$SCRIPT" add "$m5" --lane 'Bad Lane' "$l4" >/dev/null 2>&1; rc=$?
+check '7c. a malformed lane is a usage error (rc 2)' 2 "$rc"
+check '7c. and writes nothing' 3 "$(jq '.legs | length' "$m5")"
+bash "$SCRIPT" add "$m5" --lane >/dev/null 2>&1; rc=$?
+check '7c. --lane with no value is a usage error (rc 2)' 2 "$rc"
+# A manifest written before the fields existed still lists and accepts adds.
+m6="$tmp/old.fleet.json"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N70","added":"x"}]}\n' "$l1" > "$m6"
+check '7c. an old manifest still lists' "$l1" "$(bash "$SCRIPT" list "$m6" 2>/dev/null)"
+bash "$SCRIPT" add "$m6" --lane native "$l2" >/dev/null 2>&1; rc=$?
+check '7c. an old manifest still takes an add' 0 "$rc"
+check '7c. the old row keeps no lane key' null "$(jq -r '.legs[0].lane // "null"' "$m6")"
+
 # 8. usage.
 bash "$SCRIPT" >/dev/null 2>&1; rc=$?
 check '8. no verb is a usage error (rc 2)' 2 "$rc"
