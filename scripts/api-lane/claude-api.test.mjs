@@ -202,7 +202,9 @@ test('unverified completion keeps the full reservation as unknown', () => {
 test('judge: bypass flags in any spelling and caller-supplied tool/settings/mcp flags are refused', () => {
   const f = fixture();
   const flags = ['--dangerously-skip-permissions=true', '--dangerously-skip-permissions=anything', '--allow-dangerously-skip-permissions=false',
-    '--allowedTools', '--allowedTools=Bash', '--allowed-tools', '--allowed-tools=Bash', '--settings', '--settings={}', '--mcp-config', '--mcp-config=x.json'];
+    '--allowedTools', '--allowedTools=Bash', '--allowed-tools', '--allowed-tools=Bash', '--settings', '--settings={}', '--mcp-config', '--mcp-config=x.json',
+    '--Dangerously-Skip-Permissions=true', '--dangerously_skip_permissions', '--ALLOWEDTOOLS=Bash', '--allowed_tools', '--MCP_CONFIG',
+    '--plugin-dir', '--plugin-dir=x', '--plugin_dir', '--add-dir', '--add-dir=x', '@args.txt'];
   for (const flag of flags) {
     const r = f.run([...f.good, flag, ...(flag.includes('=') ? [] : ['x'])]);
     assert.equal(r.status, 2, flag);

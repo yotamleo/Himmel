@@ -272,7 +272,8 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
       export HIMMEL_API_JOB_ID="lq-$RUN_ID-$stem"
       # headless-claude-ok: HIMMEL-4986 lane-quality api agent run, launcher bank gate and ledger reservation, explicit permission mode, budget-capped
       # launch-profile-ok: HIMMEL-4986 the eval measures the lane's own default config, not a leg profile
-      timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
+      ANTHROPIC_API_KEY="$LQ_API_KEY" HIMMEL_API_LANE=on HIMMEL_API_ACCOUNT="$LQ_API_ACCOUNT" HIMMEL_API_KEY_ID="$LQ_API_KEY_ID" \
+        timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
         --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
       exit $?
     fi
@@ -464,7 +465,8 @@ cmd_run() {
   fi
   if [ "$LANE" = api ]; then
     # HIMMEL-5069 R4: the launcher comes from this script's own location, never from LQ_LANE_BIN or LQ_REPO
-    # (REPO is only the git repo the worktrees are cut from), so no env can route the key past its gates.
+    # (REPO is only the git repo the worktrees are cut from). REPO's hooks and agent-written git config still run
+    # inside run.sh's git calls, so the key is held out of this process's environment and given only to the launcher.
     AGENT_BIN="$(cd "$HERE/../../api-lane" && pwd)/claude-api.sh"
   fi
   if [ "$LANE" = claudex ]; then
@@ -488,6 +490,13 @@ cmd_run() {
     [ -f "$TASKS/$t/prompt.md" ] || die "unknown task '$t'"
   done
   if [ "$DRY_RUN" -eq 1 ]; then api_dry_run "$tasks"; return 0; fi
+  if [ "$LANE" = api ]; then
+    # judge B2: run.sh's own git calls (worktree add, the fixture commit, git add -A) fire hooks from an
+    # LQ_REPO-selected repo and from agent-written config (core.fsmonitor), so the key and lane selectors leave
+    # this process's environment now and are passed only on the launcher's command line below.
+    LQ_API_KEY="${ANTHROPIC_API_KEY:-}"; LQ_API_ACCOUNT="${HIMMEL_API_ACCOUNT:-}"; LQ_API_KEY_ID="${HIMMEL_API_KEY_ID:-}"
+    unset ANTHROPIC_API_KEY HIMMEL_API_LANE HIMMEL_API_ACCOUNT HIMMEL_API_KEY_ID
+  fi
   SPENT=0; STATUS=ok
   echo "lane-quality: run $RUN_ID → $OUT"
   # Repeat by repeat, so a sweep cut short still covers every task evenly.

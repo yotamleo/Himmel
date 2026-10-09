@@ -35,15 +35,20 @@ PRINT=0 MODE="" MODEL="" BUDGET="" FORMAT=""
 ARGS=()
 while [ "$#" -gt 0 ]; do
   a="$1"; shift
+  # any spelling of a bypass flag (=true, =anything, any case, _ for -), and every caller-supplied tool list,
+  # settings, MCP, plugin or extra-directory source: the launcher's own --allowedTools is the only one claude may see.
+  # A @file argument is an args file, which could carry any of them.
+  case "$a" in -*) n="$(printf '%s' "${a%%=*}" | tr 'A-Z_' 'a-z-')" ;; *) n="" ;; esac
+  case "$n" in
+    --dangerously-skip-permissions|--allow-dangerously-skip-permissions|--allowedtools|--allowed-tools|--settings|--mcp-config|--plugin-dir|--add-dir)
+      refuse "flag ${a%%=*} is not allowed on the api lane" ;;
+  esac
+  case "$a" in @*) refuse "an @argsfile argument is not allowed on the api lane" ;; esac
   case "$a" in
     -p|--print) PRINT=1; ARGS+=("$a"); continue ;;
     --) refuse "the -- argument terminator would turn the enforced options into positionals" ;;
-    --bg|--background|--cloud|--daemon|--dangerously-skip-permissions|--allow-dangerously-skip-permissions) # t13b-ok: refuses the flag, starts no service
+    --bg|--background|--cloud|--daemon) # t13b-ok: refuses the flag, starts no service
       refuse "flag $a is not allowed on the api lane" ;;
-    # any spelling of a bypass flag (=true, =anything), and every caller-supplied tool list, settings or MCP
-    # source: the launcher's own --allowedTools is the only one claude may see.
-    --dangerously-skip-permissions=*|--allow-dangerously-skip-permissions=*|--allowedTools|--allowedTools=*|--allowed-tools|--allowed-tools=*|--settings|--settings=*|--mcp-config|--mcp-config=*)
-      refuse "flag ${a%%=*} is not allowed on the api lane" ;;
     --permission-mode|--model|--max-budget-usd|--output-format)
       [ "$#" -gt 0 ] || refuse "$a needs a value"
       val="$1"; shift ;;
