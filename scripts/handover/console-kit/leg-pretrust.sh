@@ -116,8 +116,8 @@ lock_reclaimable() {
 tries="${LEG_PRETRUST_LOCK_TRIES:-150}"   # x 0.1 s; > a 10 s stale window. LEG_PRETRUST_LOCK_TRIES: test seam
 waited=0
 until mkdir "$lock" 2>/dev/null; do
-    if [ -d "$lock" ] && lock_reclaimable; then
-        rmdir "$lock" 2>/dev/null || true
+    # A reclaim that cannot remove the dir falls through to the timeout count below.
+    if [ -d "$lock" ] && lock_reclaimable && rmdir "$lock" 2>/dev/null; then
         continue
     fi
     waited=$((waited + 1))

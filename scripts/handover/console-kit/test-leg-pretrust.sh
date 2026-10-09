@@ -134,6 +134,13 @@ check "7f stale lock, LIVE owner: not reclaimed (exit 5)" "$rc" "5"
 check "7g live owner's lock left in place" "$([ -d "$cfg.lock" ] && echo held || echo free)" "held"
 check "7h nothing written" "$(trusted "$cfg" "$primary/.claude/worktrees/wt1")" "absent"
 rm -rf "$cfg.lock" "$cfg.leg-pretrust.owner"
+# a stale lock that cannot be removed (read-only config dir) must time out, not spin
+printf '%s' '{"keep":"me"}' > "$cfg"
+stale_lock; chmod 555 "$(dirname "$cfg")"
+rc=0; export LEG_PRETRUST_LOCK_TRIES=15; timeout 20 bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?; unset LEG_PRETRUST_LOCK_TRIES
+chmod 755 "$(dirname "$cfg")"
+check "7i stale lock that cannot be removed: exit 5, no busy loop" "$rc" "5"
+rm -rf "$cfg.lock" "$cfg.leg-pretrust.owner"
 
 # 8. odd shapes.
 nl="$LEG_PRETRUST_HOME/.himmel/eval/nl"$'\n'
