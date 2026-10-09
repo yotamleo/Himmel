@@ -226,7 +226,8 @@ if ! { cat "$verd_f" 2>/dev/null || [ ! -e "$verd_f" ]; } > "$tmp_verd" \
     fail 5 "cannot stage the grant for $branch"
 fi
 # The qid must not stay spent on a round that was never granted.
-undo() { if [ -e "$pre_verd" ]; then mv "$pre_verd" "$verd_f"; else rm -f "$verd_f"; fi; rm -f "$tmp_round"; }
+# A signal after the .round rename must keep the grant: .round was >= 3 under the lock, so 2 means it landed.
+undo() { [ "$(cat "$round_f" 2>/dev/null)" = 2 ] && return 0; if [ -e "$pre_verd" ]; then mv "$pre_verd" "$verd_f"; else rm -f "$verd_f"; fi; rm -f "$tmp_round"; }
 trap 'undo; release; exit 5' INT TERM HUP
 if ! mv "$tmp_verd" "$verd_f"; then
     rm -f "$tmp_verd" "$tmp_round" "$pre_verd"

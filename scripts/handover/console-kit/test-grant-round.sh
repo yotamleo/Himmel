@@ -105,7 +105,7 @@ rc=0; out=$(run 2>&1) || rc=$?
 check "no record refuses" "$rc" 4
 check "no record changes nothing" "$(snap_state)" "$before"
 
-wv qother GO "$SHA_B" --pr 501 --branch "$BRANCH" --evidence-file "$evd/ev.md" >/dev/null 2>&1 || echo "FAIL: cannot write qother"
+wv qother GO "$SHA_B" --pr 501 --branch "$BRANCH" --evidence-file "$evd/ev.md" >/dev/null 2>&1 || { echo "FAIL: cannot write qother"; fails=$((fails+1)); }
 GR_ARGS=(501 "$SHA_A" qother)
 rc=0; out=$(run 2>&1) || rc=$?
 check "record for another head refuses" "$rc" 4
@@ -118,19 +118,19 @@ GR_ARGS=(501 "$SHA_A" qhand)
 rc=0; out=$(run 2>&1) || rc=$?
 check "unsigned record refuses" "$rc" 4
 
-wv qpr GO "$SHA_A" --pr 777 --evidence-file "$evd/ev.md" >/dev/null 2>&1 || echo "FAIL: cannot write qpr"
+wv qpr GO "$SHA_A" --pr 777 --evidence-file "$evd/ev.md" >/dev/null 2>&1 || { echo "FAIL: cannot write qpr"; fails=$((fails+1)); }
 GR_ARGS=(501 "$SHA_A" qpr)
 rc=0; out=$(run 2>&1) || rc=$?
 check "record naming another PR refuses" "$rc" 4
 
-wv qbr GO "$SHA_A" --pr 501 --branch other/branch --evidence-file "$evd/ev.md" >/dev/null 2>&1 || echo "FAIL: cannot write qbr"
+wv qbr GO "$SHA_A" --pr 501 --branch other/branch --evidence-file "$evd/ev.md" >/dev/null 2>&1 || { echo "FAIL: cannot write qbr"; fails=$((fails+1)); }
 GR_ARGS=(501 "$SHA_A" qbr)
 rc=0; out=$(run 2>&1) || rc=$?
 check "record naming another branch refuses" "$rc" 4
 check "bad records change nothing" "$(snap_state)" "$before"
 
 # --- valid records for the rest ---------------------------------------------
-wv qgood GO "$SHA_A" --pr 501 --branch "$BRANCH" --evidence-file "$evd/ev.md" >/dev/null 2>&1 || echo "FAIL: cannot write qgood"
+wv qgood GO "$SHA_A" --pr 501 --branch "$BRANCH" --evidence-file "$evd/ev.md" >/dev/null 2>&1 || { echo "FAIL: cannot write qgood"; fails=$((fails+1)); }
 GR_ARGS=(501 "$SHA_A" qgood)
 
 # --- 2. leg / relay callers --------------------------------------------------
