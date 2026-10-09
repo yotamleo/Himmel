@@ -1011,7 +1011,7 @@ envs_deferred=0
 if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries cannot be proven safe: a guarded script is named, or the option runs a program whatever the pathspec; drop the option or run the script as its own literal command (HIMMEL-4916)."
+    deny "git execution/config options or ambiguous option-value boundaries cannot be proven to be pathspec mentions (a guarded script is named, or the option runs a program whatever the pathspec); drop the option or run the script as its own literal command (HIMMEL-4916)."
 fi
 
 # norm <path> - drop empty and . segments. A .. is kept, so the path no longer
@@ -1569,7 +1569,7 @@ fi
 if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries cannot be proven safe: a guarded script is named, or the option runs a program whatever the pathspec; drop the option or run the script as its own literal command (HIMMEL-4916)."
+    deny "git execution/config options or ambiguous option-value boundaries cannot be proven to be pathspec mentions (a guarded script is named, or the option runs a program whatever the pathspec); drop the option or run the script as its own literal command (HIMMEL-4916)."
 fi
 [ "$hit" -eq 1 ] || exit 0
 # ponytail: a glob through a directory symlink the text does not spell as
