@@ -51,7 +51,12 @@ cat > "$TMP/bin/gh" <<'EOF'
 printf '%s\n' "$*" >> "$GH_LOG"
 case "$1 $2" in
     "pr view") printf '%s\n' "${GH_VIEW:-}"; exit "${GH_VIEW_RC:-0}" ;;
-    "api graphql") printf '%s\n' "${GH_REVERT_NUM:-77}"; exit 0 ;;
+    "api graphql")
+        # GH_ADVANCE: main moves on while the revert PR is being opened.
+        if [ -n "${GH_ADVANCE:-}" ]; then
+            git -C "$GH_ADVANCE" commit -q --allow-empty -m advance && git -C "$GH_ADVANCE" push -q origin main
+        fi
+        printf '%s\n' "${GH_REVERT_NUM:-77}"; exit 0 ;;
     "pr merge") exit "${GH_MERGE_RC:-0}" ;;
 esac
 exit 0
@@ -143,7 +148,13 @@ out=$(GH_VIEW="$MV12" bg revert-main 12 -); rc=$?
 assert_rc "V14 a second /revert-main of the same PR is idempotent" 0 "$rc"
 assert_contains "V15 it says the PR is already reverted" "already reverted" "$out"
 assert_not_contains "V16 and never calls the revert mutation again" "graphql" "$(cat "$GH_LOG")"
-rm -f "$HOME/.himmel/state/break-glass/revert-12.done"
+git clone -q "$TMP/origin.git" "$TMP/primary2"
+: > "$GH_LOG"
+out=$(GH_VIEW="$MV12" BREAK_GLASS_PRIMARY="$TMP/primary2" bg revert-main 12 -)
+assert_not_contains "V26 another checkout's revert record is not this one's" "already reverted" "$out"
+assert_contains "V27 so that checkout reverts its own PR 12" "graphql" "$(cat "$GH_LOG")"
+rm -rf "$TMP/primary2"
+rm -f "$HOME"/.himmel/state/break-glass/revert-*-12.done
 echo local > "$PRIMARY/local.txt"; git -C "$PRIMARY" add local.txt; git -C "$PRIMARY" commit -qm local
 GH_VIEW="$MV12" bg revert-main 12 - >/dev/null; rc=$?
 assert_rc "V17 a revert whose primary sync fails keeps the sync rc" 22 "$rc"
@@ -153,6 +164,18 @@ GH_VIEW="$MV12" bg revert-main 12 - >/dev/null
 assert_contains "V19 the retry after a failed sync never reverts again" "already reverted (revert PR 77), sync failed" "$(cat "$TMP/err")"
 assert_not_contains "V20 no second revert mutation" "graphql" "$(cat "$GH_LOG")"
 git -C "$PRIMARY" reset -q --hard "$TIP"
+rm -f "$HOME"/.himmel/state/break-glass/revert-*-12.done
+: > "$TMP/notadir"
+GH_VIEW="$MV12" BREAK_GLASS_STATE="$TMP/notadir/x" bg revert-main 12 - >/dev/null
+assert_rc "V21 a merged revert that cannot be recorded is not success" 25 "$?"
+assert_contains "V22 it says never to revert again" "do not /revert-main again" "$(cat "$TMP/err")"
+: > "$GH_LOG"
+GH_VIEW="$MV12" GH_ADVANCE="$TMP/seed" bg revert-main 12 - >/dev/null
+assert_rc "V23 main moving past the PR before the merge is refused" 12 "$?"
+assert_not_contains "V24 and the revert PR is left open, never --admin merged" "pr merge" "$(cat "$GH_LOG")"
+assert_contains "V25 the refusal says main moved" "moved" "$(cat "$TMP/err")"
+git -C "$TMP/seed" reset -q --hard "$TIP"; git -C "$TMP/seed" push -qf origin main
+git -C "$PRIMARY" fetch -q origin
 
 # --- /launch-leg -------------------------------------------------------------
 git -C "$PRIMARY" worktree add -q "$TMP/wt" -b feat/leg-x

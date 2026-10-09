@@ -173,7 +173,8 @@ op_revert_main() {
     local pr="$ARG" def view state base id merge tip head rnum tries i done_file
     case "$pr" in ''|*[!0-9]*) echo "ERR break-glass: bad PR number: '$pr'" >&2; return 1 ;; esac
     def="$(default_branch)"
-    done_file="${BREAK_GLASS_STATE:-$HOME/.himmel/state/break-glass}/revert-$pr.done"
+    # Keyed by the primary checkout too: PR numbers repeat across repos.
+    done_file="${BREAK_GLASS_STATE:-$HOME/.himmel/state/break-glass}/revert-$(printf '%s' "$PRIMARY" | sha256sum | cut -c1-12)-$pr.done"
     if [ -f "$done_file" ]; then
         rnum="$(cat "$done_file")"
         echo "already reverted PR $pr (revert PR $rnum); syncing the primary only"
@@ -208,6 +209,13 @@ op_revert_main() {
         || { echo "ERR break-glass: revertPullRequest failed for PR $pr" >&2; return 13; }
     case "$rnum" in ''|*[!0-9]*) echo "ERR break-glass: no revert PR number returned" >&2; return 13 ;; esac
     echo "revert_pr=$rnum"
+    # Main may have moved while the revert PR was opened: then this is no longer
+    # a HEAD revert, so the revert PR is left open for a normal reviewed merge.
+    git -C "$PRIMARY" fetch --quiet origin "$def" || { echo "ERR break-glass: fetch origin $def failed; revert PR $rnum left open" >&2; return 13; }
+    if [ "$(git -C "$PRIMARY" rev-parse "origin/$def" 2>/dev/null)" != "$tip" ]; then
+        echo "ERR break-glass: $def moved past PR $pr before the merge; revert PR $rnum left open for review" >&2
+        return 12
+    fi
     tries="${BREAK_GLASS_MERGE_TRIES:-10}"
     i=0
     # The revert PR is mergeable only once GitHub has computed it; retry briefly.
@@ -220,7 +228,10 @@ op_revert_main() {
         sleep "${BREAK_GLASS_MERGE_SLEEP:-3}"
     done
     echo "merged revert PR $rnum"
-    mkdir -p "${done_file%/*}" && chmod 700 "${done_file%/*}" && printf '%s\n' "$rnum" > "$done_file"
+    if ! { mkdir -p "${done_file%/*}" && chmod 700 "${done_file%/*}" && printf '%s\n' "$rnum" > "$done_file"; } 2>/dev/null; then
+        echo "ERR break-glass: merged revert PR $rnum but could not record it; do not /revert-main again, use /repin-hooks" >&2
+        return 25
+    fi
     revert_sync "$rnum"
 }
 
