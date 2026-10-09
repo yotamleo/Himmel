@@ -164,6 +164,15 @@ setup; KEY="or-test-123"; OR_CWD="$HERE/.."
 t "real matrix allows himmel-code cwd (declared cell)" 0
 grep -q "ANTHROPIC_AUTH_TOKEN=or-test-123" "$WORK/child-env.txt" || { echo "FAIL: declared cell did not launch himmel-code"; FAILS=$((FAILS+1)); }
 
+# --- T2f (HIMMEL-5099): a foreign git repo nested inside the checkout is not himmel-code.
+setup; KEY="or-test-123"
+NESTED="$(mktemp -d "$HERE/../.nested-foreign.XXXXXX")" || exit 1
+git -C "$NESTED" init -q
+OR_CWD="$NESTED"
+t "real matrix refuses a foreign repo nested in the checkout" 3
+rm -rf "$NESTED"
+grep -qi "unknown" "$WORK/out.txt" || { echo "FAIL: nested foreign repo not classified unknown"; FAILS=$((FAILS+1)); }
+
 # --- T2e: the real matrix DENIES a luna vault cwd even with the provider
 # declared (vault corpora stay DENY per the ruling; the explicit deny row, not
 # the wildcard, is what a future rule cannot silently shadow).

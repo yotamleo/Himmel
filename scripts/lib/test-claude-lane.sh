@@ -84,6 +84,7 @@ cp "$REPO/scripts/lib/claude-lane.sh" "$REPO/scripts/lib/load-dotenv.sh" "$REPO/
 envonly() { # <.env line> -> prints "rc|stderr-first-line" for claudex reviewing the handover fixture
   printf '%s\n' "$1" > "$W/tree/.env"
   # shellcheck disable=SC2031 # the vars are set in a subshell on purpose
+  # shellcheck disable=SC2030
   ( unset HANDOVER_DIR LUNA_VAULT LUNA_VAULT_PATH; export HIMMEL_CLAUDE_LANE=claudex CLAUDE_GLM_CONFIG_DIR="$W/cfg"
     # shellcheck disable=SC1091
     . "$W/tree/scripts/lib/claude-lane.sh"
@@ -97,6 +98,50 @@ check ".env-only stale HANDOVER_DIR refused" ok "$r"
 rm -f "$W/tree/.env"
 r="$(egress openrouter "$W/nope")";  case "$r" in 3\|*) r=ok;; esac
 check "unresolvable reviewed repo refused (fail closed)" ok "$r"
+
+# HIMMEL-5099: a LUNA_VAULT / LUNA_VAULT_PATH that is set but does not resolve refuses
+# (the himmel repo itself is otherwise allowed, so only the vault var can cause the rc 3).
+# shellcheck disable=SC2030,SC2031 # the vars are set in a subshell on purpose
+vaultegress() { # <lane> <LUNA_VAULT|-> <LUNA_VAULT_PATH|-> -> prints "rc|stderr-first-line"
+  ( export HIMMEL_CLAUDE_LANE="$1" HANDOVER_DIR="$W/hand" CLAUDE_GLM_CONFIG_DIR="$W/cfg"
+    unset LUNA_VAULT LUNA_VAULT_PATH
+    [ "$2" = - ] || export LUNA_VAULT="$2"
+    [ "$3" = - ] || export LUNA_VAULT_PATH="$3"
+    claude_lane_egress "$REPO" 2>"$W/egress.err"; rc=$?
+    echo "$rc|$(head -1 "$W/egress.err")" )
+}
+r="$(vaultegress claudex "$W/gone" -)";  case "$r" in 3\|*vault*fail\ closed*) r=ok;; esac
+check "claudex + unresolvable LUNA_VAULT refused" ok "$r"
+r="$(vaultegress openrouter - "$W/gone")"; case "$r" in 3\|*vault*fail\ closed*) r=ok;; esac
+check "openrouter + unresolvable LUNA_VAULT_PATH refused" ok "$r"
+r="$(vaultegress claudex "$W/plain" "$W/gone")"; case "$r" in 3\|*vault*fail\ closed*) r=ok;; esac
+check "resolvable LUNA_VAULT does not mask an unresolvable LUNA_VAULT_PATH" ok "$r"
+r="$(vaultegress claudex "$W/plain" "$W/plain")"; check "resolvable vault vars elsewhere: himmel repo still allowed" "0|" "$r"
+
+# HIMMEL-5099: himmel-code means the reviewed repo shares THIS checkout's git common dir.
+# A hermetic checkout (lib copy + real guardrails) holds a nested foreign repo and a worktree.
+G="$W/gt"; mkdir -p "$G/scripts/lib" "$G/.claude/worktrees" "$G/foreign" "$G/plain-sub"
+cp "$REPO/scripts/lib/claude-lane.sh" "$REPO/scripts/lib/load-dotenv.sh" "$REPO/scripts/lib/handover-path.sh" "$REPO/scripts/lib/git-clean.sh" "$G/scripts/lib/"
+ln -s "$REPO/scripts/guardrails" "$G/scripts/guardrails"
+gitq() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+gitq -C "$G" init -q && : > "$G/f" && gitq -C "$G" add f scripts/lib && gitq -C "$G" commit -q -m init && gitq -C "$G" worktree add -q "$G/.claude/worktrees/wt" -b wt
+gitq -C "$G/foreign" init -q
+gtegress() { # <lane> <dir> -> prints "rc|stderr-first-line"
+  # shellcheck disable=SC2031
+  ( export HIMMEL_CLAUDE_LANE="$1" HANDOVER_DIR="$W/hand" CLAUDE_GLM_CONFIG_DIR="$W/cfg"
+    unset LUNA_VAULT LUNA_VAULT_PATH
+    # shellcheck disable=SC1091
+    . "$G/scripts/lib/claude-lane.sh"
+    claude_lane_egress "$2" 2>"$W/egress.err"; rc=$?
+    echo "$rc|$(head -1 "$W/egress.err")" )
+}
+for lane in openrouter claudex; do
+  r="$(gtegress "$lane" "$G")";                      check "$lane + checkout primary: himmel-code allowed" "0|" "$r"
+  r="$(gtegress "$lane" "$G/.claude/worktrees/wt")"; check "$lane + worktree under .claude/worktrees: allowed" "0|" "$r"
+  r="$(gtegress "$lane" "$G/plain-sub")";            check "$lane + plain subdir of the checkout: allowed" "0|" "$r"
+  r="$(gtegress "$lane" "$G/foreign")";              case "$r" in 3\|*"no known corpus"*) r=ok;; esac
+  check "$lane + nested foreign git repo refused" ok "$r"
+done
 
 # Spawn-site coverage with stubbed launchers: scripts/lib/test-claude-headless.sh case 17
 # and scripts/cr/test-hermes-critic.sh case 8c.

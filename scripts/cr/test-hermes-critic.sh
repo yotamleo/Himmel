@@ -292,16 +292,25 @@ for l in claude-openrouter claude-codex; do
     chmod +x "$mini/scripts/$l"
 done
 # the reviewed repo for the allowed rows lives under the mini tree: that is the himmel-code corpus
+# HIMMEL-5099: himmel-code is the lib checkout's git common dir, so mini is a git repo and
+# lrepo a worktree of it (a separately init-ed repo nested under mini is refused, below).
 lrepo="$mini/lrepo"
-cp -R "$repo" "$lrepo"
+git -C "$mini" init -q -b main
+git -C "$mini" add -A
+git -C "$mini" -c user.email=t@t -c user.name=t commit -q -m mini
+lbase="$(git -C "$mini" rev-parse HEAD)"
+git -C "$mini" worktree add -q --detach "$lrepo" HEAD
+cp "$repo/app.sh" "$lrepo/app.sh"
+git -C "$lrepo" add app.sh
+git -C "$lrepo" -c user.email=t@t -c user.name=t commit -q -m change
 CLAUDE_ARGV_CAPTURE="$work/native-argv" PATH="$bindir:$PATH" \
-    bash "$CRITIC" --repo "$lrepo" --base "$base" --goal "test goal" --route claude >/dev/null 2>&1 \
+    bash "$CRITIC" --repo "$lrepo" --base "$lbase" --goal "test goal" --route claude >/dev/null 2>&1 \
     || fail "native baseline run failed"
 for lane in openrouter claudex; do
     l=claude-openrouter; [ "$lane" = claudex ] && l=claude-codex
     : > "$work/lane-argv"; rm -f "$work/lane-seen"
     HIMMEL_CLAUDE_LANE="$lane" LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE="$work/lane-argv" PATH="$bindir:$PATH" \
-        bash "$mini/scripts/cr/hermes-critic.sh" --repo "$lrepo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err" \
+        bash "$mini/scripts/cr/hermes-critic.sh" --repo "$lrepo" --base "$lbase" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err" \
         || fail "lane $lane: critic run failed: $(head -c 400 "$work/lane-err")"
     [ "$(cat "$work/lane-seen" 2>/dev/null)" = "$l" ] || fail "lane $lane: launcher $l was not used"
     cmp -s "$work/lane-argv" "$work/native-argv" || fail "lane $lane: argv differs from the native claude argv"
@@ -333,11 +342,27 @@ rc=$?
 [ "$rc" -ne 0 ] || fail "unclassified repo under claudex: expected a refusal, got rc=0"
 [ ! -e "$work/lane-seen" ] || fail "unclassified repo under claudex: the launcher ran anyway"
 grep -q 'no known corpus' "$work/lane-err" || fail "unclassified repo under claudex: stderr did not say so: $(head -c 300 "$work/lane-err")"
+# HIMMEL-5099: a separately init-ed repo nested under the mini tree is a foreign repo, not himmel-code
+frepo="$mini/foreign"
+mkdir -p "$frepo"
+git -C "$frepo" init -q -b main
+git -C "$frepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
+fbase="$(git -C "$frepo" rev-parse HEAD)"
+cp "$repo/app.sh" "$frepo/app.sh"
+git -C "$frepo" add app.sh
+git -C "$frepo" -c user.email=t@t -c user.name=t commit -q -m change
+rm -f "$work/lane-seen"
+HIMMEL_CLAUDE_LANE=claudex LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE="$work/lane-argv" PATH="$bindir:$PATH" \
+    bash "$mini/scripts/cr/hermes-critic.sh" --repo "$frepo" --base "$fbase" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err"
+rc=$?
+[ "$rc" -ne 0 ] || fail "nested foreign repo under claudex: expected a refusal, got rc=0"
+[ ! -e "$work/lane-seen" ] || fail "nested foreign repo under claudex: the launcher ran anyway"
+grep -q 'no known corpus' "$work/lane-err" || fail "nested foreign repo under claudex: stderr did not say so: $(head -c 300 "$work/lane-err")"
 : > "$work/lane-argv"; rm -f "$work/lane-seen"
 # shellcheck disable=SC2016 # the stub text must keep its literal $vars
 sed -i.bak 's|^echo claude-openrouter > "\$LANE_CAPTURE"$|{ echo claude-openrouter; echo "cwd=${CLAUDE_OPENROUTER_CWD:-}"; } > "$LANE_CAPTURE"|' "$mini/scripts/claude-openrouter"
 HIMMEL_CLAUDE_LANE=openrouter LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE="$work/lane-argv" PATH="$bindir:$PATH" \
-    bash "$mini/scripts/cr/hermes-critic.sh" --repo "$lrepo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err" \
+    bash "$mini/scripts/cr/hermes-critic.sh" --repo "$lrepo" --base "$lbase" --goal "test goal" --route claude >/dev/null 2>"$work/lane-err" \
     || fail "clean repo under openrouter: critic run failed: $(head -c 400 "$work/lane-err")"
 grep -qx "cwd=$(cd -P "$lrepo" && pwd -P)" "$work/lane-seen" || fail "clean repo under openrouter: launcher did not get CLAUDE_OPENROUTER_CWD=<reviewed repo>: $(cat "$work/lane-seen")"
 : > "$work/claude-argv"
