@@ -24,7 +24,7 @@ stop point of `--max-budget-usd`. A live proof needs the console's GO.
 | `HIMMEL_API_LANE=on`, `HIMMEL_API_ACCOUNT=A\|B`, key present (never printed) | `claude-api.sh` |
 | `HIMMEL_API_KEY_ID` must equal the roster `key_id` of that account | `claude-api.sh`, `roster.mjs` |
 | Conflicting provider flags / `ANTHROPIC_AUTH_TOKEN` / openrouter or claudex lane: refuse | `claude-api.sh` |
-| `-p` only; no `--bg`, `--cloud`, `--daemon`, bypass or skip-permissions; explicit `--permission-mode`, `--model`, `--max-budget-usd` | `claude-api.sh` |
+| `-p` only; caller flags are an allowlist (`-p`, `--model`, `--permission-mode`, `--max-budget-usd`, `--output-format json`, `--effort`), so no `--bg`, `--cloud`, `--daemon`, bypass or skip-permissions; `--model` and `--effort` values must not start with a dash; `--permission-mode` is one of `default`, `plan`, `acceptEdits`, `dontAsk`, `auto` (exact case, never the bypass mode); explicit `--permission-mode`, `--model`, `--max-budget-usd` | `claude-api.sh` |
 | Bank gate is the API credit row only (`CADENCE_BANK_LANE=api`, opt-in via `HIMMEL_API_LANE=on`); the native bank is never read, so an exhausted native bank does not block and a funded one does not rescue an empty API account | `bank-preflight.sh` |
 | Reserve the full budget first; settle only on a verified result with `total_cost_usd`, else mark `unknown` and keep the reservation | `api-credit-state.mjs`, `outcome.mjs` |
 | No automatic A/B rotation and no subscription fallback: a refusal is final | `claude-api.sh` |

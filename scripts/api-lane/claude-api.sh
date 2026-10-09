@@ -5,8 +5,8 @@
 # Deliberately NOT native-auth-pin: this lane is the API-key exception, so it
 # removes the other credential sources itself instead of pinning native auth.
 #
-# Usage: claude-api.sh -p [prompt] --model M --permission-mode MODE \
-#                      --max-budget-usd N [other claude flags]
+# Usage: claude-api.sh -p [prompt] --model M --permission-mode default|plan|acceptEdits|dontAsk|auto \
+#                      --max-budget-usd N [--output-format json] [--effort E]  (no other flags)
 # Env:   HIMMEL_API_LANE=on  HIMMEL_API_ACCOUNT=A|B  HIMMEL_API_KEY_ID=<roster id>
 #        ANTHROPIC_API_KEY (presence only; never printed, logged or passed on a command line)
 # OFF by default. No A/B rotation, no subscription fallback: a refusal is final.
@@ -52,8 +52,12 @@ while [ "$#" -gt 0 ]; do
     *) ARGS+=("$a"); continue ;;
   esac
   case "$a" in
-    --permission-mode) MODE="$val" ;;
-    --model) MODEL="$val" ;;
+    --permission-mode) case "$val" in
+                         default|plan|acceptEdits|dontAsk|auto) MODE="$val" ;;
+                         *) refuse "permission mode is not on the api lane allowlist (default, plan, acceptEdits, dontAsk, auto; bypassPermissions is never allowed)" ;;
+                       esac ;;
+    --model) case "$val" in ""|-*) refuse "--model needs a value not starting with a dash" ;; esac
+             MODEL="$val" ;;
     --max-budget-usd) BUDGET="$val" ;;
     --output-format) FORMAT="$val" ;;
     --effort) case "$val" in ""|-*|*[!A-Za-z0-9._-]*) refuse "--effort needs a value of [A-Za-z0-9._-] not starting with a dash" ;; esac
@@ -62,7 +66,6 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$PRINT" = 1 ] || refuse "only -p/--print runs are allowed"
 [ -n "$MODE" ] || refuse "--permission-mode is required"
-[ "$MODE" != "bypassPermissions" ] || refuse "permission mode bypassPermissions is not allowed"
 [ -n "$MODEL" ] || refuse "--model is required"
 case "$MODEL" in *[!A-Za-z0-9._:/@-]*) refuse "--model has characters outside [A-Za-z0-9._:/@-]" ;; esac
 [ -n "$BUDGET" ] || refuse "--max-budget-usd is required"
