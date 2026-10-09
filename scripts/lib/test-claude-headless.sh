@@ -281,7 +281,103 @@ check "admission lock with no pid file is reclaimed (dispatch succeeds)" "0" "$R
 rm -f "$LIVE_DIR"/*.json
 rm -rf "$LIVE_DIR/.admission.lock" 2>/dev/null || true
 
-# --- 14: --settings must reach the claude invocation in Windows-form, not
+# --- 13b (HIMMEL-2196): two reclaimers that both saw the SAME stale lock must
+# not both enter admission. Sequenced with the HIMMEL_HEADLESS_SEAM_DIR seam,
+# not timers: both park after their stale verdict; A is released, reclaims and
+# parks holding the fresh lock; B is then released with a verdict that is now
+# out of date. B must not delete A's live lock, so only ONE admits.
+SEAM="$W/seam13b"; mkdir -p "$SEAM"
+mkdir -p "$LIVE_DIR/.admission.lock"
+printf '999999999' > "$LIVE_DIR/.admission.lock/pid"
+ART13B_A="$W/artifact13b-a.txt"; ART13B_B="$W/artifact13b-b.txt"
+HIMMEL_HEADLESS_SEAM_DIR="$SEAM" run_sut "$FAKE_OK" "$ART13B_A" >/dev/null 2>&1 &
+PID13B_A=$!
+HIMMEL_HEADLESS_SEAM_DIR="$SEAM" run_sut "$FAKE_OK" "$ART13B_B" >/dev/null 2>&1 &
+PID13B_B=$!
+seam_wait() { # $1 = glob, $2 = count wanted, $3 = max tenths of a second
+  local n=0
+  # shellcheck disable=SC2086  # $1 is a glob, expanded on purpose
+  while [ "$(ls $1 2>/dev/null | wc -l | tr -d ' ')" -lt "$2" ] && [ "$n" -lt "$3" ]; do
+    n=$((n + 1)); sleep 0.1
+  done
+}
+seam_wait "$SEAM/stale-verdict.*.arrived" 2 150
+SV13B="$(ls "$SEAM"/stale-verdict.*.arrived 2>/dev/null | sed -e 's/.*stale-verdict\.//' -e 's/\.arrived$//' | sort -n)"
+SV_A="$(printf '%s\n' "$SV13B" | sed -n 1p)"
+SV_B="$(printf '%s\n' "$SV13B" | sed -n 2p)"
+check "two reclaimers both reached their stale verdict" "2" "$(printf '%s\n' "$SV13B" | grep -c .)"
+# 13b is about the stale verdict only; let both pass the reclaim-prerm seam
+for P in $SV_A $SV_B; do : > "$SEAM/reclaim-prerm.$P.go"; done
+: > "$SEAM/stale-verdict.$SV_A.go"
+seam_wait "$SEAM/admitted.*.arrived" 1 100
+: > "$SEAM/stale-verdict.$SV_B.go"
+seam_wait "$SEAM/admitted.*.arrived" 2 30
+check "only one of two stale-lock reclaimers enters admission" "1" "$(ls "$SEAM"/admitted.*.arrived 2>/dev/null | wc -l | tr -d ' ')"
+for P in $SV_A $SV_B; do : > "$SEAM/admitted.$P.go"; done
+wait "$PID13B_A" "$PID13B_B" 2>/dev/null
+check "no reclaim-intent lock is left behind" "no" "$([ -e "$LIVE_DIR/.admission.lock.reclaim" ] && echo yes || echo no)"
+rm -f "$LIVE_DIR"/*.json
+rm -rf "$LIVE_DIR/.admission.lock" "$LIVE_DIR/.admission.lock.reclaim" 2>/dev/null || true
+
+# --- 13c (HIMMEL-2196, judge j2259a C4): with flock(1) the reclaim-intent lock
+# is a kernel lock, so a second reclaimer can never displace the first while it
+# is between its staleness check and its delete. A parks holding the lock just
+# before its delete; B is released then and must NOT get in (before the fix a
+# steal could move a live marker, B took the slot and was admitted: 2 admitted).
+if command -v flock >/dev/null 2>&1; then
+SEAM="$W/seam13c"; mkdir -p "$SEAM"
+mkdir -p "$LIVE_DIR/.admission.lock"
+printf '999999999' > "$LIVE_DIR/.admission.lock/pid"
+HIMMEL_HEADLESS_SEAM_DIR="$SEAM" run_sut "$FAKE_OK" "$W/artifact13c-a.txt" >/dev/null 2>&1 &
+PID13C_A=$!
+HIMMEL_HEADLESS_SEAM_DIR="$SEAM" run_sut "$FAKE_OK" "$W/artifact13c-b.txt" >/dev/null 2>&1 &
+PID13C_B=$!
+seam_wait "$SEAM/stale-verdict.*.arrived" 2 150
+SV13C="$(ls "$SEAM"/stale-verdict.*.arrived 2>/dev/null | sed -e 's/.*stale-verdict\.//' -e 's/\.arrived$//' | sort -n)"
+SVC_A="$(printf '%s\n' "$SV13C" | sed -n 1p)"
+SVC_B="$(printf '%s\n' "$SV13C" | sed -n 2p)"
+: > "$SEAM/stale-verdict.$SVC_A.go"
+seam_wait "$SEAM/reclaim-prerm.*.arrived" 1 50
+check "first reclaimer parks holding the reclaim lock before its delete" "1" "$(ls "$SEAM"/reclaim-prerm.*.arrived 2>/dev/null | wc -l | tr -d ' ')"
+: > "$SEAM/stale-verdict.$SVC_B.go"
+sleep 1
+check "second reclaimer is not admitted while the first holds the lock" "0" "$(ls "$SEAM"/admitted.*.arrived 2>/dev/null | wc -l | tr -d ' ')"
+: > "$SEAM/reclaim-prerm.$SVC_A.go"
+seam_wait "$SEAM/admitted.*.arrived" 1 100
+check "after the first finishes exactly one is admitted" "1" "$(ls "$SEAM"/admitted.*.arrived 2>/dev/null | wc -l | tr -d ' ')"
+for P in $SVC_A $SVC_B; do : > "$SEAM/admitted.$P.go"; : > "$SEAM/reclaim-prerm.$P.go"; done
+wait "$PID13C_A" "$PID13C_B" 2>/dev/null
+rm -f "$LIVE_DIR"/*.json
+rm -rf "$LIVE_DIR/.admission.lock" "$LIVE_DIR/.admission.lock.reclaim" "$LIVE_DIR/.admission.lock.flock" 2>/dev/null || true
+else
+  SKIP=$((SKIP+1)); echo "skip - 13c: flock(1) not available"
+fi
+
+# --- 13d/13e (HIMMEL-2196, judge j2259a C3): the dir-fallback reclaim marker
+# must not outlive an INT/TERM that lands while it is held (the exit trap used
+# to release only the admission lock, leaving a marker with a dead pid).
+for SIG13 in TERM INT; do
+  SEAM="$W/seam13-$SIG13"; mkdir -p "$SEAM"
+  mkdir -p "$LIVE_DIR/.admission.lock"
+  printf '999999999' > "$LIVE_DIR/.admission.lock/pid"
+  set -m
+  HIMMEL_HEADLESS_NO_FLOCK=1 HIMMEL_HEADLESS_SEAM_DIR="$SEAM" run_sut "$FAKE_OK" "$W/artifact13-$SIG13.txt" >/dev/null 2>&1 &
+  PID13S=$!
+  set +m
+  seam_wait "$SEAM/stale-verdict.*.arrived" 1 150
+  # the seam files carry the script's own pid ($! is the wrapper subshell's)
+  SPID="$(ls "$SEAM"/stale-verdict.*.arrived 2>/dev/null | sed -e 's/.*stale-verdict\.//' -e 's/\.arrived$//' | head -1)"
+  : > "$SEAM/stale-verdict.$SPID.go"
+  seam_wait "$SEAM/reclaim-prerm.*.arrived" 1 150
+  check "$SIG13: reclaimer holds the reclaim marker" "yes" "$([ -d "$LIVE_DIR/.admission.lock.reclaim" ] && echo yes || echo no)"
+  kill -"$SIG13" "$SPID" 2>/dev/null
+  wait "$PID13S" 2>/dev/null
+  check "$SIG13: no reclaim marker is left behind" "no" "$([ -e "$LIVE_DIR/.admission.lock.reclaim" ] && echo yes || echo no)"
+  rm -f "$LIVE_DIR"/*.json
+  rm -rf "$LIVE_DIR/.admission.lock" "$LIVE_DIR/.admission.lock.reclaim" 2>/dev/null || true
+done
+
+# --- 14:--settings must reach the claude invocation in Windows-form, not
 # the bare POSIX path a caller naturally builds from $W (RETASK gV2t9-4478 /
 # same MSYS_NO_PATHCONV=1-affects-every-argv-element class as the --settings
 # fix above). A fake bin that dumps its own argv lets us assert on what the
