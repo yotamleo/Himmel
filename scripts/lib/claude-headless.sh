@@ -221,12 +221,26 @@ steal_stale_reclaim_lock() {
   local seen moved="$RECLAIM_LOCK.dead.$$"
   [ -d "$RECLAIM_LOCK" ] || return 0
   seen="$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)"
+  if [ -z "$seen" ]; then
+    # mkdir'd a moment ago, pid not written yet: give a live owner a beat.
+    sleep 0.2 2>/dev/null || sleep 1
+    seen="$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)"
+  fi
   if [ -n "$seen" ] && kill -0 "$seen" 2>/dev/null; then return 0; fi
   mv "$RECLAIM_LOCK" "$moved" 2>/dev/null || return 0
   if [ "$(cat "$moved/pid" 2>/dev/null || true)" = "$seen" ]; then
     rm -rf "$moved" 2>/dev/null || true
   else
-    mv -n "$moved" "$RECLAIM_LOCK" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
+    # ponytail: a mismatch means the marker was replaced between the read and
+    # the rename; restore only into an empty slot (mv onto an existing dir
+    # would nest), and the check-then-mv gap stays open — a second steal
+    # racing a third reclaimer inside that gap loses one marker, upgrade path
+    # is a flock-style owner file once a portable one exists (HIMMEL-2196).
+    if [ -e "$RECLAIM_LOCK" ]; then
+      rm -rf "$moved" 2>/dev/null || true
+    else
+      mv "$moved" "$RECLAIM_LOCK" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
+    fi
   fi
 }
 lock_acquire() {
