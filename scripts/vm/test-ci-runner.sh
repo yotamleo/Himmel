@@ -38,10 +38,16 @@ hook_case() {
 }
 
 echo "T1 job-started fork guard"
-same='{"pull_request":{"head":{"repo":{"full_name":"yotamleo/Himmel"}}}}'
+same='{"pull_request":{"user":{"login":"yotamleo"},"head":{"repo":{"full_name":"yotamleo/Himmel"}}},"sender":{"login":"yotamleo"}}'
 fork='{"pull_request":{"head":{"repo":{"full_name":"mallory/Himmel"}}}}'
 hook_case "same-repo PR runs"            0 pull_request refs/pull/1/merge "$same"
 hook_case "fork PR refused"              1 pull_request refs/pull/1/merge "$fork"
+# 5070(a): the PR author and the event sender must be operator accounts too.
+dep='{"pull_request":{"user":{"login":"dependabot[bot]"},"head":{"repo":{"full_name":"yotamleo/Himmel"}}},"sender":{"login":"yotamleo"}}'
+own='{"pull_request":{"user":{"login":"yotamleo"},"head":{"repo":{"full_name":"yotamleo/Himmel"}}},"sender":{"login":"yotamleo"}}'
+hook_case "owner re-run of a third-party PR refused" 1 pull_request refs/pull/1/merge "$dep"
+hook_case "owner PR with owner sender runs"          0 pull_request refs/pull/1/merge "$own"
+hook_case "PR with a non-owner sender refused"       1 pull_request refs/pull/1/merge '{"pull_request":{"user":{"login":"yotamleo"},"head":{"repo":{"full_name":"yotamleo/Himmel"}}},"sender":{"login":"mallory"}}'
 hook_case "PR with no head repo refused" 1 pull_request refs/pull/1/merge '{"pull_request":{}}'
 hook_case "push to main runs"            0 push refs/heads/main '{}'
 hook_case "push to a branch refused"     1 push refs/heads/feat/x '{}'
@@ -101,6 +107,7 @@ localhost_unreachable() { [ -z "${STUB_LOCALHOST_REACHABLE:-}" ]; }
 vm_ssh() {
     printf '%s\n' "$*" >> "$STUB_LOG/ssh.argv"; cat >> "$STUB_LOG/ssh.stdin"
     case "$*" in *"nft list table inet himmel_egress"*) [ -z "${STUB_NO_EGRESS:-}" ]; return ;; esac
+    [ -n "${STUB_SSH_HARD_SLEEP:-}" ] && case "$*" in *himmel-ci-run-job*) sleep "$STUB_SSH_HARD_SLEEP" ;; esac
     if [ -n "${STUB_SSH_SLEEP:-}" ]; then
         for _ in $(seq 1 $((STUB_SSH_SLEEP * 5))); do [ -e "$STUB_LOG/deleted" ] && break; sleep 0.2; done
     fi
@@ -217,6 +224,12 @@ else
     bad "no egress table: rc=$rc, gh=$(tr '\n' '|' < "$TMP/log/gh.argv")"
 fi
 grep -q "nft list table inet himmel_egress" "$TMP/log/ssh.argv" 2>/dev/null || bad "egress check never ran"
+# 5070(b): the per-boot check asks for every private-range reject, not just the LAN one.
+reset_log
+GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
+for r in '10\.0\.0\.0/8' '172\.16\.0\.0/12' '192\.168\.0\.0/16' '169\.254\.0\.0/16' '100\.64\.0\.0/10'; do
+    if grep -q -- "$r" "$TMP/log/ssh.argv" 2>/dev/null; then ok "egress check requires reject of $r"; else bad "egress check ignores $r"; fi
+done
 
 echo "T4i R5: off during the job wait deregisters the idle runner promptly"
 reset_log
@@ -233,6 +246,23 @@ if [ "$rc" -eq 0 ] && [ $((SECONDS - t0)) -lt 10 ] && [ "$(grep -c -- "-X DELETE
     ok "off: runner deregistered once within $((SECONDS - t0))s, loop ended (rc=$rc)"
 else
     bad "off during wait: rc=$rc after $((SECONDS - t0))s, gh=$(tr '\n' '|' < "$TMP/log/gh.argv")"
+fi
+
+echo "T4i2 5070(d): a guest that outlives the deregistration does not hold the loop"
+reset_log
+STUB_SSH_HARD_SLEEP=25 GH_KILL=on STUB_LOG="$TMP/log" PATH="$TMP/bin:$PATH" CI_RUNNER_VM_LIB="$TMP/vmlib.sh" \
+    HIMMEL_CI_RUNNER_WATCH_SECS=1 HIMMEL_CI_RUNNER_REPO=yotamleo/Himmel HIMMEL_CI_RUNNER_STOP_FILE="$TMP/stop" \
+    bash "$LOOP" run --once >"$TMP/out" 2>&1 &
+loop_pid=$!
+for _ in $(seq 1 50); do grep -q himmel-ci-run-job "$TMP/log/ssh.argv" 2>/dev/null && break; sleep 0.2; done
+t0=$SECONDS
+: > "$TMP/log/kill-off"
+wait "$loop_pid"
+rc=$?
+if [ "$rc" -eq 0 ] && [ $((SECONDS - t0)) -lt 10 ]; then
+    ok "idle deregistration ends the loop within $((SECONDS - t0))s"
+else
+    bad "loop held $((SECONDS - t0))s after deregistration (rc=$rc)"
 fi
 
 echo "T4c a failed guest job fails run --once, and still cleans up"

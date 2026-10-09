@@ -18,7 +18,10 @@
 # The operator's accounts are yotamleo and yotamleo11-test: GITHUB_ACTOR (who
 # started the run) and, when set, GITHUB_TRIGGERING_ACTOR (who re-ran it) must
 # both be one of them. A same-repo branch can carry any workflow and a
-# collaborator's PR is same-repo, so repo membership alone is not trusted.
+# collaborator's PR is same-repo, so repo membership alone is not trusted. A
+# pull_request additionally needs the PR's author (pull_request.user.login) and
+# the event's sender to be operator accounts: an owner re-running a Dependabot or
+# third-party same-repo PR must not run its code here (HIMMEL-5070).
 # GITHUB_REPOSITORY must equal HIMMEL_CI_RUNNER_REPO (baked into the image).
 set -u
 
@@ -44,16 +47,24 @@ case "${GITHUB_EVENT_NAME:-}" in
         [ "${GITHUB_REF:-}" = "refs/heads/main" ] || deny "push to '${GITHUB_REF:-}', not refs/heads/main"
         ;;
     pull_request)
-        head=$(python3 -c '
+        { IFS= read -r head; IFS= read -r author; IFS= read -r sender; } < <(python3 -c '
 import json, sys
 try:
     e = json.load(open(sys.argv[1]))
     print(e["pull_request"]["head"]["repo"]["full_name"])
+    print(e["pull_request"]["user"]["login"])
+    print(e["sender"]["login"])
 except Exception:
     pass
 ' "$GITHUB_EVENT_PATH")
         [ "$head" = "$want" ] || deny "pull_request head repo '${head:-<none>}' is not '$want' (fork PRs run on hosted runners)"
         owner_only
+        for a in "$author" "$sender"; do
+            case "$a" in
+                yotamleo|yotamleo11-test) ;;
+                *) deny "pull_request author/sender '${a:-<none>}' is not an operator account" ;;
+            esac
+        done
         ;;
     workflow_dispatch) owner_only ;;
     schedule) ;;

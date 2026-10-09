@@ -156,8 +156,12 @@ one_job() {
     vm_boot
     # Per boot, not per image: a guest whose egress filter did not load would
     # reach the station LAN.
-    local lan_reject='192.168.0.0/16.*reject'  # leak-allow: private-lan-ip egress filter range
-    vm_ssh "sudo nft list table inet himmel_egress | grep -q 'hook output' && sudo nft list table inet himmel_egress | grep -q '$lan_reject'" \
+    # Every private-range reject must be loaded, not just the LAN one (HIMMEL-5070).
+    local r chk="sudo nft list table inet himmel_egress | grep -q 'hook output'"
+    for r in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10; do  # leak-allow: private-lan-ip egress filter ranges
+        chk="$chk && sudo nft list table inet himmel_egress | grep -q '$r.*reject'"
+    done
+    vm_ssh "$chk" \
         || die "the himmel_egress nft table is not loaded in $CLONE_NAME — not minting a runner"
     { IFS= read -r RUNNER_ID && IFS= read -r jit; } < <(
         gh api -X POST "repos/$REPO/actions/runners/generate-jitconfig" \
@@ -182,6 +186,9 @@ one_job() {
                 echo "ci-runner: runner $RUNNER_ID deregistered — kill switch off"
                 RUNNER_ID=""
                 off=1
+                # An idle, now-deregistered runner has nothing to wait for; do
+                # not hold the loop until JOB_MAX (HIMMEL-5070).
+                kill "$JOB_PID" 2>/dev/null
                 break
             fi
         fi
