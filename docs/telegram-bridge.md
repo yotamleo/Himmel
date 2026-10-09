@@ -175,7 +175,7 @@ capability or second factor.
 `/station-status`, `/revert-main <pr>`, `/repin-hooks`,
 `/launch-leg <N-label> [--hook-bypass]`, `/cr-reset <pr>`,
 `/close-wrapped [<N-label>]`, `/relaunch-console [<name>]` and
-`/restart-bridge`. Each is off until named individually in
+`/restart-bridge` and `/allow-rule <id>`. Each is off until named individually in
 `TELEGRAM_AUTO_ACTIONS`. Every op except `/station-status` runs only after the
 operator sends back a one-time `/confirm <code>`, in the same chat within 5
 minutes. Break-glass ops and their `/confirm` run only in the operator's
@@ -188,7 +188,12 @@ private chat with the bot, never in a group.
   exports only `HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1`, and only for a
   sha256-recorded launcher; a manifest leg is refused with it.
 - Lockout recovery is `/revert-main <pr>` then `/repin-hooks`.
-- `/allow-rule` is deferred to HIMMEL-5048.
+- `/allow-rule <id>` (HIMMEL-5048) adds one pre-reviewed permission rule for a
+  command shape the classifier keeps denying. The rule text comes only from the
+  checked-in registry `scripts/telegram/allow-rules.json`, never from the
+  message; an unknown id is refused. It writes the primary checkout's untracked
+  `.claude/settings.local.json` (never the tracked `settings.json`), is
+  idempotent, and backs the old file up before writing.
 
 Full table: [`scripts/telegram/README.md`](../scripts/telegram/README.md#break-glass-ops-himmel-5047).
 

@@ -42,7 +42,7 @@ fi
 # Closed op allow-list (defense-in-depth vs the bridge parse layer).
 case "$OP" in
     arm-resume|merge-public|launch-bypass-leg|cr-grant-delta) ;;
-    station-status|revert-main|repin-hooks|launch-leg|cr-reset|close-wrapped|relaunch-console|restart-bridge)
+    station-status|revert-main|repin-hooks|launch-leg|cr-reset|close-wrapped|relaunch-console|restart-bridge|allow-rule)
         # HIMMEL-5047 break-glass ops: one executor owns them and their rc space.
         # The bot token and own-poller flag stay out of every child it starts.
         TELEGRAM_BOT_TOKEN="" TELEGRAM_OWN_POLLER="" bash "$SCRIPT_DIR/break-glass.sh" "$OP" "$ARG" "$TIME"

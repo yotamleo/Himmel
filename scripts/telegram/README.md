@@ -73,7 +73,7 @@ and one `auto-action-audit.log` line per attempt. `auto-action.sh` hands them to
 **must be named individually** in `TELEGRAM_AUTO_ACTIONS`; the `=1`/`all`
 aliases never enable one. The names are: `station-status`, `revert-main`,
 `repin-hooks`, `launch-leg`, `cr-reset`, `close-wrapped`, `relaunch-console`,
-`restart-bridge`.
+`restart-bridge`, `allow-rule`.
 
 Every op except `/station-status` is **confirm-coded**. The bridge replies with
 a one-time 8-hex code and runs nothing; the op runs only when the same operator
@@ -96,6 +96,7 @@ written to the audit log (results: `confirm-issued`, `confirm-refused`,
 | `/close-wrapped [<N-label>]` | Runs `close-wrapped-leg.sh` for that leg, or for every fleet leg. That script's own checks (lock free, tail `WRAPPED`) still decide; no pids are taken. |
 | `/relaunch-console [<name>]` | `console.sh next --arm --name <name>` (default `console`) from the primary. |
 | `/restart-bridge` | Restarts `telegram-bridge.service` (systemd user unit) from a detached transient timer, 3 s later, so the reply goes out first. |
+| `/allow-rule <id>` | Adds the one rule `allow-rules.json` maps `<id>` to into the primary's untracked local settings file; idempotent, backed up. |
 
 **`--admin` is break-glass.** `/revert-main` bypasses branch protection on the
 revert PR. It is operator-initiated, confirm-coded and audited, and it reverts
@@ -112,8 +113,19 @@ sha256-recorded launcher (a manifest leg is refused with it). `/relaunch-console
 send `/revert-main <pr>`, then `/repin-hooks`, then relaunch what died with
 `/launch-leg` or `/relaunch-console`.
 
-`/allow-rule <id>` (apply a pre-reviewed permission rule) is deferred to
-HIMMEL-5048.
+**`/allow-rule <id>` (HIMMEL-5048)** applies ONE pre-reviewed permission rule
+for a command shape the classifier keeps denying. The id is looked up in the
+checked-in registry [`allow-rules.json`](allow-rules.json) (`{"<id>": "<exact rule text>"}`);
+the message never carries rule text, an id that is not in the registry is
+refused (rc 26), and a registry entry that is not one clean line of text is
+refused. The rule is added to `permissions.allow` of the primary checkout's
+**untracked** `.claude/settings.local.json` (never the tracked `settings.json`,
+which would dirty the primary and break `/repin-hooks`' ff-only pull). It is
+idempotent (a rule already present writes nothing and makes no backup) and the
+previous file is copied to `<file>.bak-<epoch>-<pid>` before every write. A target
+that is not a JSON object with an array `permissions.allow` is left alone
+(rc 27). Add a rule by PR to `allow-rules.json`: that review is the control.
+The name is `allow-rule` in `TELEGRAM_AUTO_ACTIONS`, like the other break-glass ops.
 
 ## Human — quick commands (Windows / PowerShell)
 
