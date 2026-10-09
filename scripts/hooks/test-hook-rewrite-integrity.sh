@@ -284,6 +284,13 @@ if [ "$rc" -eq 0 ]; then
 else
   bad "HIMMEL-2588 recorder running: expected rc=0, got rc=$rc err=$(cat "$T/g5.err")"
 fi
+gone_dir g7; rm -f "$T/g7/$SID.json"; : > "$T/g7/$SID.recorder"
+gone_run g7 "$T/g7"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "HIMMEL-2588: a fresh empty marker (recorder caught mid-write) fails open"
+else
+  bad "HIMMEL-2588 empty marker: expected rc=0, got rc=$rc err=$(cat "$T/g7.err")"
+fi
 gone_dir g6; rm -f "$T/g6/$SID.json"; printf 'started\n' > "$T/g6/$SID.recorder"
 touch -t 202001010000 "$T/g6/$SID.recorder"
 gone_run g6 "$T/g6"; rc=$?

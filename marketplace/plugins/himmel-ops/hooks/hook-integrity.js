@@ -719,8 +719,10 @@ function recorderFinished(sessionId) {
   } catch (_e) {
     return false; // no marker: no recorder has run
   }
-  if (state === 'started') return Date.now() - mtimeMs > RECORDER_MAX_LIFE_MS;
-  return true; // `done`, or anything a recorder never writes
+  if (state === 'done') return true;
+  // `started`, or an empty marker caught between the recorder's open and its
+  // write: still running until it is too old to be.
+  return Date.now() - mtimeMs > RECORDER_MAX_LIFE_MS;
 }
 
 // ------------------------------------------------------------ bootstrap (§4)
