@@ -3406,6 +3406,10 @@ flake=0
 flaked_suites=""
 SUITE_FLAKE_WINDOW_DAYS="${SUITE_FLAKE_WINDOW_DAYS:-7}"
 case "$SUITE_FLAKE_WINDOW_DAYS" in ''|*[!0-9]*) SUITE_FLAKE_WINDOW_DAYS=7 ;; esac
+# A leading zero (08) would be octal in the arithmetic below; 10# forces decimal.
+# Seven digits is already ~27000 years, and it keeps the product in range.
+[ "${#SUITE_FLAKE_WINDOW_DAYS}" -le 7 ] || SUITE_FLAKE_WINDOW_DAYS=7
+SUITE_FLAKE_WINDOW_DAYS=$((10#$SUITE_FLAKE_WINDOW_DAYS))
 if [ -z "${SUITE_FLAKE_LEDGER:-}" ]; then
   if [ -n "${FAIL_LOG_DIR:-}" ]; then
     SUITE_FLAKE_LEDGER="$FAIL_LOG_DIR/flake-ledger.jsonl"
@@ -3418,7 +3422,9 @@ fi
 
 # _suite_no_retry <suite> — 0 when the first 20 lines carry a `# no-retry` mark.
 _suite_no_retry() {
-  head -n 20 "$1" 2>/dev/null | grep -qE '^#[[:space:]]*no-retry([[:space:]:]|$)'
+  local _hdr
+  _hdr=$(head -n 20 "$1" 2>/dev/null | grep -E '^#[[:space:]]*no-retry([[:space:]:]|$)')
+  [ -n "$_hdr" ]
 }
 
 # _flake_json_str — one stdin line as the inside of a JSON string.

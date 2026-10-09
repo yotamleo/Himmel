@@ -139,6 +139,23 @@ fi
 rm -rf "$sb"
 fi
 
+# --- F9 -------------------------------------------------------------------------
+echo "== F9: a leading-zero window (08) is decimal, not an octal error =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake9.XXXXXX") || { fail "F9: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+now=$(date +%s)
+printf '{"suite":"test-flaky.sh","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
+run_flake "$sb" SUITE_FLAKE_WINDOW_DAYS=08
+if [ "$rc" -eq 0 ] && grepq "$out" -F 'file a ticket' && ! grepq "$out" -iE 'value too great|syntax error' \
+    && [ "$(ledger_rows "$sb")" = 2 ]; then
+  pass "F9: SUITE_FLAKE_WINDOW_DAYS=08 reads as 8 days, ticket line printed, row appended"
+else
+  fail "F9: rc=$rc rows=$(ledger_rows "$sb") out: $out"
+fi
+rm -rf "$sb"
+fi
+
 # --- F6 -------------------------------------------------------------------------
 echo "== F6: a flake beside a real failure keeps the run red =="
 sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake6.XXXXXX") || { fail "F6: mktemp failed"; sb=""; }
