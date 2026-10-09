@@ -1712,7 +1712,14 @@ for v in \
     'git grep -ciObash -e x' \
     'git grep -ObashO -e x' \
     'git grep -iOe x -- scripts/cr/pr-check-env.sh' \
-    'git commit -Obash'; do
+    'git commit -Obash' \
+    'git --namespace add grep -oObash x' \
+    'git --namespace rm grep -cObash x' \
+    'git --namespace restore grep -FObash x' \
+    'git --namespace log grep -Obash x' \
+    'git --namespace show grep -Obash x' \
+    'git --git-dir=.git --namespace add grep -oObash x' \
+    'git --unknown-opt add grep -oObash x'; do
     run "HIMMEL-5095 O before any value letter [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a

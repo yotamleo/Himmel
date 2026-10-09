@@ -846,7 +846,8 @@ short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
     local c ch vals=mbBDcFCtsXuSo
     case "$1" in --* | -) return 1 ;; -*) ;; *) return 1 ;; esac
     case "$2" in
-        diff | log | show) case "$1" in *O*) return 0 ;; esac; return 1 ;;
+        # '*' = subcommand unknown (an unrecognised option came first): strict.
+        '*' | diff | log | show) case "$1" in *O*) return 0 ;; esac; return 1 ;;
         grep) vals=efABCm ;;
     esac
     c=${1#-}
@@ -858,7 +859,7 @@ short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
     return 1
 }
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -924,11 +925,19 @@ git_mentions_only() { # git_mentions_only <command-word index>
             dir=0
         elif [ -z "$sub" ]; then
             [ "${ST_Q[j]}" = 0 ] || bad=1
+            # HIMMEL-5095: a global option's separate value is not the subcommand
+            # (`--namespace add grep`); an unrecognised option makes the
+            # subcommand unknowable, so sub='*' keeps the strict any-O reading.
             case "$w" in
                 -C) dir=1 ;;
+                -c | --git-dir | --work-tree | --namespace | --super-prefix | \
+                    --config-env | --attr-source) bad=1; dir=1 ;;
+                --git-dir=* | --work-tree=* | --namespace=* | --super-prefix=* | \
+                    --config-env=* | --attr-source=* | -C* | -c*) bad=1 ;;
                 --no-pager) ;;
                 grep|log|show|diff|add|restore|rm) sub=$w ;;
-                *) bad=1 ;;
+                -*) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
+                *) bad=1; nsub=1 ;;
             esac
         elif [ "$w" = -- ]; then
             # An unknown option may consume -- as its value (-e/-S, ...),
