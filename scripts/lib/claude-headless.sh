@@ -38,6 +38,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # shellcheck source=scripts/lib/kill-tree.sh
 . "$SCRIPT_DIR/kill-tree.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/kill-tree.sh" >&2; exit 1; }
+# shellcheck source=scripts/lib/proc-tree.sh
+. "$SCRIPT_DIR/proc-tree.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/proc-tree.sh" >&2; exit 1; }
 # shellcheck source=scripts/lib/dedupe-path.sh
 . "$SCRIPT_DIR/dedupe-path.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/dedupe-path.sh" >&2; exit 1; }
 
@@ -52,7 +54,7 @@ usage: claude-headless.sh [options] < prompt-on-stdin, or --prompt-file <path>
   --prompt-file <path>       prompt delivered on stdin (default: read stdin directly)
   --cwd <path>               dispatch cwd (default: --worktree)
   --max-turns <n>            default 2, must be >= 2
-  --model <name>             optional model override
+  --model <name>             required — model the worker runs on (never the default quota)
   --allowed-tools <spec>     optional --allowedTools value
   --settings <path>          optional --settings overlay path
   --json-schema-file <path>  optional --json-schema payload (file contents passed inline)
@@ -111,6 +113,7 @@ done
 [ -n "$WORKTREE" ] || die "--worktree is required"
 [ -n "$ARTIFACT" ] || die "--artifact is required"
 [ -n "$PERMISSION_MODE" ] || die "--permission-mode is required"
+[ -n "$MODEL" ] || die "--model is required: every dispatch names an explicit model (HIMMEL-2198)"
 [ "$PERMISSION_MODE" != "bypassPermissions" ] || die "--permission-mode bypassPermissions is refused; pick an explicit mode (default/plan/dontAsk/etc.)"
 case "$MAX_TURNS" in *[!0-9]*|0|1) die "--max-turns must be an integer >= 2 (got '$MAX_TURNS')" ;; esac
 [ -z "$PROMPT_FILE" ] || [ -r "$PROMPT_FILE" ] || die "--prompt-file not readable: $PROMPT_FILE"
@@ -149,12 +152,72 @@ fi
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# Process start time of <pid> ("" when it is gone or ps is unavailable). Paired
+# with the pid it identifies one process even after the pid is reused. TZ=UTC
+# LC_ALL=C (as proc-tree.sh does, HIMMEL-3791): lstart is printed in the caller's
+# TZ and locale, and a row may be recorded and read under different ones.
+proc_start() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+
+# HIMMEL-2197: a dispatched/running row whose wrapper died without running
+# finalize_on_exit (SIGKILL, host death) would count against the cap forever.
+# True when the row recorded a wrapper pid and that process is gone (or reused
+# with a different start time), AND the launched claude worker, when its pid was
+# recorded, is gone too: SIGKILL of the wrapper alone leaves the worker running,
+# and its slot must stay held. A row with no recorded pid, or a live matching
+# one, is never reaped. Called only under the admission lock.
+pid_gone() { # <pid> <recorded start>
+  local cur alive_rc=0
+  cur="$(proc_start "$1")"
+  if [ -z "$cur" ]; then
+    # No start time from ps: only a confirmed ESRCH (rc 1) proves the pid gone.
+    # EPERM, a pid namespace boundary or any other probe failure is unknown
+    # (rc 2) and keeps the slot.
+    proc_tree_process_alive "$1" || alive_rc=$?
+    [ "$alive_rc" -eq 1 ]
+    return
+  fi
+  [ -n "$2" ] && [ "$2" != "$cur" ]
+}
+
+row_holder_dead() {
+  local pid wpid
+  command -v ps >/dev/null 2>&1 || return 1
+  pid="$(jq -r '.pid // empty' "$1" 2>/dev/null)"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  pid_gone "$pid" "$(jq -r '.pid_start // empty' "$1" 2>/dev/null)" || return 1
+  wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
+  case "$wpid" in
+    ''|*[!0-9]*)
+      # No recorded worker: dead only if the launch never began. A row marked
+      # launching may have a live worker whose pid was not yet persisted.
+      [ "$(jq -r '.launching // false' "$1" 2>/dev/null)" = "true" ] && return 1
+      return 0 ;;
+  esac
+  pid_gone "$wpid" "$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
+}
+
 count_active() {
   local dir="$1" n=0 f status
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
     status="$(jq -r '.status // ""' "$f" 2>/dev/null)"
-    case "$status" in dispatched|running) n=$((n + 1)) ;; esac
+    case "$status" in
+      dispatched|running)
+        if row_holder_dead "$f"; then
+          if jq --arg terminal_at "$(now_iso)" '.status = "interrupted" | .terminal_at = $terminal_at' "$f" > "$f.tmp" 2>/dev/null \
+              && mv "$f.tmp" "$f" 2>/dev/null; then
+            echo "claude-headless.sh: reaped dead dispatched row $f" >&2
+          else
+            # Fail closed: an unpersisted reap keeps the slot held.
+            rm -f "$f.tmp" 2>/dev/null
+            echo "claude-headless.sh: could not reap dead dispatched row $f (write failed); slot kept" >&2
+            n=$((n + 1))
+          fi
+        else
+          n=$((n + 1))
+        fi
+        ;;
+    esac
   done
   printf '%s\n' "$n"
 }
@@ -327,7 +390,11 @@ lock_release() {
 # a real terminal state, so it stops counting as active. Full staleness
 # detection for a HUNG-but-still-running worker (heartbeats/TTL reaping) is
 # Chain 4's job (architecture doc §3); this only covers THIS process's own
-# death, which needs no heartbeat.
+# death, which needs no heartbeat. A SIGKILL skips this trap, so the row also
+# records pid + pid_start and the next admission reaps it (count_active,
+# HIMMEL-2197). ponytail: no heartbeat/TTL, so a wedged-but-alive worker still
+# holds its slot; upgrade path is HIMMEL-5119 (Chain 4 heartbeats, architecture
+# doc §3).
 #
 # codex-1 follow-up: marking the row terminal is not enough on its own — the
 # actual claude session runs as a BACKGROUND child (_LAUNCHED_CLAUDE_PID, set
@@ -488,7 +555,9 @@ ID="$(node -e "process.stdout.write(require('crypto').randomUUID())")" || { lock
 ROW="$LIVE_DIR/$ID.json"
 jq -n --arg id "$ID" --arg role "$ROLE" --arg worktree "$WORKTREE" --arg ticket "$TICKET" \
   --arg dispatched_at "$(now_iso)" --arg artifact "$ARTIFACT" \
+  --arg pid "$$" --arg pid_start "$(proc_start "$$")" \
   '{id:$id, role:$role, worktree:$worktree, ticket:$ticket, status:"dispatched",
+    pid:($pid|tonumber), pid_start:$pid_start,
     dispatched_at:$dispatched_at, terminal_at:null, artifact:$artifact,
     outcome:null, artifact_check:null}' > "$ROW.tmp" || { lock_release; die "could not write registry row: $ROW"; }
 mv "$ROW.tmp" "$ROW" || { lock_release; die "could not write registry row: $ROW"; }
@@ -508,7 +577,7 @@ else
 fi
 # launch-profile-ok: profile-agnostic chokepoint; its callers own the plugin-profile choice (HIMMEL-4013)
 CMD=("${CLAUDE_LANE_CMD[@]}" -p --output-format json --permission-mode "$PERMISSION_MODE" --max-turns "$MAX_TURNS")
-[ -z "$MODEL" ] || CMD+=(--model "$MODEL")
+CMD+=(--model "$MODEL")
 [ -z "$ALLOWED_TOOLS" ] || CMD+=(--allowedTools "$ALLOWED_TOOLS")
 if [ -n "$SETTINGS" ]; then
   # codex-4: MSYS_NO_PATHCONV=1 (below) disables Git Bash's automatic
@@ -552,6 +621,16 @@ STDOUT_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stdout.XXXXXX")"
 # for an existing copy, so handing it an already-duplicated inherited PATH
 # lets that compound across every headless dispatch in a long session.
 DEDUPED_PATH="$(dedupe_path "$PATH")"
+# HIMMEL-2197: mark the row BEFORE the fork. A wrapper SIGKILLed between the
+# fork and the worker_pid write below must not look launch-free to the reaper.
+# ponytail: such a row keeps its slot forever (no heartbeat/TTL), upgrade path
+# is HIMMEL-5119.
+if [ -n "${ROW:-}" ] && [ -f "$ROW" ]; then
+  if ! { jq '.launching = true' "$ROW" > "$ROW.tmp" 2>/dev/null && mv "$ROW.tmp" "$ROW" 2>/dev/null; }; then
+    rm -f "$ROW.tmp" 2>/dev/null
+    die "could not mark registry row launching: $ROW"
+  fi
+fi
 # shellcheck disable=SC1091,SC2031  # SC2031: ${!PREFIX*} parses as an empty-named var
 # HIMMEL-4459: native_auth_pin_env's return value is ADVISORY here — a shadowed
 # `unset`/`return` (function, alias, startup file) can make it return 0 with the
@@ -582,6 +661,13 @@ DEDUPED_PATH="$(dedupe_path "$PATH")"
 # write failure) would have finalize_on_exit read the ambient value and
 # kill_tree the session that launched this wrapper, not the child it spawned.
 _LAUNCHED_CLAUDE_PID=$!
+# HIMMEL-2197: record the worker so a SIGKILLed wrapper's surviving worker keeps
+# its slot (row_holder_dead). Best effort: a failed write leaves the row as is.
+if [ -n "${ROW:-}" ] && [ -f "$ROW" ]; then
+  jq --arg wpid "$_LAUNCHED_CLAUDE_PID" --arg wstart "$(proc_start "$_LAUNCHED_CLAUDE_PID")" \
+    '.worker_pid = ($wpid|tonumber) | .worker_start = $wstart' "$ROW" > "$ROW.tmp" 2>/dev/null \
+    && mv "$ROW.tmp" "$ROW" 2>/dev/null
+fi
 wait "$_LAUNCHED_CLAUDE_PID"
 RC=$?
 ENVELOPE="$(cat "$STDOUT_FILE" 2>/dev/null)"
