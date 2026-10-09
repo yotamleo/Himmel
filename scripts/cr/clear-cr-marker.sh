@@ -525,7 +525,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
   // never cross-model evidence and never an exhaustion-tracked lane; floorOk
   // (not claudeOk) is what unlocks CR_FLOOR_FALLBACK - a session-written
   // "claude" self-review row no longer does.
-  let claudeOk = false, floorOk = false;
+  let claudeOk = false, floorOk = false, certifyRefused = false;
   const availByModel = new Map();
   // HIMMEL-2067: ANY finding at this head with no EFFECTIVE verdict (null,
   // undefined or empty string, after amends are applied) — not just
@@ -654,6 +654,12 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
             verdict: typeof o.verdict === "string" ? o.verdict.trim() : o.verdict });
       }
       if (o.kind === "avail") {
+          // HIMMEL-1932: critic-panel.sh records avail unavailable
+          // reason=certify-refused before exiting 6 (it refused to certify
+          // this run). Any such row at this head holds the gate closed, under
+          // whatever model slug it was written, whatever other lanes report.
+          if (o.status === "unavailable" && typeof o.reason === "string" &&
+              o.reason.trim().toLowerCase() === "certify-refused") certifyRefused = true;
           // Require a PRESENT model string — a bare != "claude" also matches a
           // MISSING model (JS: undefined !== "claude" is true). Normalise
           // (trim+lowercase) so a mis-cased "Claude" is still the floor, never
@@ -929,7 +935,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
   if (emptyPanel) exhaustedLanes.push("empty-panel");
   const floorFallbackEligible = floorOk && (nonClaudeAvailModels.length > 0 || emptyPanel) &&
       nonExhaustedLanes.length === 0 && blocking.length === 0;
-  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, missingSweep: sweepsUnreadable ? null : missingSweep, floorFallbackEligible, floorOk, exhaustedLanes, nonExhaustedLanes }));
+  console.log(JSON.stringify({ responders, nonClaudeResponders, certifyRefused, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, missingSweep: sweepsUnreadable ? null : missingSweep, floorFallbackEligible, floorOk, exhaustedLanes, nonExhaustedLanes }));
 ' 2>/dev/null)
 if [ -z "$verdict" ]; then
     echo "clear-cr-marker: could not read the CR ledger at $ledger — refusing (cannot certify the review)." >&2
@@ -946,6 +952,8 @@ unadjudicated_count=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.o
 # HIMMEL-4566 gate 4d. No `||[]` fallback: a verdict without the key is a
 # broken pass, and the node throw leaves this EMPTY, which gate 4d refuses.
 missing_sweep=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s).missingSweep;if(Array.isArray(m))console.log("ok "+m.join(" "));})' 2>/dev/null)
+# HIMMEL-1932: a recorded panel certify refusal at this head.
+certify_refused=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).certifyRefused?1:0))' 2>/dev/null)
 # HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility (see gate 3b below).
 floor_fallback_eligible=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).floorFallbackEligible?1:0)))' 2>/dev/null)
 exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).exhaustedLanes||[]).join(" ")))' 2>/dev/null)
@@ -1018,6 +1026,17 @@ fi
 if [ "${malformed:-0}" -gt 0 ]; then
     echo "clear-cr-marker: the CR ledger has ${malformed} unparseable record(s) — the review verdict cannot be read reliably. Refusing (an unknown verdict is not a clean one). Inspect $ledger." >&2
     audit "REFUSED reason=ledger-malformed branch=$branch sha=$tip malformed=$malformed"
+    exit 14
+fi
+
+# 2b. HIMMEL-1932: the panel refused to certify this SHA (critic-panel.sh exit 6:
+# it rejected blocking evidence and could not mint the citation-guard id, so
+# that evidence never reached the ledger). Another lane's avail ok must not
+# stand in for it. The hold is per SHA: fix the digest tooling and re-run the
+# panel at a new head (any commit).
+if [ "${certify_refused:-0}" = "1" ]; then
+    echo "clear-cr-marker: the critic panel recorded certify-refused at ${tip:0:8} (it could not certify the run and its rejected blocking evidence never reached the ledger) — another lane's 'avail ... ok' does not clear that. Fix the digest tooling (sha256sum/shasum) and re-run /pr-check on a new HEAD." >&2
+    audit "REFUSED reason=panel-certify-refused branch=$branch sha=$tip"
     exit 14
 fi
 

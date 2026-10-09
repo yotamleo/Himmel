@@ -212,6 +212,20 @@ else
     bad "T6 unexpected panel call count"
 fi
 
+# T6b (HIMMEL-1932): stubbed panel exit 6 (refused to certify) -> still fails
+# open to claude-only, but the note says REFUSED, never "all critics failed".
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && FAKE_RC=6 FAKE_OUT='PHANTOM-FINDING-MUST-NOT-SURVIVE' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+err="$(cat "$tmp/err")"
+if [ "$rc" -eq 0 ]; then ok "T6b panel exit 6 degrades to exit 0"; else bad "T6b panel exit 6 exit (got $rc)"; fi
+assert_has "$err" "critic panel REFUSED to certify this run (exit 6" "T6b refusal note on stderr"
+assert_lacks "$err" "all critics failed" "T6b exit 6 is not described as all critics failed"
+assert_lacks "$out" "PHANTOM-FINDING-MUST-NOT-SURVIVE" "T6b findings reset to empty"
+# Every panel run advances the branch's 3-round counter; T6b is an extra run
+# the later cases were not budgeted for, so give them a fresh counter.
+rm -rf "$repo/.git/cr-review-rounds"
+
 # T7: stubbed panel exit 0 -> findings on stdout, availability on stderr,
 # streams never merged; captured diff base line present.
 rm -f "$CALL_LOG" "$tmp/err"

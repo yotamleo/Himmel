@@ -50,7 +50,8 @@
 #       step 1.
 #   Every other critic-panel.sh failure fails OPEN to claude-only (this
 #   script still exits 0; panel findings are empty and a loud note went to
-#   stderr).
+#   stderr). Panel exit 6 (HIMMEL-1932, a refusal to certify) gets its own note
+#   instead of the all-critics-failed text.
 set -uo pipefail
 # HIMMEL-3395: a relative-entry copy that is not the anchor's hands off to it.
 case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; esac
@@ -250,7 +251,14 @@ PINABORTRETRY
         fi
         if [ "$panel_rc" -ne 0 ]; then
             # rc=1 after retry (or rtk absent / retry-diff empty) - fail-open.
-            echo "critic panel unavailable (all critics failed) - claude-only review" >&2
+            if [ "$panel_rc" -eq 6 ]; then
+                # HIMMEL-1932: exit 6 is a deliberate fail-closed refusal, not
+                # a failed panel. The panel recorded certify-refused on the
+                # ledger, so clear-cr-marker.sh holds this SHA closed.
+                echo "critic panel REFUSED to certify this run (exit 6: the citation-guard digest could not be computed - fix sha256sum/shasum) - claude-only review; the CR marker stays held at this SHA until the panel is re-run on a new HEAD" >&2
+            else
+                echo "critic panel unavailable (all critics failed) - claude-only review" >&2
+            fi
             panel_findings=""
         fi
     fi
