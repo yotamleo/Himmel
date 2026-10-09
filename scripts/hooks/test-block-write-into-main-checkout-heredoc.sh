@@ -410,12 +410,21 @@ _subst_row "4397s plain opener then git-commit opener on one line, lone quote cl
 # rebalances the walk and the fast path swallowed the primary redirect between.
 _subst_row "4397t two quoted openers on one git commit, lone quote in the second body, primary write, then a line with a ) (DENY)" block \
     "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
-_subst_row "4397u here-string beside the git commit opener, lone quote, primary write, then a line with a ) (DENY)" block \
+_subst_row "4397u here-string beside the git commit opener, lone quote, primary write, then a line with a ) (DENY, over-block row)" block \
     "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<< x\nfix: msg\nEOF\nit'"'"'s\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
 _subst_row "4397v unquoted second opener beside the git commit opener, lone quote, primary write, then a line with a ) (DENY)" block \
     "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<Y\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
 _subst_row "4397w CONTROL: two quoted openers, lone quote, worktree write, then a line with a ) (ALLOW)" allow \
     "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/z.txt\necho "it'"'"'s )"' "$_WR")"
+# J2249d: bash joins a backslash-newline before it reads `<`, so a second opener
+# split as `<\` + newline + `<'Y'` is the heredoc <<'Y'; the flat count must
+# drop every backslash-newline pair first or it misses that opener.
+_subst_row "4397x second opener split by a backslash-newline, lone quote, primary write, then a line with a ) (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <\\\n<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397y here-string split by a backslash-newline (<\\ then <<x), lone quote, primary write, then a line with a ) (DENY, over-block row)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <\\\n<<x\nfix: msg\nEOF\nit'"'"'s\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397z CONTROL: backslash-newline split second opener, worktree write (ALLOW)" allow \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <\\\n<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/z.txt\necho "it'"'"'s )"' "$_WR")"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

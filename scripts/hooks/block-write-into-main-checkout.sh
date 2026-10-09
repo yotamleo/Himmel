@@ -608,10 +608,14 @@ _bwimc_blank_heredocs() {
     # only sees a `<<` while no heredoc is active, so a second `<<` on an
     # opener's line is never counted: a flat count of every `<<` in the raw text
     # (here-strings included) must equal the openers the walk recognised, or the
-    # mode-0 reading is kept (over-refusing only costs time).
+    # mode-0 reading is kept (over-refusing only costs time). Bash joins a
+    # backslash-newline before it reads `<`, so `<\` + newline + `<'Y'` is a real
+    # <<'Y': every such pair is removed before the count.
     if [ -n "$nest" ] && [ "$nopen" -gt 0 ] && [ "$allq" -ne 0 ] && [ "$allgit" -ne 0 ] && [ -z "$_BWIMC_Q" ]; then
-        local _flat="${text//<</}"
-        [ $(( (${#text} - ${#_flat}) / 2 )) -ne "$nopen" ] || return 7
+        local _bsnl=$'\\\n' _joined _flat
+        _joined="${text//"$_bsnl"/}"
+        _flat="${_joined//<</}"
+        [ $(( (${#_joined} - ${#_flat}) / 2 )) -ne "$nopen" ] || return 7
     fi
     return 0
 }
