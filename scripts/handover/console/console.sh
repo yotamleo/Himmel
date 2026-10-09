@@ -320,8 +320,10 @@ cmd_wrap() {
         fi
         exit 4
     fi
-    bash "$HERE/../console-kit/append-results.sh" "$doc" "WRAPPED — $text" || exit 1
+    # release first: a wrong token then fails before WRAPPED is written, never
+    # leaving a WRAPPED console whose lock is still held
     bash "$HERE/../queue-lock.sh" release "$doc" "$token" || exit 1
+    bash "$HERE/../console-kit/append-results.sh" "$doc" "WRAPPED — $text" || exit 1
 }
 
 # The HANDOFF's open-judge-calls fact (HIMMEL-5071): this session's running

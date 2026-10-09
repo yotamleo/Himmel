@@ -92,6 +92,12 @@ check "detector: unreadable registry entry -> rc 2 (cannot decide)" "$rc" "2"
 rm -f "$SUB/agent-bad.meta.json"
 rc=0; out=$(CLAUDE_CODE_SESSION_ID="$SID" detect 2>&1) || rc=$?
 check "detector: defaults to \$CLAUDE_CODE_SESSION_ID" "$rc" "0"
+rc=0; timeout 10 env CLAUDE_CONFIG_DIR="$W/cfg" bash "$LS" --session >/dev/null 2>&1 || rc=$?
+check "detector: --session with no value -> rc 2 (no loop)" "$rc" "2"
+printf 'not json\n' >> "$SUB/agent-a1.jsonl"
+rc=0; detect --session "$SID" >/dev/null 2>&1 || rc=$?
+check "detector: unparseable child transcript -> rc 2 (cannot decide)" "$rc" "2"
+reset_session
 
 # --- the wrap gate: console.sh wrap ------------------------------------------
 # A predecessor console with a fake live judge child: wrap refused, nothing
@@ -121,6 +127,9 @@ rc=0; out=$(HANDOVER_DIR="$ROOT" CLAUDE_CONFIG_DIR="$W/cfg" LEG_JIRA_STATUS=0 en
 check "wrap: no session id (cannot prove idle) -> refused rc 4" "$rc" "4"
 
 notify j1 toolu_J1 2026-10-09T01:00:00.010Z
+rc=0; out=$(wrap "$DOC" "not-the-token" "handed to B" 2>&1) || rc=$?
+check "wrap: wrong release token -> refused" "$([ "$rc" -ne 0 ] && echo refused)" "refused"
+check "wrap: wrong token -> no WRAPPED written" "$(grep -c WRAPPED "$DOC")" "0"
 rc=0; out=$(wrap "$DOC" "$TOKEN" "handed to B" 2>&1) || rc=$?
 check "wrap: child stopped -> rc 0" "$rc" "0"
 check "wrap: WRAPPED is the last bullet" "$(grep '^- ' "$DOC" | tail -n 1 | sed -E 's/^- [0-9:]+ ([A-Z]+).*/\1/')" "WRAPPED"

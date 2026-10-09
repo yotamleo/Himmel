@@ -41,8 +41,10 @@ SID="${CLAUDE_CODE_SESSION_ID:-}"
 PROJECTS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --session) SID="${2:-}"; shift 2 ;;
-        --projects) PROJECTS="${2:-}"; shift 2 ;;
+        --session|--projects)
+            [ "$#" -ge 2 ] || { echo "live-subagents: $1 needs a value" >&2; exit 2; }
+            if [ "$1" = --session ]; then SID="$2"; else PROJECTS="$2"; fi
+            shift 2 ;;
         *) echo "usage: live-subagents.sh [--session <session-id>] [--projects <dir>]" >&2; exit 2 ;;
     esac
 done
@@ -94,7 +96,12 @@ EOF
         ) | .timestamp // empty' 2>/dev/null | sort | tail -n 1)
     child_at=""
     if [ -f "${meta%.meta.json}.jsonl" ]; then
-        child_at=$(jq -r '.timestamp // empty' "${meta%.meta.json}.jsonl" 2>/dev/null | sort | tail -n 1)
+        # a parse failure could hide a resumed child's newest record: refuse
+        if ! child_ts=$(jq -r '.timestamp // empty' "${meta%.meta.json}.jsonl" 2>/dev/null); then
+            echo "live-subagents: unreadable child transcript ${meta%.meta.json}.jsonl - cannot decide" >&2
+            exit 2
+        fi
+        child_at=$(printf '%s\n' "$child_ts" | sort | tail -n 1)
     fi
     # ISO-8601 UTC stamps from one writer compare correctly as strings
     if [ -n "$done_at" ] && { [ -z "$child_at" ] || ! [[ "$child_at" > "$done_at" ]]; }; then
