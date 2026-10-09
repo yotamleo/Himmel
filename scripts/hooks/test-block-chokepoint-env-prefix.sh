@@ -1682,6 +1682,63 @@ $pre ls $GP")"
     assert_allow "4454 control: evaluate/medieval are other words [$pre]" "$(j "evaluate=1; medieval=1; $pre ls /r/w/docs/*.md")"
 done
 
+# HIMMEL-4454 (judge j2236a NO-GO): the run-time definers must be refused in ANY
+# command position (after if/while/until/case arms, assignment and redirect
+# prefixes, precommand options), however the command word is spelled (quoted,
+# escaped, expanded), and through the other run-time hooks (trap DEBUG/ERR/
+# ZERR/RETURN, mapfile/readarray -C, zsh emulate -c). Each was run under bash
+# and zsh and defined the shadow.
+# shellcheck disable=SC2016 # SH is probe text, not an expansion
+SH='ls () { bash "$@"; }'
+for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
+    while IFS= read -r form; do
+        [ -n "$form" ] || continue
+        assert_deny "4454b $form [$pre]" "$(j "${form//@@/$SH}; $pre ls $GP")"
+    done <<'FORMS'
+if eval '@@'; then :; fi
+while eval '@@'; do break; done
+until eval '@@'; do break; done
+case x in x) eval '@@';; esac
+a=1 eval '@@'
+</dev/null eval '@@'
+2>/dev/null eval '@@'
+time -p eval '@@'
+command -p eval '@@'
+builtin -- eval '@@'
+repeat 1 eval '@@'
+if . /dev/stdin <<<'@@'; then :; fi
+a=1 . /dev/stdin <<<'@@'
+</dev/null . /dev/stdin <<<'@@'
+command -p . /dev/stdin <<<'@@'
+case x in x) . /dev/stdin <<<'@@';; esac
+\eval '@@'
+"eval" '@@'
+$'eval' '@@'
+ev\al '@@'
+"e"val '@@'
+${x:-eval} '@@'
+x=eval; $x '@@'
+y=al; ev${y} '@@'
+{,eval} '@@'
+"." /dev/stdin <<<'@@'
+'.' /dev/stdin <<<'@@'
+\. /dev/stdin <<<'@@'
+$'.' /dev/stdin <<<'@@'
+${x:-.} /dev/stdin <<<'@@'
+"source" /dev/stdin <<<'@@'
+so\urce /dev/stdin <<<'@@'
+trap '@@' DEBUG
+trap '@@' ERR
+trap '@@' ZERR
+trap '@@' RETURN
+mapfile -C '@@' -c 1 a </dev/null
+readarray -C '@@' -c 1 a </dev/null
+emulate zsh -c '@@'
+FORMS
+    assert_allow "4454b control: trap on EXIT is not a run-time definer [$pre]" "$(j "trap 'echo bye' EXIT; $pre ls /r/w/docs/*.md")"
+    assert_allow "4454b control: mapfile without -C [$pre]" "$(j "mapfile -t a </dev/null; $pre ls /r/w/docs/*.md")"
+done
+
 # HIMMEL-4157 (judge J1685 NO-GO): the relief pass was super-linear -- per
 # redirect it walked every stage, forking per token expansion. 200 redirects
 # took 13 s against a 15 s hook budget; a 10 KB line of quoted stages 5 s.

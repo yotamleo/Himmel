@@ -1357,6 +1357,47 @@ pobf_relief() {
     local re_sr="(^|[^[:alnum:]_.])source([^[:alnum:]_]|\$)|${re_cp}\\.[[:blank:]]"
     [[ $F =~ $re_ev ]] && return 1
     [[ $F =~ $re_sr ]] && return 1
+    # The same, structurally: split F at ; & | ( ) and backticks (a newline
+    # already ends a line), skip what can precede a command word (keywords,
+    # their options, assignments, redirects), and refuse relief when the
+    # command word is not a plain literal (a quote token, a backslash, a $ or
+    # a brace) or is eval, source, `.`, a DEBUG/ERR/ZERR/RETURN trap, a
+    # mapfile / readarray -C callback or a zsh emulate -c.
+    local re_rd='^[0-9]*(<<<|<>|>>|>\||&>|<|>)(.*)$'
+    local re_tr='(^|[^[:alnum:]_])(DEBUG|ERR|ZERR|RETURN)([^[:alnum:]_]|$)'
+    local re_mc='[[:blank:]]-[[:alnum:]]*C'
+    local re_ec='[[:blank:]]-[[:alnum:]]*c'
+    # Backticks pair up (an escaped one is not a delimiter): the text after a
+    # closing one continues the same command, so its first line is no stage.
+    local cw sk bj skf G
+    local -a bqs
+    G=${F//\\$BQ/$'\004'}
+    IFS=$BQ read -r -d '' -a bqs <<< "$G" || :
+    for bj in "${!bqs[@]}"; do
+        skf=0; [ "$bj" -gt 0 ] && [ $((bj % 2)) = 0 ] && skf=1
+        while IFS= read -r L; do
+            [ "$skf" = 1 ] && { skf=0; continue; }
+            cw=''; sk=0
+            for w in $L; do
+                [ "$sk" = 1 ] && { sk=0; continue; }
+                case "$w" in
+                    if|then|do|else|elif|while|until|'!'|'{'|'}'|time|coproc|nocorrect|noglob|builtin|command|exec|-*) continue ;;
+                    repeat) sk=1; continue ;;
+                esac
+                if [[ $w =~ $re_rd ]]; then [ -z "${BASH_REMATCH[2]}" ] && sk=1; continue; fi
+                [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?= ]] && continue
+                cw=$w; break
+            done
+            case "$cw" in
+                '') ;;
+                *"$T1"*|*"$T2"*|*\\*|*\$*|*\{*|*\}*) return 1 ;;
+                eval|source|.) return 1 ;;
+                trap) [[ $L =~ $re_tr ]] && return 1 ;;
+                mapfile|readarray) [[ $L =~ $re_mc ]] && return 1 ;;
+                emulate) [[ $L =~ $re_ec ]] && return 1 ;;
+            esac
+        done <<< "${bqs[bj]//[;&|()]/$NL}"
+    done
     [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
     F=${F//[0-9]>&[0-9]/ }
