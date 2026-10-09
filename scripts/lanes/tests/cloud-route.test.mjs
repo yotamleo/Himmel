@@ -310,3 +310,13 @@ test('LOCAL-NATIVE: each state-repo reference alone routes local', () => {
 test('CLOUD-OK: repo paths that merely resemble handover state stay cloud', () => {
   for (const t of ['Edit scripts/handover/console-kit/tick.sh.', 'Edit docs/handover/overnight-mode.md.', 'Edit scripts/a.sh and scripts/lanes/specs/foo.sh.']) assert.equal(classifyTicket(tk({ description: t }), ctx()).class, 'CLOUD-OK', t);
 });
+
+test('brief makes every Jira step conditional on the Atlassian tools, with a PR-body fallback (HIMMEL-5029)', () => {
+  const t = { ...parseJiraGet('HIMMEL-9001\tTask\tTo Do\tt\n\nFix versions: v1.0.1'), files: ['a.sh'] };
+  const b = buildBrief(t, { date: '2026-10-09' });
+  assert.match(b, /If the Atlassian MCP tools are listed in this session, use them; otherwise do not try a workaround/);
+  assert.match(b, /Jira steps not done/);
+  assert.match(b, /if the Atlassian MCP tools are listed, transition HIMMEL-9001 to `In Progress`;/);
+  assert.match(b, /if the Atlassian MCP tools are listed, comment on HIMMEL-9001 with the PR URL/);
+  assert.match(b, /a `## Jira steps not done` section listing each Jira step you skipped/);
+});

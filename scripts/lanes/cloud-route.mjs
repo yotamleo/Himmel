@@ -112,7 +112,7 @@ export function buildBrief(t, o = {}) {
   const coverage = asks.length ? asks.map((a) => `- ${a.replace(/^\d+[.)]\s*/, '')} — done`).join('\n') : `- ${t.title} — done`;
   const completes = o.completes ?? 'yes';
   const change = o.change ?? "Implement the ticket's asks above, in the named files only.";
-  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief and the repo. You have no local state. Jira is reachable through the Atlassian MCP connector (the local jira CLI is absent in the cloud): read the ticket, comment, file follow-ups with the fixVersion this brief names, and cite the ticket key in your commits and the PR. If the context7 MCP tools are listed in this session, use them for current library docs; otherwise WebFetch the library's own docs.
+  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief and the repo. You have no local state. Jira is reachable only through the Atlassian MCP connector (the local jira CLI is absent in the cloud), and that connector may not be enabled in your session. If the Atlassian MCP tools are listed in this session, use them; otherwise do not try a workaround, and list each skipped Jira step under a \`## Jira steps not done\` heading in the PR body so the local shepherd completes it. With the tools: read the ticket, comment, file follow-ups with the fixVersion this brief names. Either way, cite the ticket key in your commits and the PR. If the context7 MCP tools are listed in this session, use them for current library docs; otherwise WebFetch the library's own docs.
 
 ## Ticket ${t.key} (verbatim from Jira)
 
@@ -127,7 +127,7 @@ ${named}
 
 ## How to do it
 1. Read \`CLAUDE.md\` and these files in full before editing: ${files.join(' ')}
-2. Claim the ticket: through the Atlassian MCP, transition ${t.key} to \`In Progress\` (a cloud session has no handover doc and no queue lock; the ticket status is the claim).
+2. Claim the ticket: if the Atlassian MCP tools are listed, transition ${t.key} to \`In Progress\`; otherwise record "transition ${t.key} to In Progress" for the \`## Jira steps not done\` section (a cloud session has no handover doc and no queue lock; the ticket status is the claim).
 3. Create the branch as a worktree BEFORE any edit: \`git worktree add -b ${branch} .claude/worktrees/himmel-${n} origin/main\`, and work inside it (the repo's edit-on-main guard denies edits in the cloud's primary clone, even on a feature branch).
    If you need repo retrieval, run \`bash scripts/cloud/setup-env.sh\` from this worktree first; it rebuilds the AST graph and repo-only index here. Query \`graphify query "<question>" --graph graphify-out/graph.json\`, never the unclassified cached /tmp graph. Search with \`bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel\`, never bare qmd search or a vault collection.
 4. Edit ONLY these files: ${files.join(' ')}. Keep the diff minimal and match the surrounding style.
@@ -141,13 +141,13 @@ ${named}
     Platforms tested: linux
     Security reviewed: manual — confirm the change only does what the ticket asks and widens no permission or check
 
-7. Push the branch and open a PR to \`main\` titled \`${subject}\`. The body must include a summary, the files changed, the test/shellcheck/impacted-suite results, the line \`cloud-pilot: ${t.key} (console ${o.consoleId ?? 'unknown'})\`, the line \`completes-ticket: ${completes}\` and a \`## Ticket coverage\` section: one line per ask of the ticket, each ending \`done\` or \`deferred → HIMMEL-<n>\`. The asks:
+7. Push the branch and open a PR to \`main\` titled \`${subject}\`. The body must include a summary, the files changed, the test/shellcheck/impacted-suite results, the line \`cloud-pilot: ${t.key} (console ${o.consoleId ?? 'unknown'})\`, the line \`completes-ticket: ${completes}\` a \`## Jira steps not done\` section listing each Jira step you skipped (write "none" if you did them all), and a \`## Ticket coverage\` section: one line per ask of the ticket, each ending \`done\` or \`deferred → HIMMEL-<n>\`. The asks:
 
 ${coverage}
 
 8. Turn on \`/autofix-pr\` for the PR, so you fix your own CI reds and review comments.
 9. Do NOT merge, do NOT request reviewers, and do NOT touch any other file.
-10. Report (this replaces the handover doc): post ONE top-level PR comment whose first line is \`CLOUD-DONE <your session URL>\` followed by the PR head SHA and the test results, then comment on ${t.key} through the Atlassian MCP with the PR URL. Leave the ticket \`In Progress\`: the local shepherd closes it at merge. Once a local shepherd comments on the PR, stop pushing to the branch. If you are blocked on a question, post it instead as a \`CLOUD-BLOCKED <your session URL>\` PR comment (a ${t.key} comment if no PR exists yet) and end the session.
+10. Report (this replaces the handover doc): post ONE top-level PR comment whose first line is \`CLOUD-DONE <your session URL>\` followed by the PR head SHA and the test results, then, if the Atlassian MCP tools are listed, comment on ${t.key} with the PR URL (otherwise add that comment to \`## Jira steps not done\`). Leave the ticket \`In Progress\`: the local shepherd closes it at merge. Once a local shepherd comments on the PR, stop pushing to the branch. If you are blocked on a question, post it instead as a \`CLOUD-BLOCKED <your session URL>\` PR comment (a ${t.key} comment if no PR exists yet and the Atlassian MCP tools are listed; otherwise state the blocker in your final output) and end the session.
 
 When done, print the PR URL, the branch, the commit SHA, and a 3-line summary.
 `;
