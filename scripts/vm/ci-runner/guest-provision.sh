@@ -97,6 +97,10 @@ cat > /usr/local/sbin/himmel-ci-run-job <<'EOF'
 # handed to the runner through its ACTIONS_RUNNER_INPUT_JITCONFIG environment
 # variable (the runner reads every ACTIONS_RUNNER_INPUT_<arg> as that arg), so
 # it never sits in a process listing the way an argv does.
+# ponytail: the runner only reads this from its environment, so the config stays
+# readable at /proc/PID/environ by the same uid (the job); it is single-use and
+# expires, so the exposure is the job's own runner; no same-uid-safe channel
+# exists, upgrade path HIMMEL-5108 (runner launched under a different uid).
 set -eu
 max="${1:?max seconds}"
 case "$max" in ''|*[!0-9]*|0*) echo "himmel-ci-run-job: bad max '$max'" >&2; exit 2 ;; esac
