@@ -1350,16 +1350,13 @@ pobf_relief() {
     # side, after quote removal), or on set followed by -A or +A.
     # No relief (HIMMEL-4454) on a definition built at run time, which the text
     # scan above cannot see: an eval command word, or a source / command-word
-    # `.` beside a here-string, here-doc, /dev or /proc path, or a quoted word
-    # (the path may be quoted). Process substitution is refused above.
+    # `.`, whatever it reads (a file, stdin, a here-string or here-doc).
+    # Process substitution is refused above.
     local re_cp="(^|[;&|({!${NL}]|(^|[[:blank:]])(then|do|else|elif|builtin|command|exec|time|coproc|noglob|nocorrect|eval)[[:blank:]])[[:blank:]]*"
     local re_ev="${re_cp}eval([^[:alnum:]_]|\$)"
     local re_sr="(^|[^[:alnum:]_.])source([^[:alnum:]_]|\$)|${re_cp}\\.[[:blank:]]"
     [[ $F =~ $re_ev ]] && return 1
-    if [[ $F =~ $re_sr ]]; then
-        case "$F" in *'<<'*|*/dev/*|*/proc/*|*"$T1"*) return 1 ;; esac
-        [ "$hn" -gt 0 ] && return 1
-    fi
+    [[ $F =~ $re_sr ]] && return 1
     [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
     F=${F//[0-9]>&[0-9]/ }

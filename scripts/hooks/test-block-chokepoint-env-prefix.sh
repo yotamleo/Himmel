@@ -1676,6 +1676,8 @@ $pre ls $GP")"
     assert_deny "4454 negated eval [$pre]" "$(j "! eval 'ls () { bash \"\$@\"; }'; $pre ls $GP")"
     assert_deny "4454 coproc eval [$pre]" "$(j "coproc eval 'ls () { bash \"\$@\"; }'; $pre ls $GP")"
     assert_deny "4454 negated . /dev/stdin [$pre]" "$(j "! . /dev/stdin <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 source a plain file [$pre]" "$(j "source /tmp/shadow.sh; $pre ls $GP")"
+    assert_deny "4454 . a plain file [$pre]" "$(j ". /tmp/shadow.sh; $pre ls $GP")"
     assert_allow "4454 control: a quoted 'eval' is not a word [$pre]" "$(j "$pre ls /r/w/docs/*.md | grep 'eval'")"
     assert_allow "4454 control: evaluate/medieval are other words [$pre]" "$(j "evaluate=1; medieval=1; $pre ls /r/w/docs/*.md")"
 done
