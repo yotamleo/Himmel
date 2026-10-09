@@ -232,6 +232,67 @@ else
   bad "no pin file: expected rc=0 (fail open), got rc=$rc_nopins err=$(cat "$T/nopins.err")"
 fi
 
+# HIMMEL-2588: "no record" is two states. The recorder leaves
+# <session_id>.recorder beside the record, `started` before anything that can
+# fail and `done` on exit; once it reads `done` (or `started` older than any
+# recorder can live) a missing, empty or unparseable record DENIES.
+SID='worker-session-1'
+if [ "$(cat "$OUT_DIR/$SID.recorder" 2>/dev/null)" = "done" ]; then
+  ok "HIMMEL-2588: the recorder marks itself done beside the record it wrote"
+else
+  bad "HIMMEL-2588: expected $OUT_DIR/$SID.recorder = done, got '$(cat "$OUT_DIR/$SID.recorder" 2>&1)'"
+fi
+gone_run() {   # <label> <out-dir>: run the launcher against a copied pin dir
+  printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$2" \
+    node "$LAUNCHER" --optional "$GUARD" >"$T/$1.out" 2>"$T/$1.err"
+}
+gone_dir() {   # <name>: a copy of the recorded pin dir, record mode restored
+  rm -rf "${T:?}/$1"; cp -R "$OUT_DIR" "$T/$1"; chmod 600 "$T/$1/$SID.json"
+}
+gone_dir g1; rm -f "$T/g1/$SID.json"
+gone_run g1 "$T/g1"; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'record is missing' "$T/g1.err"; then
+  ok "HIMMEL-2588: record deleted after the recorder ran is denied"
+else
+  bad "HIMMEL-2588 deleted record: expected rc=2 + 'record is missing', got rc=$rc err=$(cat "$T/g1.err")"
+fi
+gone_dir g2; : > "$T/g2/$SID.json"
+gone_run g2 "$T/g2"; rc=$?
+if [ "$rc" -eq 2 ] && grep -q 'record is missing' "$T/g2.err"; then
+  ok "HIMMEL-2588: record truncated to 0 bytes is denied"
+else
+  bad "HIMMEL-2588 truncated record: expected rc=2, got rc=$rc err=$(cat "$T/g2.err")"
+fi
+gone_dir g3; printf '{"session_id":"%s"}\n' "$SID" > "$T/g3/$SID.json"
+gone_run g3 "$T/g3"; rc=$?
+if [ "$rc" -eq 2 ]; then
+  ok "HIMMEL-2588: a parseable record with no pins is denied"
+else
+  bad "HIMMEL-2588 pinless record: expected rc=2, got rc=$rc err=$(cat "$T/g3.err")"
+fi
+gone_dir g4; rm -f "$T/g4/$SID.json" "$T/g4/$SID.recorder"
+gone_run g4 "$T/g4"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "HIMMEL-2588: no recorder has run this session (no marker, no record) still fails open"
+else
+  bad "HIMMEL-2588 no recorder: expected rc=0, got rc=$rc err=$(cat "$T/g4.err")"
+fi
+gone_dir g5; rm -f "$T/g5/$SID.json"; printf 'started\n' > "$T/g5/$SID.recorder"
+gone_run g5 "$T/g5"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "HIMMEL-2588: a recorder still running (fresh 'started' marker) fails open"
+else
+  bad "HIMMEL-2588 recorder running: expected rc=0, got rc=$rc err=$(cat "$T/g5.err")"
+fi
+gone_dir g6; rm -f "$T/g6/$SID.json"; printf 'started\n' > "$T/g6/$SID.recorder"
+touch -t 202001010000 "$T/g6/$SID.recorder"
+gone_run g6 "$T/g6"; rc=$?
+if [ "$rc" -eq 2 ]; then
+  ok "HIMMEL-2588: a 'started' marker older than any recorder can live (killed recorder) is denied"
+else
+  bad "HIMMEL-2588 stale started: expected rc=2, got rc=$rc err=$(cat "$T/g6.err")"
+fi
+
 # ===========================================================================
 # HIMMEL-2528 — re-pin on a legitimately advanced checkout
 # ===========================================================================

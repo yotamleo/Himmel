@@ -56,8 +56,8 @@
 # is `exit 0` with no pin file written (or left as-is, once a record already
 # exists). run-hook-with-bash.js reads a missing pin file as "cannot verify"
 # and fails OPEN — see its header for why that direction is the safe rollout
-# default. This hook writing nothing is a same-as-today outcome, never a new
-# way to break a session. The lock (below) shares that posture: if it cannot
+# default — but only for an exit BEFORE the HIMMEL-2588 marker below; once this
+# hook has said it ran, a missing record denies for the rest of the session. The lock (below) shares that posture: if it cannot
 # be acquired, this hook exits 0 without touching the record — the JS
 # launcher's own write path is the one side of this protocol that DENIES on a
 # lock timeout, since it is advancing an existing pin mid-session rather than
@@ -97,6 +97,20 @@ git -C "$CLAUDE_PROJECT_DIR" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
 out_dir="${HIMMEL_HOOK_INTEGRITY_DIR:-$HOME/.claude/himmel/hook-integrity}"
 mkdir -p "$out_dir" 2>/dev/null || exit 0
+
+# HIMMEL-2588: say that a recorder ran, BEFORE anything below can fail, and
+# that it finished, on every exit. hook-integrity.js fails open on a missing
+# record only while this marker is absent (no recorder ran) or `started` and
+# young (still running); once it reads `done` a missing, empty or unparseable
+# record DENIES. Every exit above it is a session this hook never applies to.
+marker="$out_dir/$session_id.recorder"
+printf 'started\n' > "$marker" 2>/dev/null
+# shellcheck disable=SC2317,SC2329  # reached only through the EXIT trap
+mark_done() {
+    printf 'done\n' > "$marker" 2>/dev/null
+    return 0
+}
+trap mark_done EXIT
 
 # ---- pins (unchanged pin SOURCE: git-tree blobs at HEAD) ------------------
 # HIMMEL-4575: scripts/lib and scripts/handover too — hooks source libs from
@@ -261,10 +275,10 @@ fi
 
 # ---- REFUSING TO SOURCE MUST NOT MEAN REFUSING TO RECORD -------------------
 # The two are separate decisions and conflating them inverts this hook's whole
-# purpose. run-hook-with-bash.js fails OPEN on a missing record —
-# verifyProjectHookIntegrity does `const pins = recordPins(record); if (!pins)
-# return { ok: true }`, and loadIntegrityRecord returns null for a missing,
-# unreadable or malformed file. So a recorder that exits without writing when
+# purpose. run-hook-with-bash.js failed OPEN on a missing record before
+# HIMMEL-2588 (it now denies one once the marker above reads `done`, which
+# bricks the session instead — still the wrong outcome for a recoverable
+# lock-lib problem). So a recorder that exits without writing when
 # it cannot vouch for its lock lib hands an attacker a one-step OFF SWITCH for
 # the entire integrity system: make the lib's bytes differ from the anchor blob
 # — no code execution needed, no pinned byte touched — and every hook in that
@@ -305,7 +319,7 @@ tmp=""
 cleanup() {
     [ -n "$tmp" ] && rm -f "$tmp"
     [ "$lock_held" -eq 1 ] && hil_lock_release "$dest"
-    return 0
+    mark_done
 }
 trap cleanup EXIT
 

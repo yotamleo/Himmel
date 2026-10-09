@@ -51,9 +51,11 @@ function normalize(candidate) {
 // or chained), not just the GLM lane — the exposure was never GLM-specific
 // (see HIMMEL-1666). Safe to roll out broadly because it fails OPEN whenever it
 // cannot form an opinion: no session id on the payload, no pin file for this
-// session (record-hook-integrity.sh never ran, or predates this checkout), or
-// no pin entry for this particular script. It fails CLOSED only on an actual
-// pinned mismatch — the one signal that is unambiguous. That also means the fix
+// session because record-hook-integrity.sh never ran (or predates this
+// checkout), or no pin entry for this particular script. It fails CLOSED on an
+// actual pinned mismatch — the one signal that is unambiguous — and, since
+// HIMMEL-2588, on a record that is gone after the recorder ran (see
+// recorderFinished). That also means the fix
 // only takes effect from the NEXT session start onward (the operator ruling
 // this ticket shipped under): an already-running session has no pin file yet,
 // so every check in it fails open exactly as before.
@@ -164,7 +166,7 @@ function loadIntegrityRecord(sessionId) {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch (_e) {
-    return null; // no pin file, unreadable, or malformed — all fail OPEN
+    return null; // no pin file, unreadable, or malformed — see recorderFinished
   }
 }
 
@@ -679,6 +681,46 @@ function loadRecordAcrossPublish(sessionId) {
     record: null,
     denyReason: `${PUBLISH_WINDOW_DENY}a record publication left no record at ${recordPath}`,
   };
+}
+
+// ---------------------------------------------------------------- HIMMEL-2588
+//
+// "No record" used to mean one thing — fail open — and so deleting, truncating
+// or never publishing the record switched verification off for the session.
+// It is two states, told apart by <session_id>.recorder beside the record:
+// record-hook-integrity.sh writes `started` into it before anything that can
+// fail and `done` on exit, whatever the outcome. No marker means no recorder
+// has run (a session older than this checkout, a non-git project, a host with
+// no jq): there is nothing to verify against, so fail open as before. A
+// finished recorder with no usable record behind it means the record is GONE,
+// and that denies. `started` is a recorder still working — the other
+// SessionStart hooks run beside it, and denying them would brick every session
+// start — until it is older than any recorder can live (its hooks.json timeout
+// is 15 s), after which it is a killed recorder and denies like `done`.
+//
+// Read only when the record is unusable, so a session with a record pays
+// nothing for it: no stat, no read, no spawn. An attacker who can delete the
+// record AND the marker is back at today's fail-open — two unlinks in the same
+// pin directory, behind the same write-fence, never fewer than before.
+const RECORDER_MARKER_SUFFIX = '.recorder';
+const RECORDER_MAX_LIFE_MS = 60 * 1000;
+const MISSING_RECORD_DENY = 'missing-record: ';
+
+// True when a recorder ran this session and is no longer running.
+function recorderFinished(sessionId) {
+  const recordPath = integrityRecordPath(sessionId);
+  if (!recordPath) return false;
+  const marker = recordPath.replace(/\.json$/, RECORDER_MARKER_SUFFIX);
+  let state;
+  let mtimeMs;
+  try {
+    state = fs.readFileSync(marker, 'utf8').trim();
+    mtimeMs = fs.statSync(marker).mtimeMs;
+  } catch (_e) {
+    return false; // no marker: no recorder has run
+  }
+  if (state === 'started') return Date.now() - mtimeMs > RECORDER_MAX_LIFE_MS;
+  return true; // `done`, or anything a recorder never writes
 }
 
 // ------------------------------------------------------------ bootstrap (§4)
@@ -1430,10 +1472,18 @@ function verifyOneFile(scriptPath, sessionId, strict) {
     };
   }
   const relPath = resolvedScript.slice(resolvedProject.length + 1);
-  const { record, denyReason } = loadRecordAcrossPublish(sessionId);
-  if (denyReason) return { ok: false, relPath, reason: denyReason };
-  const pins = recordPins(record);
-  if (!pins) return { ok: true };
+  const loaded = loadRecordAcrossPublish(sessionId);
+  if (loaded.denyReason) return { ok: false, relPath, reason: loaded.denyReason };
+  let { record } = loaded;
+  let pins = recordPins(record);
+  if (!pins) {
+    if (!recorderFinished(sessionId)) return { ok: true };
+    // The recorder publishes before it marks itself done, so a record that
+    // landed between our first read and the marker read is here now.
+    record = loadIntegrityRecord(sessionId);
+    pins = recordPins(record);
+    if (!pins) return { ok: false, relPath, reason: `${MISSING_RECORD_DENY}${integrityRecordPath(sessionId)}` };
+  }
   // Every identity the path claims is checked: the resolved target's, the lexical
   // spelling's, and each one the kernel-order walk passes through a link
   // (walkIdentities), relative to the
@@ -1560,6 +1610,16 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       + 'publishing process has finished; if it died, the incumbent record is beside the missing one as '
       + 'a .old-* file. Legitimate mid-session hook edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 '
       + `set in the LAUNCHING shell. ${BYPASS_SCOPE}\n`,
+    );
+    return;
+  }
+  if (typeof reason === 'string' && reason.indexOf(MISSING_RECORD_DENY) === 0) {
+    process.stderr.write(
+      `run-hook-with-bash: DENY ${path.basename(scriptPath)} — the session's hook-integrity record is missing, `
+      + `empty or unreadable (${reason.slice(MISSING_RECORD_DENY.length)}) although record-hook-integrity.sh ran `
+      + `this session, so nothing vouches for ${relPath} (HIMMEL-2588). A record that disappears mid-session is `
+      + 'not "no opinion": deleting it used to switch verification off. Start a new session to record a fresh one; '
+      + 'HIMMEL_HOOK_INTEGRITY_BYPASS_OK cannot apply without a record.\n',
     );
     return;
   }
