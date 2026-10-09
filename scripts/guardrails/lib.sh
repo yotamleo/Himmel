@@ -489,7 +489,7 @@ guard_cmdpos_grammar() {
     # HIMMEL-4321: the path run stops at `(` and at a `)` before `{`, both
     # command-position anchors, so a `((((…` or `){){){…` run is not rescanned
     # from every anchor (quadratic); parity_guard.py's _EXE_PREFIX is the twin.
-    EXEPFX='["'\'']?([a-z]:)?(([^[:space:]|;&(`"'\'')]|[)]([^{[:space:]]|$))*[/\\])?'
+    EXEPFX='["'\'']?([a-z]:)?(([^[:space:]|;&(`"'\'')]|[)][^({[:space:]])*[)]?[/\\])?'
     ASSIGN='[[:alnum:]_]+=('\''[^'\'']*'\''|"[^"]*"|[^[:space:]|;&]*)'
     # HIMMEL-3983: a compound-statement keyword also starts a command, and so
     # does a function body (`f() { ...`, `function f { ...`). A bare `)` is

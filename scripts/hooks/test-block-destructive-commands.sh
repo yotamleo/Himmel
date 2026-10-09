@@ -1020,6 +1020,20 @@ t0=$SECONDS
 assert_rc 'open-paren run x10000 then shutdown (linear)' 2 "$(run_case "$(j_bash "echo hi$pad; shutdown now")")"
 if [ $((SECONDS - t0)) -gt 4 ]; then
     echo "FAIL open-paren run x10000 took $((SECONDS - t0))s (budget 4s)"; FAILED=$((FAILED + 1)); fi
+# A `()` pair run was the other quadratic shape (`)` then a consumed `(`).
+pad=$(awk 'BEGIN{for(i=0;i<5000;i++) printf "()"}')
+t0=$SECONDS
+assert_rc 'paren-pair run x5000 then shutdown (linear)' 2 "$(run_case "$(j_bash "echo hi$pad; shutdown now")")"
+if [ $((SECONDS - t0)) -gt 4 ]; then
+    echo "FAIL paren-pair run x5000 took $((SECONDS - t0))s (budget 4s)"; FAILED=$((FAILED + 1)); fi
+# HIMMEL-4321: a `(` or `)` inside a path prefix must not hide the program name
+# (the first EXEPFX cut consumed the `/` terminator after a `)`).
+assert_rc 'quoted path with (b) then shutdown'   2 "$(run_case "$(j_bash '"/tmp/a(b)/shutdown" now')")"
+assert_rc 'path with (b) then shutdown'          2 "$(run_case "$(j_bash '/tmp/a(b)/shutdown now')")"
+assert_rc 'quoted path with ) then shutdown'     2 "$(run_case "$(j_bash '"/tmp/a)/shutdown" now')")"
+assert_rc 'path with ) then shutdown'            2 "$(run_case "$(j_bash '/tmp/a)/shutdown now')")"
+assert_rc 'path with )) then shutdown'           2 "$(run_case "$(j_bash '/tmp/a))/shutdown now')")"
+assert_rc 'path with )/b/ then shutdown'         2 "$(run_case "$(j_bash '/tmp/a)/b/shutdown now')")"
 # HIMMEL-4158: a value word may be built from quoted ('…', "…", $'…'),
 # escaped and bare segments; a flag word may carry a quoted value too.
 assert_rc "sudo -u 'a b'c rm -rf"        2 "$(run_case "$(j_bash "sudo -u 'a b'c rm -rf /x")")"
