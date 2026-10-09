@@ -603,9 +603,16 @@ _bwimc_blank_heredocs() {
     # delimiter was quoted, so no body expands anything, and every opener is a
     # `git commit -m "$(cat <<'X'` message (inert text, never run as code: a
     # `bash -c "$(cat <<'X'` body is code and keeps the flat reading).
-    # An quote still open at the end of the walk means a phantom quote may have
-    # swallowed a later real redirect, so the mode-0 reading is kept.
-    [ -z "$nest" ] || [ "$nopen" -eq 0 ] || [ "$allq" -eq 0 ] || [ "$allgit" -eq 0 ] || [ -n "$_BWIMC_Q" ] || return 7
+    # A quote still open at the end of the walk means a phantom quote may have
+    # swallowed a later real redirect, so the mode-0 reading is kept. The walk
+    # only sees a `<<` while no heredoc is active, so a second `<<` on an
+    # opener's line is never counted: a flat count of every `<<` in the raw text
+    # (here-strings included) must equal the openers the walk recognised, or the
+    # mode-0 reading is kept (over-refusing only costs time).
+    if [ -n "$nest" ] && [ "$nopen" -gt 0 ] && [ "$allq" -ne 0 ] && [ "$allgit" -ne 0 ] && [ -z "$_BWIMC_Q" ]; then
+        local _flat="${text//<</}"
+        [ $(( (${#text} - ${#_flat}) / 2 )) -ne "$nopen" ] || return 7
+    fi
     return 0
 }
 

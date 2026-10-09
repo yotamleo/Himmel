@@ -401,6 +401,17 @@ _subst_row "4397r git-commit opener first, same-line second opener, lone quote c
     "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho it'"'"'s' "$_PR")"
 _subst_row "4397s plain opener then git-commit opener on one line, lone quote closed after a primary write (DENY)" block \
     "$(printf 'cat <<'"'"'Y'"'"' ; git commit -m "$(cat <<'"'"'EOF'"'"'\nit'"'"'s\nY\nfix: msg\nEOF\n)"\necho x > %s/a.txt\necho it'"'"'s' "$_PR")"
+# J2249c: the walk only sees a `<<` while no heredoc is active, so a second
+# opener on the opener's line is never counted; a final line holding a `)`
+# rebalances the walk and the fast path swallowed the primary redirect between.
+_subst_row "4397t two quoted openers on one git commit, lone quote in the second body, primary write, then a line with a ) (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397u here-string beside the git commit opener, lone quote, primary write, then a line with a ) (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<< x\nfix: msg\nEOF\nit'"'"'s\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397v unquoted second opener beside the git commit opener, lone quote, primary write, then a line with a ) (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<Y\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397w CONTROL: two quoted openers, lone quote, worktree write, then a line with a ) (ALLOW)" allow \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/z.txt\necho "it'"'"'s )"' "$_WR")"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
