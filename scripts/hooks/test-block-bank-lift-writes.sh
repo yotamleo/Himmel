@@ -1225,6 +1225,18 @@ row "5094 j5 print ln -s word + tar /tmp"      allow "python3 -c 'print(\"ln -s\
 row "5094 j5 depth 5 worktree tar"             allow "$(_nest 5 "tar -xf $WT/a.tar -C $WT/out")"
 row "5094 j5 var cmd + computed + tar ~"       deny  "c=tar; d=\$HOME; \$c -xf /tmp/a.tar -C \$d"
 row "5094 j5 python os.symlink call + tar"     deny  "python3 -c 'import os; os.symlink(\"/home\",\"/var/out/h\")'; tar -xf /tmp/a.tar -C /var/out"
+# /pr-check round 3 (codex): option clusters and stdin shells under a wrapper
+row "5094 r3 ar -v -x, cwd HOME"               deny  "ar -v -x /tmp/a.a" "$HOME"
+row "5094 r3 ar -vx, cwd HOME"                 deny  "ar -vx /tmp/a.a" "$HOME"
+row "5094 r3 ar -t, cwd HOME (ctrl)"           allow "ar -t /tmp/a.a" "$HOME"
+row "5094 r3 ar -v -x, safe cwd (ctrl)"        allow "ar -v -x /tmp/a.a"
+row "5094 r3 strace python3 -Imtarfile -e ~"   deny  "strace python3 -Imtarfile -e /tmp/a.tar ~"
+row "5094 r3 fakeroot python3 -Bmzipfile -e ~" deny  "fakeroot python3 -Bmzipfile -e /tmp/a.zip ~"
+row "5094 r3 strace python3 -Imtarfile -l"     allow "strace python3 -Imtarfile -l /tmp/a.tar"
+row "5094 r3 strace bash <<< tar ~"            deny  "strace bash <<< 'tar -xf /tmp/a.tar -C ~'"
+row "5094 r3 fakeroot sh <<< unzip ~"          deny  "fakeroot sh <<< 'unzip /tmp/a.zip -d ~/.himmel'"
+row "5094 r3 strace bash <<< echo (ctrl)"      allow "strace bash <<< 'echo hi'"
+row "5094 r3 strace bash script.sh (ctrl)"     allow "strace bash /tmp/s.sh"
 
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered

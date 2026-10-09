@@ -1429,6 +1429,7 @@ check_extract_coarse() {
                     --output=*) dests+=("${a#*=}") ;;
                     --output) skip=1 ;;
                     --*) ;;
+                    -*) case "$a" in *x*) mode=1 ;; esac ;;
                     *) if [ "$first" = 1 ]; then case "$a" in *x*) mode=1 ;; esac; first=0; fi ;;
                 esac ;;
             jar)
@@ -1575,40 +1576,44 @@ _dyn_cmd_check() {
 # as if it were the command (HIMMEL-5094). Over-matches by design: it can only
 # add a deny, and only when the tool would itself deny.
 _wrapped_extract() {
-    local depth="$1" fed="$2" j k n nx
+    local depth="$1" fed="$2" j k n nx cf crc wrc=0
     shift 2
     local -a ws=("$@")
     n=${#ws[@]}; j=1
     while [ "$j" -lt "$n" ]; do
         nx=$((j+1))
-        if [ "$nx" -lt "$n" ]; then
-            _lb "${ws[j]}"
-            if [[ "$R" =~ $SHELL_RE ]]; then
-                # A shell run under an unmodelled wrapper: its -c text is
-                # analysed as if the wrapper were not there.
-                k=$nx
-                while [ "$k" -lt "$n" ]; do
-                    case "${ws[k]}" in
-                        --) break ;;
-                        -c*|-[a-zA-Z]*c*|--command) check_clause "$depth" "$fed" "${ws[@]:j}"; break ;;
-                    esac
-                    k=$((k+1))
-                done
-            elif [ "$R" = eval ]; then
+        _lb "${ws[j]}"
+        if [[ "$R" =~ $SHELL_RE ]]; then
+            # A shell run under an unmodelled wrapper: its -c text is
+            # analysed as if the wrapper were not there; with no -c it reads
+            # its script from stdin or a file, so the clause is judged whole
+            # and a stdin shell (rc 10) is reported to the caller.
+            cf=0; k=$nx
+            while [ "$k" -lt "$n" ]; do
+                case "${ws[k]}" in
+                    --) break ;;
+                    -c*|-[a-zA-Z]*c*|--command) cf=1; break ;;
+                esac
+                k=$((k+1))
+            done
+            check_clause "$depth" "$fed" "${ws[@]:j}"; crc=$?
+            [ "$cf" = 0 ] && [ "$crc" = 10 ] && wrc=10
+        elif [ "$nx" -lt "$n" ]; then
+            if [ "$R" = eval ]; then
                 check_clause "$depth" "$fed" "${ws[@]:j}"
             elif [[ "$R" =~ $EXTRACT_CMD_RE ]]; then
                 check_clause "$depth" "$fed" "${ws[@]:j}"
             elif [[ "$R" =~ $INTERP_RE ]]; then
                 k=$nx
                 while [ "$k" -lt "$n" ]; do
-                    case "${ws[k]}" in tarfile|zipfile) check_clause "$depth" "$fed" "${ws[@]:j}"; break ;; esac
+                    case "${ws[k]}" in *tarfile*|*zipfile*) check_clause "$depth" "$fed" "${ws[@]:j}"; break ;; esac
                     k=$((k+1))
                 done
             fi
         fi
         j=$((j+1))
     done
-    return 0
+    return "$wrc"
 }
 
 # _symlink_mode <cmd> <args...>: flag a clause that creates a symlink (ln -s /
@@ -1636,7 +1641,7 @@ _symlink_mode() {
 # interpreter (already decided here).
 check_clause() {
     local depth="$1" fed="$2"; shift 2
-    local w cmd a v rc=0
+    local w cmd a v rc=0 wrapped_rc=0
     # Command-position walk: keywords, assignments, wrappers.
     while [ $# -gt 0 ]; do
         w="$1"
@@ -1917,7 +1922,7 @@ check_clause() {
                 bsdcpio) check_extract cpio "$@" ;;
                 7z|7za|7zr|7zz|pax|ar|jar|dpkg|dpkg-deb|unar) check_extract_coarse "$cmd" "$@" ;;
                 *) if ! [[ "$cmd" =~ $READ_RE ]] && ! [[ "$cmd" =~ $NOSCAN_RE ]]; then
-                       _wrapped_extract "$depth" "$fed" "$w" "$@"
+                       _wrapped_extract "$depth" "$fed" "$w" "$@" || wrapped_rc=$?
                    fi ;;
             esac
             if [[ "$cmd" =~ $MENTION_RE ]]; then
@@ -1928,7 +1933,7 @@ check_clause() {
             fi
             set_rule "$w" "${1:-}" $(( $# > 0 ? 1 : 0 )) "$(( fed != 0 ))" ;;
     esac
-    return 0
+    return "$wrapped_rc"
 }
 
 # Layer 1: the whole-command mention rule (J1874). The trigger reads both the
