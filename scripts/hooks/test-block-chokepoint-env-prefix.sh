@@ -1658,6 +1658,24 @@ for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
     assert_allow "4442 control: relieved ls, no function [$pre]" "$(j "$pre ls /r/w/docs/*.md")"
 done
 
+# HIMMEL-4454 (judge J1871 on #1871): a definition built at run time (eval, or
+# a here-string / here-doc / process substitution fed to `.` or source) is
+# invisible to the text scan above, so it shadowed a relief name and kept relief.
+for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
+    assert_deny "4454 eval-defined shadow [$pre]" "$(j "eval 'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 eval with a \$var body [$pre]" "$(j "d='ls () { bash \"\$@\"; }'; eval \"\$d\"; $pre ls $GP")"
+    assert_deny "4454 . /dev/stdin here-string [$pre]" "$(j ". /dev/stdin <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 source /dev/stdin here-string [$pre]" "$(j "source /dev/stdin <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 source process substitution [$pre]" "$(j "source <(echo 'ls () { bash \"\$@\"; }'); $pre ls $GP")"
+    assert_deny "4454 . /dev/stdin here-doc [$pre]" "$(j ". /dev/stdin <<'EOT'
+ls () { bash \"\$@\"; }
+EOT
+$pre ls $GP")"
+    assert_deny "4454 source /dev/fd/0 here-string [$pre]" "$(j "source /dev/fd/0 <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_allow "4454 control: a quoted 'eval' is not a word [$pre]" "$(j "$pre ls /r/w/docs/*.md | grep 'eval'")"
+    assert_allow "4454 control: evaluate/medieval are other words [$pre]" "$(j "evaluate=1; medieval=1; $pre ls /r/w/docs/*.md")"
+done
+
 # HIMMEL-4157 (judge J1685 NO-GO): the relief pass was super-linear -- per
 # redirect it walked every stage, forking per token expansion. 200 redirects
 # took 13 s against a 15 s hook budget; a 10 KB line of quoted stages 5 s.
