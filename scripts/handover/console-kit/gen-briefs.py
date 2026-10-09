@@ -61,7 +61,8 @@ def validate(leg, i):
         die('leg %s: branch %r must be type/slug' % (leg['label'], leg['branch']))
     if not re.match(r'^[a-z0-9][a-z0-9-]*$', leg['slug']):
         die('leg %s: slug %r must be kebab-case' % (leg['label'], leg['slug']))
-    if not re.match(r'^[a-z0-9][a-z0-9._-]*$', str(leg.get('lane', 'native'))):
+    lane = leg.get('lane', 'native')
+    if not isinstance(lane, str) or not re.match(r'^[a-z0-9][a-z0-9._-]*$', lane):
         die('leg %s: lane %r must be a lowercase word (native, claudex, ...)' % (leg['label'], leg['lane']))
     if re.search(r'<[^<>\s]+>', leg['prior']) or leg['prior'].strip().lower().rstrip('.') == 'none':
         die('leg %s: prior art must be filled (a bare none or a <placeholder> fails brief-lint)' % leg['label'])
