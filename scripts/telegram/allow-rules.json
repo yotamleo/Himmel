@@ -1,0 +1,3 @@
+{
+  "merge-forward-check": "Bash(bash scripts/handover/merge-forward-check.sh:*)"
+}

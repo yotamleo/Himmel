@@ -41,6 +41,19 @@ check "avail ok->unavailable downgrade writes NOTHING" "$(grep -c '"kind":"avail
 check "avail ok->unavailable downgrade names the reason" "$(grep -c 'DOWNGRADE' "$tmp/downgrade.err")" "1"
 check "avail downgrade leaves the ok row as the last record" "$(L="$AV" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="avail"&&r.head==="SH1");console.log(rs[rs.length-1].status)')" "ok"
 
+# HIMMEL-5110 item 2: a certify-refused row is a deliberate fail-closed
+# refusal, not a transient failure, so it is NEVER swallowed by the downgrade
+# drop: an earlier ok at the same (head,model) must not hide it from the gate.
+AVR="$tmp/avail-refusal.jsonl"
+CR_LEDGER="$AVR" bash "$LA" avail --branch b --head SH9 --model glm --status ok
+CR_LEDGER="$AVR" bash "$LA" avail --branch b --head SH9 --model glm --status unavailable --reason certify-refused 2>"$tmp/refusal.err"
+check "HIMMEL-5110: ok->unavailable certify-refused exits 0" "$?" "0"
+check "HIMMEL-5110: ok->unavailable certify-refused row is APPENDED, not dropped" "$(grep -c '"reason":"certify-refused"' "$AVR")" "1"
+check "HIMMEL-5110: the certify-refused row is the effective (last) record" "$(L="$AVR" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="avail"&&r.head==="SH9");const l=rs[rs.length-1];console.log(l.status+","+l.reason)')" "unavailable,certify-refused"
+check "HIMMEL-5110: appending the refusal prints no DOWNGRADE note" "$(grep -c 'DOWNGRADE' "$tmp/refusal.err")" "0"
+CR_LEDGER="$AVR" bash "$LA" avail --branch b --head SH9 --model glm --status unavailable --reason certify-refused 2>/dev/null
+check "HIMMEL-5110: an identical certify-refused repeat is still a quiet no-op" "$(grep -c '"reason":"certify-refused"' "$AVR")" "1"
+
 # An identical repeat is still a quiet no-op (idempotent /pr-check re-runs).
 CR_LEDGER="$AV" bash "$LA" avail --branch b --head SH1 --model glm --status ok
 check "avail identical repeat after supersede still dedups" "$(grep -c '"kind":"avail".*"head":"SH1"' "$AV")" "2"

@@ -104,6 +104,7 @@ printf '%s\n' "$*" >> "$ARGS_LOG"
 cat >/dev/null
 [ -n "${FAKE_OUT:-}" ] && printf '%s\n' "$FAKE_OUT"
 [ -n "${FAKE_ERR:-}" ] && printf '%s\n' "$FAKE_ERR" >&2
+if [ -n "${FAKE_RC_RETRY:-}" ] && [ "$(wc -l < "$CALL_LOG")" -gt 1 ]; then exit "$FAKE_RC_RETRY"; fi
 exit "${FAKE_RC:-0}"
 STUBEOF
 chmod +x "$fx/scripts/cr/critic-panel.sh"
@@ -211,6 +212,43 @@ if [ -f "$CALL_LOG" ] && [ "$(wc -l < "$CALL_LOG" | tr -d ' ')" = "1" ]; then
 else
     bad "T6 unexpected panel call count"
 fi
+
+# T6b (HIMMEL-1932): stubbed panel exit 6 (refused to certify) -> still fails
+# open to claude-only, but the note says REFUSED, never "all critics failed".
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && FAKE_RC=6 FAKE_OUT='PHANTOM-FINDING-MUST-NOT-SURVIVE' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+err="$(cat "$tmp/err")"
+if [ "$rc" -eq 0 ]; then ok "T6b panel exit 6 degrades to exit 0"; else bad "T6b panel exit 6 exit (got $rc)"; fi
+assert_has "$err" "critic panel REFUSED to certify this run (exit 6" "T6b refusal note on stderr"
+assert_lacks "$err" "all critics failed" "T6b exit 6 is not described as all critics failed"
+assert_lacks "$out" "PHANTOM-FINDING-MUST-NOT-SURVIVE" "T6b findings reset to empty"
+# Every panel run advances the branch's 3-round counter; T6b is an extra run
+# the later cases were not budgeted for, so give them a fresh counter.
+rm -rf "$repo/.git/cr-review-rounds"
+
+# T6c (HIMMEL-1932): exit 6 whose ledger row could NOT be written leaves nothing
+# for clear-cr-marker.sh to hold, so the fence must ABORT (exit 7), not degrade.
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && FAKE_RC=6 FAKE_ERR='critic-panel.sh: could not record certify-refused on the CR ledger' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+err="$(cat "$tmp/err")"
+if [ "$rc" -eq 7 ]; then ok "T6c unrecorded refusal aborts at exit 7"; else bad "T6c unrecorded refusal exit (got $rc, want 7)"; fi
+assert_has "$err" "could not be recorded" "T6c abort names the unrecorded refusal"
+rm -rf "$repo/.git/cr-review-rounds"
+
+# T6d (HIMMEL-1932, CodeRabbit): an exit-6 refusal is never retried through rtk;
+# a retry that returned 1 would overwrite rc and fail open past the exit-7 abort.
+mkdir -p "$tmp/rtkbin"
+printf '#!/usr/bin/env bash\necho "diff --git a/f.txt b/f.txt"\n' > "$tmp/rtkbin/rtk"
+chmod +x "$tmp/rtkbin/rtk"
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && PATH="$tmp/rtkbin:$PATH" FAKE_RC=6 FAKE_RC_RETRY=1 \
+    FAKE_ERR='critic-panel.sh: could not record certify-refused on the CR ledger' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+if [ "$rc" -eq 7 ]; then ok "T6d exit 6 with rtk on PATH still aborts at exit 7"; else bad "T6d exit 6 with rtk (got $rc, want 7)"; fi
+if [ "$(wc -l < "$CALL_LOG")" -eq 1 ]; then ok "T6d exit 6 is not retried"; else bad "T6d panel calls (want 1)"; fi
+rm -rf "$repo/.git/cr-review-rounds"
 
 # T7: stubbed panel exit 0 -> findings on stdout, availability on stderr,
 # streams never merged; captured diff base line present.

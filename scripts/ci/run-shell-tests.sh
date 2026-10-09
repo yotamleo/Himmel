@@ -76,7 +76,11 @@
 #             least one suite failed, OR zero suites ran for any OTHER reason
 #             (a resolved-to-nothing scan root is a misconfiguration, not a
 #             pass — HIMMEL-1128), OR the run budget expired with suites still
-#             unrun; 2 — REFUSED, either another full-suite run already holds
+#             unrun; 6 — REFUSED, the caller sits in another git work tree
+#             than the script's, or the scan root lies inside one, so the run
+#             would scan a tree the caller did not mean (HIMMEL-2504,
+#             HIMMEL-5104; own code so a lock-held 2 is not mistaken for it);
+#             2 — REFUSED, either another full-suite run already holds
 #             the machine lock (HIMMEL-1338), SUITE_TIER_MODE was set to
 #             something other than fast/extended/all (HIMMEL-2120), or --shard
 #             was given a malformed <i>/<n> value (HIMMEL-2872);
@@ -185,12 +189,28 @@ chokepoint_seam_guard scripts/ci/run-shell-tests.sh || exit 96
 
 # REPO_ROOT is used only to source libs the runner itself needs; it is NOT
 # used for discovery. Discovery uses $scan (the positional scan-root arg).
+# CDPATH is dropped first: with it set, `cd <relative>` searches CDPATH before
+# the cwd, so every relative cd below (this one, the scan-root guard, the
+# scan_resolved resolution) can land in a different tree than it names, and
+# prints the directory to stdout (HIMMEL-5111).
+unset CDPATH
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # The caller's git work tree, captured BEFORE the cd below throws the caller's
 # cwd away (HIMMEL-2504): the scan-root guard after arg parsing compares it with
 # REPO_ROOT. Empty when the caller is not inside a work tree. Physical (-P) form
 # on both sides so a symlinked spelling of the same tree is not a mismatch.
-caller_top=$(git rev-parse --show-toplevel 2>/dev/null) && caller_top=$(cd "$caller_top" 2>/dev/null && pwd -P) || caller_top=""
+# An exported GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR would redirect every git
+# call below (the caller's tree, REPORT_HEAD, the scanning line) and the suites
+# inherit it too; the runner always means the repo of its own cwd, so drop them
+# (HIMMEL-5104). GIT_INDEX_FILE / GIT_OBJECT_DIRECTORY go with them: the suites
+# build throwaway repos and an inherited index or object store points those at
+# the caller's (HIMMEL-5111).
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+# An empty answer is "no tree known" (a git that prints nothing would otherwise
+# be cd'd into IN PLACE and name the caller's cwd as a toplevel), so only a
+# printed path counts (HIMMEL-5111, the same shape as the scan-root guard below).
+caller_top=$(git rev-parse --show-toplevel 2>/dev/null) || caller_top=""
+[ -n "$caller_top" ] && { caller_top=$(cd "$caller_top" 2>/dev/null && pwd -P) || caller_top=""; }
 cd "$REPO_ROOT" || exit 1
 
 # Captured HERE, before the (potentially hours-long) suite run below, not
@@ -850,6 +870,18 @@ scripts/test-claude-openrouter-pwsh.sh  pwsh  # PowerShell twin smoke suite for 
 scripts/lib/test-native-auth-pin-pwsh.sh  pwsh  # PowerShell twin suite for native-auth-pin.ps1 (HIMMEL-1867); runs wherever pwsh exists, loud-skips where it does not
 scripts/telegram/test-phi-egress-guard-parity.sh  bun  # cross-language parity check (scripts/claude-glm vs scripts/telegram/phi-egress-guard.ts) (HIMMEL-2204); runs wherever bun exists, loud-skips where it does not
 scripts/test-template-nostash-hooks.sh  pre-commit  # exercises the real pre-commit binary against install-nostash-hooks.sh (HIMMEL-2223); runs wherever pre-commit exists, loud-skips where it does not
+scripts/hooks/test-check-cr-before-push-precommit.sh  pre-commit  # real pre-push shim integration (HIMMEL-2475): its own guard exits 0 when pre-commit is absent, a vacuous PASS; runs wherever pre-commit exists, loud-skips where it does not
+scripts/hooks/test-check-commit-msg-precommit.sh  pre-commit  # real commit-msg shim integration (HIMMEL-2475): its own guard exits 0 when pre-commit is absent, a vacuous PASS; runs wherever pre-commit exists, loud-skips where it does not
+scripts/guardrails/test-gitleaks-retired-org.sh  gitleaks  # its own guard exits 0 without the real scanner (HIMMEL-2475 sweep); runs wherever gitleaks exists, loud-skips where it does not
+scripts/handover/console-kit/test-leg-doc-lock.sh  flock  # its own guard exits 0 without flock, the lock under test (HIMMEL-2475 sweep); runs wherever flock exists, loud-skips where it does not
+scripts/hooks/test-check-hook-lib-suites.sh  node  # its own guard exits 0 without node (HIMMEL-2475 sweep); runs wherever node exists, loud-skips where it does not
+scripts/hooks/test-check-hook-file-parse.sh  jq  # its own guard exits 0 without jq (HIMMEL-2475 sweep); runs wherever jq exists, loud-skips where it does not
+scripts/hooks/test-crlf-boundary.sh  jq  # its own guard exits 0 without jq (HIMMEL-2475 sweep); runs wherever jq exists, loud-skips where it does not
+scripts/hooks/test-trigger-cr-on-pr-create.sh  jq  # its own guard exits 0 without jq (HIMMEL-2475 sweep); runs wherever jq exists, loud-skips where it does not
+scripts/hooks/test-trigger-cr-on-push.sh  jq  # its own guard exits 0 without jq (HIMMEL-2475 sweep); runs wherever jq exists, loud-skips where it does not
+scripts/lib/test-merge-block-alert.sh  jq  # its own guard exits 0 without jq (HIMMEL-2475 sweep); runs wherever jq exists, loud-skips where it does not
+scripts/observability/test-agent-runtime-census.sh  node  # its own guard exits 0 without node (HIMMEL-2475 sweep); runs wherever node exists, loud-skips where it does not
+scripts/observability/test-tool-call-census.sh  jq  # its own guard exits 0 without jq (HIMMEL-2475 sweep); runs wherever jq exists, loud-skips where it does not
 "
 SUITE_REQUIRE_TOOL="${SUITE_REQUIRE_TOOL:-$SUITE_REQUIRE_TOOL_DEFAULT}"
 
@@ -2797,8 +2829,8 @@ done
 # Scan-root guard (HIMMEL-2504). The cd to REPO_ROOT above means a runner called
 # by absolute path from another checkout (a worktree invoking the primary's
 # copy) silently runs THAT repo's suites, and with --pr posts a green SUMMARY
-# for code the caller's tree does not contain. Refuse (rc 2, this runner's
-# refusal code) when the caller sits in a git work tree that is not the
+# for code the caller's tree does not contain. Refuse (rc 6, its own code
+# since HIMMEL-5104) when the caller sits in a git work tree that is not the
 # script's own, unless --scan-repo-of-script says that is intended. A caller
 # outside any work tree (caller_top empty) is not a mismatch, so CI and the
 # normal invocation from the repo root are unaffected.
@@ -2807,7 +2839,42 @@ if [ "$scan_repo_of_script" -eq 0 ] && [ -n "$caller_top" ]; then
   if [ "$caller_top" != "$_script_top" ]; then
     printf 'run-shell-tests.sh: REFUSED - called from git work tree %s, but this script belongs to %s and would scan THAT tree, not yours (HIMMEL-2504).\n' "$caller_top" "$_script_top" >&2
     printf '  Run the copy in your own tree (scripts/ci/run-shell-tests.sh), or pass --scan-repo-of-script to scan the script'"'"'s repo on purpose.\n' >&2
-    exit 2
+    exit 6
+  fi
+fi
+
+# An absolute (or ../-escaping) scan root can point into ANOTHER work tree while
+# the cd above left the scanning line naming REPO_ROOT. --scan-repo-of-script
+# does not excuse that: it says "the script's repo", not "this other one"
+# (HIMMEL-5104). A root outside every work tree is unaffected.
+#
+# Fail-closed when the scan root names a work tree and this run does not
+# (HIMMEL-5111): a runner outside any tree (a tarball install) pointed at a
+# checkout elsewhere would name root=REPO_ROOT sha=unknown for suites that live
+# in a different tree, which is the mismatch this guard exists to refuse. Both
+# sides empty stays allowed (CI containers, dubious ownership hit both alike).
+# ponytail: when git cannot name a toplevel for the scan root at all (dubious
+# ownership of just that tree, GIT_CEILING_DIRECTORIES above it) the guard fails
+# open, because "no tree known" is indistinguishable from "not a tree";
+# upgrade path: a `git rev-parse --git-dir` probe that tells the two apart.
+#
+# The scripts default is applied HERE, before the guard, so the default root is
+# checked like an explicit one and the guard never `cd ""`s in place
+# (HIMMEL-5111). Trailing slash stripped so the relpath prefix-strip works.
+scan="${scan%/}"
+scan="${scan:-scripts}"
+_scan_dir=$(cd "$scan" 2>/dev/null && pwd -P) || _scan_dir=""
+if [ -n "$_scan_dir" ]; then
+  # An empty answer is "no tree known" (a fake git in a test prints nothing, and
+  # `cd ""` would succeed in place), so only a printed path counts as a toplevel.
+  _scan_top=$(git -C "$_scan_dir" rev-parse --show-toplevel 2>/dev/null) || _scan_top=""
+  [ -n "$_scan_top" ] && { _scan_top=$(cd "$_scan_top" 2>/dev/null && pwd -P) || _scan_top=""; }
+  _root_top=$(git rev-parse --show-toplevel 2>/dev/null) || _root_top=""
+  [ -n "$_root_top" ] && { _root_top=$(cd "$_root_top" 2>/dev/null && pwd -P) || _root_top=""; }
+  if [ -n "$_scan_top" ] && [ "$_scan_top" != "$_root_top" ]; then
+    printf 'run-shell-tests.sh: REFUSED - scan root %s is inside git work tree %s, but this run is rooted at %s%s; the scanning line would name the wrong tree (HIMMEL-5104).\n' "$_scan_dir" "$_scan_top" "$(pwd -P)" "${_root_top:+ (work tree $_root_top)}" >&2
+    printf '  Run the copy of this script that lives in that tree instead.\n' >&2
+    exit 6
   fi
 fi
 
@@ -2878,9 +2945,8 @@ if [ "$shard_given" -eq 1 ]; then
   fi
 fi
 
-# Apply default scan root after parsing so a leading --list doesn't collide.
-scan="${scan%/}"      # strip any trailing slash so the relpath prefix-strip works
-scan="${scan:-scripts}"
+# The default scan root (and the trailing-slash strip) is applied before the
+# scan-root guard above, after arg parsing so a leading --list doesn't collide.
 
 # Physical (symlink-resolved) form of the scan root, resolved ONCE (HIMMEL-2260).
 # Suite tables are matched against a path built from this, not from the spelling

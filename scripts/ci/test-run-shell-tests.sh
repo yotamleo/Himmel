@@ -773,8 +773,51 @@ else fail "13e: missing Darwin sandbox green-washed: rc=$rc13e out: $out13e"; fi
 rm -rf "$sb13d"
 fi
 
+# 13f — the two real-pre-commit integration suites (HIMMEL-2475) are in the
+# built-in table: with pre-commit off PATH they are [SKIP]ped loudly by the
+# runner, not run and reported PASS after their own `exit 0` guard; with a
+# pre-commit on PATH they RUN. The sandbox PATH carries every runner
+# dependency but pre-commit, so the verdict cannot depend on this host.
+sb13f=$(mktemp -d "${TMPDIR:-/tmp}/rst-case13f.XXXXXX") || { fail "13f: mktemp failed"; sb13f=""; }
+if [ -n "$sb13f" ]; then
+mkdir -p "$sb13f/bin" "$sb13f/scripts/hooks"
+# An all-skipped scan root is refused as a false green, so one plain passing
+# suite keeps the run well-formed.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb13f/scripts/test-pass.sh"
+chmod +x "$sb13f/scripts/test-pass.sh"
+for suite in test-check-cr-before-push-precommit.sh test-check-commit-msg-precommit.sh; do
+  # shellcheck disable=SC2016  # $0 must expand in the generated suite, not here
+  printf '#!/usr/bin/env bash\ntouch "$(dirname "$0")/%s.ran"\nexit 0\n' "$suite" > "$sb13f/scripts/hooks/$suite"
+  chmod +x "$sb13f/scripts/hooks/$suite"
+done
+for tool in awk basename bash cat chmod cp cut date dirname env find flock git grep \
+    head hostname mkdir mktemp mv node npm perl pgrep ps python3 readlink realpath rm rmdir sed sh touch \
+    sha256sum sha1sum md5sum cksum sleep sort stat tail timeout tr uname uniq wc xargs; do
+  tool_path=$(command -v "$tool") || continue
+  ln -s "$tool_path" "$sb13f/bin/$tool"
+done
+out13f=$(PATH="$sb13f/bin" bash "$RUNNER" "$sb13f/scripts" 2>&1); rc13f=$?
+if [ "$rc13f" -eq 0 ] && [ ! -f "$sb13f/scripts/hooks/test-check-cr-before-push-precommit.sh.ran" ] \
+    && [ ! -f "$sb13f/scripts/hooks/test-check-commit-msg-precommit.sh.ran" ] \
+    && [ "$(grep -c 'capability: pre-commit not on PATH' <<< "$out13f")" -ge 2 ]; then
+  pass "13f: pre-commit absent -> both real-pre-commit suites SKIPped loudly, not run"
+else
+  fail "13f: expected two loud pre-commit capability skips; rc=$rc13f out: $out13f"
+fi
+printf '#!/bin/bash\nexit 0\n' > "$sb13f/bin/pre-commit"
+chmod +x "$sb13f/bin/pre-commit"
+out13f2=$(PATH="$sb13f/bin" bash "$RUNNER" "$sb13f/scripts" 2>&1); rc13f2=$?
+if [ "$rc13f2" -eq 0 ] && [ -f "$sb13f/scripts/hooks/test-check-cr-before-push-precommit.sh.ran" ] \
+    && [ -f "$sb13f/scripts/hooks/test-check-commit-msg-precommit.sh.ran" ]; then
+  pass "13f: pre-commit present -> both real-pre-commit suites RUN"
+else
+  fail "13f: expected both suites to run; rc=$rc13f2 out: $out13f2"
+fi
+rm -rf "$sb13f"
+fi
+
 # --------------------------------------------------------------------------
-# Case 14 — tier suites / SUITE_TIER + SUITE_TIER_MODE (HIMMEL-2120).
+# Case 14— tier suites / SUITE_TIER + SUITE_TIER_MODE (HIMMEL-2120).
 #   The production SUITE_TIER table now carries three extended entries (Task
 #   6), but every case here still drives the filter through the SUITE_TIER
 #   env override — the same seam SUITE_REQUIRE_TOOL already exposes for its

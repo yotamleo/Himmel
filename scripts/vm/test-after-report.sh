@@ -323,6 +323,7 @@ FAKE_SCP="$FAKEBIN/scp"
 FAKE_GH="$FAKEBIN/gh"
 GUEST_LOG_FIXTURE="$WORK/guest-suite.log"
 cat >"$GUEST_LOG_FIXTURE" <<'LOGEOF'
+scanning: root=/home/testuser/himmel branch=feat/example sha=abc1234
 [PASS] scripts/test-example-one.sh (rc=0, 4s)
 [PASS] scripts/test-example-two.sh (rc=0, 9s)
 WAITING: another waiter ahead in the FIFO queue (simulated, mechanical pass-through check)
@@ -576,7 +577,8 @@ if [ -n "$PYTHON_BIN" ]; then
         fail_case "T3 happy path — rc=$t3_rc log_path='$log_path' out:"
         printf '%s\n' "$t3_out" | sed 's/^/    /'
     fi
-    if grep -q 'pr comment 4242' "$FAKE_GH_CALLS" 2>/dev/null && grep -q 'PASS: 42' "$FAKE_GH_CALLS" 2>/dev/null; then
+    if grep -q 'pr comment 4242' "$FAKE_GH_CALLS" 2>/dev/null && grep -q 'PASS: 42' "$FAKE_GH_CALLS" 2>/dev/null \
+       && grep -q ' scanning: root=/home/testuser/himmel branch=feat/example sha=abc1234' "$FAKE_GH_CALLS" 2>/dev/null; then
         pass "T3b after-report comment posted from the HOST with the run's PASS/SKIP/FAIL tally"
     else
         fail_case "T3b gh pr comment not called as expected: $(cat "$FAKE_GH_CALLS" 2>/dev/null)"
@@ -906,7 +908,8 @@ if [ -n "$PYTHON_BIN" ]; then
     if [ "$t3c_rc" -ne 0 ] \
        && [ -s "$FAKE_GH_CALLS" ] \
        && ! grep -qE '^ PASS: ' <<< "$posted_body" \
-       && grep -qi "DIED-BEFORE-SUMMARY" <<< "$posted_body"; then
+       && grep -qi "DIED-BEFORE-SUMMARY" <<< "$posted_body" \
+       && grep -q '^ scanning: unknown' <<< "$posted_body"; then
         pass "T3c a guest run that died mid-suite (EXITCODE=0) exits non-zero, posts NO PASS line and states plainly that no verdict exists"
     else
         fail_case "T3c — rc=$t3c_rc posted body:"

@@ -3231,6 +3231,42 @@ run_clear "$tmp" 0 "9c healthy budget -> exit 0"
 if [ ! -s "$tmp/sleeps.log" ]; then pass; else fail "9c: healthy budget must not sleep"; fi
 rm -rf "$tmp"
 
+# 10a-10c. HIMMEL-1932 -- a panel certify refusal (critic-panel.sh exit 6) is
+# recorded as an avail row (reason=certify-refused) and HOLDS the gate closed at
+# that SHA, whatever another lane's avail ok says. 10c: it binds one SHA only.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(avail_reason "${sha:0:8}" critic-panel unavailable certify-refused)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "10a certify-refused row + another lane's avail ok at the same SHA -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "10a: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'certify-refused'; then pass; else fail "10a: refusal must name certify-refused: $LAST_CLEAR_OUT"; fi
+if grep -q 'reason=panel-certify-refused' "$tmp/.git/clear-cr-marker.log" 2>/dev/null; then pass; else fail "10a: audit line names panel-certify-refused"; fi
+rm -rf "$tmp"
+
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(avail_reason deadbeef critic-panel unavailable certify-refused)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "10c certify-refused row at ANOTHER head does not hold this SHA -> exit 0"
+rm -rf "$tmp"
+
+# 10d. HIMMEL-5110 item 3: the certify-refused extraction fails CLOSED. A node
+# failure in that one step used to leave the flag empty, and `${…:-0}` read it
+# as "no refusal". Shim node: the extraction (and only it) dies; the rest of the
+# verdict reads are real, so the clean ledger below WOULD clear without the fix.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+_real_node="$(command -v node)"
+printf '#!/usr/bin/env bash\ncase "$*" in *"JSON.parse(s).certifyRefused"*) exit 1 ;; esac\nexec "%s" "$@"\n' "$_real_node" > "$tmp/bin/node"
+chmod +x "$tmp/bin/node"
+run_clear "$tmp" 14 "10d certify-refused extraction failure fails closed -> exit 14"
+if marker_exists "$tmp"; then pass; else fail "10d: marker must REMAIN"; fi
+if grep -q 'reason=certify-refused-unreadable' "$tmp/.git/clear-cr-marker.log" 2>/dev/null; then pass; else fail "10d: audit line names certify-refused-unreadable"; fi
+rm -rf "$tmp"
+
 echo
 echo "clear-cr-marker: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

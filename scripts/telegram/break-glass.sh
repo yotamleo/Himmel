@@ -35,8 +35,17 @@
 #                              primary, every *_OK scrubbed (no bypass flag)
 #   restart-bridge    -        restart telegram-bridge.service 3 s from now, so
 #                              the reply and audit line land first
+#   allow-rule        <id>     (HIMMEL-5048) add ONE permission allow rule to the
+#                              primary's untracked local settings file. The rule
+#                              text comes only from the checked-in registry
+#                              allow-rules.json (id -> exact text), never from the
+#                              message; idempotent, and the old file is backed up
+#                              (<file>.bak-<epoch>-<pid>) before every write
 #
 # Exit codes:
+#   (allow-rule: 20 registry missing / 26 id not in the registry or its entry is
+#   not one clean line of text / 27 target unreadable, not the expected shape, or
+#   the write failed)
 #   0 done / 1 bad input (close-wrapped: a named close refused) / 2 unknown
 #   op / 5, 12, 13 also relayed from cr-reset.sh / 12 PR not revertable (not merged, or
 #   not on the default branch) / 13 gh or fetch failed / 18 merge or ff failed
@@ -50,7 +59,8 @@
 # BREAK_GLASS_SYSTEMCTL (systemctl), BREAK_GLASS_RESTART_CMD,
 # BREAK_GLASS_CONSOLE_CMD, BREAK_GLASS_LEG_CMD, BREAK_GLASS_BANK_CMD,
 # BREAK_GLASS_FLEET (fleet manifest), BREAK_GLASS_STATE (launch logs),
-# BREAK_GLASS_MERGE_TRIES / BREAK_GLASS_MERGE_SLEEP.
+# BREAK_GLASS_MERGE_TRIES / BREAK_GLASS_MERGE_SLEEP, BREAK_GLASS_ALLOW_REGISTRY
+# (registry file), BREAK_GLASS_ALLOW_TARGET (file allow-rule writes).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,7 +83,7 @@ if [ -n "${CLAUDECODE:-}" ]; then
 fi
 
 case "$OP" in
-    station-status|revert-main|repin-hooks|launch-leg|cr-reset|close-wrapped|relaunch-console|restart-bridge) ;;
+    station-status|revert-main|repin-hooks|launch-leg|cr-reset|close-wrapped|relaunch-console|restart-bridge|allow-rule) ;;
     *) echo "ERR break-glass: unknown op: $OP" >&2; exit 2 ;;
 esac
 
@@ -447,6 +457,48 @@ op_restart_bridge() {
     echo "bridge restart scheduled in 3s"
 }
 
+# allow-rule <id>: the ONE rule text the checked-in registry maps the id to is
+# added to permissions.allow of the primary's UNTRACKED local settings file (the
+# tracked one would dirty the primary and break /repin-hooks' ff-only pull).
+op_allow_rule() {
+    local id="$ARG" reg tgt rule new bak
+    if ! [[ "$id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
+        echo "ERR break-glass: bad rule id: '$id'" >&2
+        return 1
+    fi
+    reg="${BREAK_GLASS_ALLOW_REGISTRY:-$SCRIPT_DIR/allow-rules.json}"
+    [ -f "$reg" ] || { echo "ERR break-glass: allow-rule registry not found: $reg" >&2; return 20; }
+    rule="$(jq -r --arg id "$id" 'if type == "object" and (.[$id] | type) == "string" and (.[$id] | test("\\p{Cc}") | not) then .[$id] else empty end' "$reg" 2>/dev/null)" \
+        || { echo "ERR break-glass: cannot read the allow-rule registry" >&2; return 20; }
+    if [ -z "$rule" ] || [[ "$rule" =~ [[:cntrl:]] ]]; then
+        echo "ERR break-glass: no reviewed rule for id '$id'" >&2
+        return 26
+    fi
+    tgt="${BREAK_GLASS_ALLOW_TARGET:-$PRIMARY/.claude/settings.local.json}"
+    if [ -e "$tgt" ] && ! jq -s -e 'length == 1 and (.[0] | type == "object" and ((.permissions // {}) | type == "object") and ((.permissions // {}) | (if has("allow") then .allow else [] end) | type == "array"))' "$tgt" >/dev/null 2>&1; then
+        echo "ERR break-glass: $tgt is not a settings object with an allow list; left alone" >&2
+        return 27
+    fi
+    if [ -e "$tgt" ] && jq -e --arg r "$rule" '(.permissions.allow // []) | index($r) != null' "$tgt" >/dev/null 2>&1; then
+        echo "rule '$id' already present in $tgt; nothing written"
+        return 0
+    fi
+    mkdir -p "${tgt%/*}" 2>/dev/null || { echo "ERR break-glass: cannot create ${tgt%/*}" >&2; return 27; }
+    new="$(mktemp "$tgt.XXXXXX")" || { echo "ERR break-glass: cannot create a temp file beside $tgt" >&2; return 27; }
+    if ! { if [ -e "$tgt" ]; then cat "$tgt"; else echo '{}'; fi; } \
+        | jq --arg r "$rule" '.permissions.allow = ((.permissions.allow // []) + [$r])' > "$new" 2>/dev/null; then
+        rm -f "$new"
+        echo "ERR break-glass: could not build the new settings" >&2
+        return 27
+    fi
+    if [ -e "$tgt" ]; then
+        bak="$tgt.bak-$(date +%s)-$$"
+        cp -p "$tgt" "$bak" || { rm -f "$new"; echo "ERR break-glass: backup of $tgt failed; nothing written" >&2; return 27; }
+    fi
+    mv "$new" "$tgt" || { rm -f "$new"; echo "ERR break-glass: could not write $tgt" >&2; return 27; }
+    echo "rule '$id' added to $tgt${bak:+ (backup $bak)}"
+}
+
 # Every op runs scrubbed (launch-leg re-exports its one bypass after this).
 scrub_env
 
@@ -459,5 +511,6 @@ case "$OP" in
     close-wrapped) op_close_wrapped ;;
     relaunch-console) op_relaunch_console ;;
     restart-bridge) op_restart_bridge ;;
+    allow-rule) op_allow_rule ;;
 esac
 exit $?

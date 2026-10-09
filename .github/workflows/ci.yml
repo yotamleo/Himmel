@@ -322,8 +322,15 @@ jobs:
       # they prove Claude Code enforces the consult sandbox and that the project hook
       # chain fires clean in a real session; neither is evidence of real-model behaviour.
       # The consult sandbox needs bubblewrap and socat on the runner.
+      - name: Record runner image (apt cache key)
+        run: echo "APT_IMAGE=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+      - name: Cache apt debs (consult)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ env.APT_IMAGE }}-consult-${{ hashFiles('.github/scripts/apt-install.sh') }}
       - name: Install the consult sandbox prerequisites
-        run: sudo apt-get install -y --no-install-recommends bubblewrap socat
+        run: bash .github/scripts/apt-install.sh bubblewrap socat
       - run: bash scripts/testing/test-mock-consult-sandbox.sh
       - run: bash scripts/testing/test-mock-hook-smoke.sh
 
@@ -838,28 +845,28 @@ jobs:
       # HIMMEL-4912: install bubblewrap (and socat, which the live pilot-4869
       # jail checks drive) here too so Linux corpus/replay suites exercise the
       # real containment boundary rather than capability-skip.
+      - name: Record runner image (apt cache key)
+        if: runner.os == 'Linux'
+        run: echo "APT_IMAGE=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+      - name: Cache apt debs (at/atd)
+        if: runner.os == 'Linux'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ env.APT_IMAGE }}-at-${{ hashFiles('.github/scripts/apt-install.sh') }}
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
-        # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Each apt call
-        # gets a `timeout` and a dpkg-lock wait so a lock fails fast and visibly
-        # instead of blocking silently. HIMMEL-4073: worst case is the 2 min
-        # plain install + 5 min refresh + 5 min retry = 12 min, so the step cap
-        # is 13 (it was 10 when the whole step was refresh + install).
+        # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. HIMMEL-2872:
+        # apt-install.sh bounds every apt call with a `timeout` and a dpkg-lock
+        # wait, and tries cached debs, then the runner's mirror, then an
+        # alternate mirror (HIMMEL-4073: the plain install comes before any index
+        # refresh). Worst case 60 + 120 + 180 + 180 s = 9 min; the step cap is 13.
         timeout-minutes: 13
         run: |
           started=$SECONDS
           trap 'echo "at/atd install: duration_seconds=$((SECONDS - started))"' EXIT
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
-          # HIMMEL-4073: try the plain install first (the runner's package
-          # index is usually fresh enough); only a failure pays for an index
-          # refresh and a retry. Each branch logs which path ran.
-          if sudo timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 at bubblewrap socat; then
-            echo "at/atd install: plain install succeeded, index refresh skipped"
-          else
-            echo "at/atd install: plain install failed, falling back to index refresh + retry"
-            sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
-            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at bubblewrap socat
-          fi
+          bash .github/scripts/apt-install.sh at bubblewrap socat
           sudo systemctl enable --now atd || sudo service atd start || true
       # HIMMEL-4912: ubuntu-24.04 refuses unprivileged user namespaces by default
       # (AppArmor), so bwrap fails with `RTM_NEWADDR: Operation not permitted` and
@@ -889,14 +896,20 @@ jobs:
       # sets HIMMEL_REQUIRE_FFMPEG=1, turning that SKIP into a FAIL here. A
       # runner image that drops the 6.1 package fails this step loudly; re-pin
       # deliberately. Linux only: the nightly windows leg keeps the SKIP.
+      - name: Record runner image (apt cache key)
+        if: runner.os == 'Linux'
+        run: echo "APT_IMAGE=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+      - name: Cache apt debs (ffmpeg)
+        if: runner.os == 'Linux'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ env.APT_IMAGE }}-ffmpeg-${{ hashFiles('.github/scripts/apt-install.sh') }}
       - name: Install pinned ffmpeg (Linux — obsidian-triage HLS suite)
         if: runner.os == 'Linux'
         timeout-minutes: 13
         run: |
-          if ! sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 'ffmpeg=7:6.1.*'; then
-            sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
-            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 'ffmpeg=7:6.1.*'
-          fi
+          bash .github/scripts/apt-install.sh 'ffmpeg=7:6.1.*'
           ffmpeg -version | head -n 1
           echo "HIMMEL_REQUIRE_FFMPEG=1" >> "$GITHUB_ENV"
       # HIMMEL-2223 codex-3: scripts/test-template-nostash-hooks.sh hard-SKIPs
@@ -1164,10 +1177,15 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
+      - name: Record runner image (apt cache key)
+        run: echo "APT_IMAGE=${ImageVersion:-unknown}" >> "$GITHUB_ENV"
+      - name: Cache apt debs (guard-corpus)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ env.APT_IMAGE }}-guard-corpus-${{ hashFiles('.github/scripts/apt-install.sh') }}
       - name: Install bubblewrap + socat
-        run: |
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y --no-install-recommends bubblewrap socat
+        run: bash .github/scripts/apt-install.sh bubblewrap socat
       - name: Allow unprivileged user namespaces (bwrap sandbox)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Full guard-corpus replay

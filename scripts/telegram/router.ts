@@ -16,7 +16,7 @@ export type Route =
   | { kind: "auto"; op: "merge-public"; arg: string; time: string }
   | { kind: "auto"; op: "restart"; arg: string; time: string }
   | { kind: "auto"; op: "launch-bypass-leg" | "cr-grant-delta"; arg: string; time: string }
-  | { kind: "auto"; op: "station-status" | "revert-main" | "repin-hooks" | "launch-leg" | "cr-reset" | "close-wrapped" | "relaunch-console" | "restart-bridge" | "confirm"; arg: string; time: string }
+  | { kind: "auto"; op: "station-status" | "revert-main" | "repin-hooks" | "launch-leg" | "cr-reset" | "close-wrapped" | "relaunch-console" | "restart-bridge" | "allow-rule" | "confirm"; arg: string; time: string }
   | { kind: "console"; name: string; text: string }
   | { kind: "consoles" }
   | { kind: "fleet"; verb: "status" | "legs" | "go?" | "push" | "halt"; leg?: string }
@@ -121,6 +121,8 @@ export function classify(raw: string): Route {
   if (closeW) return { kind: "auto", op: "close-wrapped", arg: closeW[1] ?? "-", time: "-" };
   const relaunch = t.match(/^\/relaunch-console(?:\s+([a-z0-9][a-z0-9-]{0,63}))?$/);
   if (relaunch) return { kind: "auto", op: "relaunch-console", arg: relaunch[1] ?? "-", time: "-" };
+  const allowRule = t.match(/^\/allow-rule\s+([a-z0-9][a-z0-9-]{0,63})$/);
+  if (allowRule) return { kind: "auto", op: "allow-rule", arg: allowRule[1], time: "-" };
   const confirmCode = t.match(/^\/confirm\s+([0-9a-f]{8})$/);
   if (confirmCode) return { kind: "auto", op: "confirm", arg: confirmCode[1], time: "-" };
   const restart = t.match(RESTART);
