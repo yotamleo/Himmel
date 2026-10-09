@@ -165,14 +165,26 @@ if ! (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round SHARED_BRANC
     exit 5
 fi
 owner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$branch" 2>/dev/null)"
-release() {
-    (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
-        bash "$LOCK_LIB" release-if-owner "." "$branch" "$owner" >/dev/null 2>&1) || true
-}
 case "$owner" in
     '{"pid":'*) ;;
     *) echo "grant-round: counter lock holder state for $branch is missing or unreadable; refusing" >&2; exit 5 ;;
 esac
+# A qid is consumed across branches, so the consumed-qid scan needs one lock all grants share.
+glock="_grant-round-qid-scan"
+if ! (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round SHARED_BRANCH_LOCK_HOLDER_PID=$$ \
+        bash "$LOCK_LIB" acquire-wait "." "$glock" "grant-round" 10 60 >/dev/null 2>&1); then
+    (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
+        bash "$LOCK_LIB" release-if-owner "." "$branch" "$owner" >/dev/null 2>&1) || true
+    echo "grant-round: cannot acquire the grant-round qid lock" >&2
+    exit 5
+fi
+gowner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$glock" 2>/dev/null)"
+release() {
+    (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
+        bash "$LOCK_LIB" release-if-owner "." "$glock" "$gowner" >/dev/null 2>&1) || true
+    (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
+        bash "$LOCK_LIB" release-if-owner "." "$branch" "$owner" >/dev/null 2>&1) || true
+}
 fail() { release; echo "grant-round: $2" >&2; exit "$1"; }
 
 # (d) consumed: any *.verdicts naming the qid. Only rc 1 means "not consumed".
@@ -194,24 +206,29 @@ view2="$(pr_json)" || fail 13 "gh pr view $PR failed"
 [ "$(printf '%s' "$view2" | jq -r '.headRefOid // empty')" = "$HEAD_SHA" ] \
     && [ "$(printf '%s' "$view2" | jq -r '.headRefName // empty')" = "$branch" ] \
     || fail 15 "PR $PR head moved while the lock was taken"
+[ "$(printf '%s' "$view2" | jq -r '.state // empty')" = "OPEN" ] \
+    && [ "$(printf '%s' "$view2" | jq -r '.isCrossRepository')" = "false" ] \
+    || fail 12 "PR $PR is no longer an open same-repo PR"
 
 ts="$(date +%Y%m%dT%H%M%S)-$$"
 cp -p "$round_f" "$round_f.bak-$ts" || fail 5 "could not back up $round_f"
 tmp_verd="$verd_f.tmp.$$"
+pre_verd="$verd_f.pre.$$"
+if [ -e "$verd_f" ]; then cp -p "$verd_f" "$pre_verd" || fail 5 "could not back up $verd_f"; fi
 if ! { cat "$verd_f" 2>/dev/null || [ ! -e "$verd_f" ]; } > "$tmp_verd" \
     || ! printf '%s %s %s\n' "$HEAD_SHA" "$HEAD_SHA" "$record" >> "$tmp_verd" \
     || ! mv "$tmp_verd" "$verd_f"; then
-    rm -f "$tmp_verd"
+    rm -f "$tmp_verd" "$pre_verd"
     fail 5 "cannot record the judge record $record as consumed for $branch"
 fi
 tmp_round="$round_f.tmp.$$"
 if ! printf '2\n' > "$tmp_round" || ! mv "$tmp_round" "$round_f"; then
     rm -f "$tmp_round"
     # The qid must not stay spent on a round that was never granted.
-    grep -vF " $record" "$verd_f" > "$tmp_verd" 2>/dev/null
-    if [ -s "$tmp_verd" ]; then mv "$tmp_verd" "$verd_f"; else rm -f "$tmp_verd" "$verd_f"; fi
+    if [ -e "$pre_verd" ]; then mv "$pre_verd" "$verd_f"; else rm -f "$verd_f"; fi
     fail 5 "cannot persist the granted round for $branch"
 fi
+rm -f "$pre_verd"
 printf '%s pr=%s branch=%s head=%s record=%s round=%s->2 by=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     "$PR" "$branch" "$HEAD_SHA" "$record" "$round" "${CLAUDE_CODE_SESSION_ID:-unknown}" >> "$audit_f" \
     || echo "grant-round: warning - could not append the audit line to $audit_f" >&2
