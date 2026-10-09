@@ -1011,6 +1011,15 @@ t0=$SECONDS
 assert_rc 'find anchors x12500 then shutdown (linear)' 2 "$(run_case "$(j_bash "echo hi$pad; shutdown now")")"
 if [ $((SECONDS - t0)) -gt 4 ]; then
     echo "FAIL find anchors x12500 took $((SECONDS - t0))s (budget 4s)"; FAILED=$((FAILED + 1)); fi
+# HIMMEL-4321: the CMDPOS path prefix stops at `(`, so a 10 KB run of open parens is
+# scanned once per anchor, not to the run's end from every one (quadratic: ~20s at
+# base). Budget 4s; the pad is built before the clock starts.
+# shellcheck disable=SC2046 # one word per repeat is the point
+printf -v pad '(%.0s' $(seq 1 10000)
+t0=$SECONDS
+assert_rc 'open-paren run x10000 then shutdown (linear)' 2 "$(run_case "$(j_bash "echo hi$pad; shutdown now")")"
+if [ $((SECONDS - t0)) -gt 4 ]; then
+    echo "FAIL open-paren run x10000 took $((SECONDS - t0))s (budget 4s)"; FAILED=$((FAILED + 1)); fi
 # HIMMEL-4158: a value word may be built from quoted ('…', "…", $'…'),
 # escaped and bare segments; a flag word may carry a quoted value too.
 assert_rc "sudo -u 'a b'c rm -rf"        2 "$(run_case "$(j_bash "sudo -u 'a b'c rm -rf /x")")"
