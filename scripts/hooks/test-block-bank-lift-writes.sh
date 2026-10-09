@@ -1237,6 +1237,31 @@ row "5094 r3 strace bash <<< tar ~"            deny  "strace bash <<< 'tar -xf /
 row "5094 r3 fakeroot sh <<< unzip ~"          deny  "fakeroot sh <<< 'unzip /tmp/a.zip -d ~/.himmel'"
 row "5094 r3 strace bash <<< echo (ctrl)"      allow "strace bash <<< 'echo hi'"
 row "5094 r3 strace bash script.sh (ctrl)"     allow "strace bash /tmp/s.sh"
+# j2243b: a variable-held extractor after a cd whose target is HOME or unknown.
+row "5094 r4 bare cd; \$T xf"                   deny  "T=tar; cd; \$T xf /tmp/a.tar"
+row "5094 r4 bare cd && \$T xf"                 deny  "T=tar; cd && \$T xf /tmp/a.tar"
+row "5094 r4 cd \$D && \$T xf"                  deny  "T=tar; D=~; cd \$D && \$T xf /tmp/a.tar"
+row "5094 r4 cd \"\$D\"; \$T -xf"                deny  "T=tar; cd \"\$D\"; \$T -xf /tmp/a.tar"
+row "5094 r4 pushd; \$T xf"                     deny  "T=tar; pushd; \$T xf /tmp/a.tar"
+row "5094 r4 cd -P; \$T xf (bare, option only)" deny  "T=tar; cd -P; \$T xf /tmp/a.tar"
+row "5094 r4 cd \$(pwd)/..; \$T xf"              deny  "T=tar; cd \$(pwd)/..; \$T xf /tmp/a.tar"
+row "5094 r4 bare cd newline \$T xf"            deny  "T=tar; cd
+\$T xf /tmp/a.tar"
+row "5094 r4 cd /tmp/w; \$T xf (literal, ctrl)" allow "T=tar; cd /tmp/w; \$T xf /tmp/a.tar"
+row "5094 r4 \$T tf, no cd (ctrl)"              allow "T=tar; \$T tf /tmp/a.tar"
+row "5094 r4 bare cd; echo (ctrl)"              allow "cd; echo hi"
+row "5094 r4 cd /tmp/w; \$T --version (ctrl)"   allow "T=git; cd /tmp/w; \$T status"
+# j2243b: python -m behind any CPython short flag (-b and the rest) in a cluster.
+row "5094 r4 python3 -bm tarfile -e ~"          deny  "python3 -bm tarfile -e /tmp/a.tar ~"
+row "5094 r4 python3 -bIm tarfile -e ~"         deny  "python3 -bIm tarfile -e /tmp/a.tar ~"
+row "5094 r4 python3 -Ibm zipfile -e ~"         deny  "python3 -Ibm zipfile -e /tmp/a.zip ~/.himmel"
+row "5094 r4 python3 -bmtarfile -e ~"           deny  "python3 -bmtarfile -e /tmp/a.tar ~"
+row "5094 r4 python3 -bm tarfile -e, cwd HOME"  deny  "python3 -bm tarfile -e /tmp/a.tar" "$HOME"
+row "5094 r4 strace python3 -bm tarfile -e ~"   deny  "strace python3 -bm tarfile -e /tmp/a.tar ~"
+row "5094 r4 fakeroot python3 -bIm zipfile -e ~" deny "fakeroot python3 -bIm zipfile -e /tmp/a.zip ~"
+row "5094 r4 python3 -bm tarfile -l (ctrl)"     allow "python3 -bm tarfile -l /tmp/a.tar"
+row "5094 r4 python3 -bm json.tool (ctrl)"      allow "python3 -bm json.tool /tmp/a.json"
+row "5094 r4 python3 -bm tarfile -e /tmp (ctrl)" allow "python3 -bm tarfile -e /tmp/a.tar /tmp/out"
 
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered

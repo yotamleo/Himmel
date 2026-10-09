@@ -1486,8 +1486,11 @@ check_interp_archive() {
                 # -m, -mMOD, or -m inside a short-flag cluster (-Im, -Bm, -Imtarfile)
                 -*m*)
                     pre="${a#-}"; pre="${pre%%m*}"
+                    # Deny-list the argument-taking letters (c code, W warn, X
+                    # impl): any other letter is a bare flag, so a flag this
+                    # list forgets still reaches the module (fail closed).
                     case "$pre" in
-                        *[!BdEhIiOPqRsSuvVx]*) ;;
+                        *[!A-Za-z]*|*[cWX]*) ;;
                         *) if [ "${a#*m}" = "" ]; then st=1; else mod="${a#*m}"; fi ;;
                     esac ;;
             esac
@@ -1543,6 +1546,17 @@ _cd_home_in() {
     return 1
 }
 
+# _cd_unknown_in <text>: a cd/pushd in the text has no operand (a bare cd goes
+# to HOME) or a computed one ($D, $(..), `..`: it may hold HOME), the two cwd
+# cases the literal-tool path already treats as HOME/unknown (HIMMEL-5094).
+_cd_unknown_in() {
+    local nl=$'\n' bare dyn
+    bare="(^|[^A-Za-z0-9_.-])(cd|pushd)[[:blank:]]*(-[A-Za-z-]*[[:blank:]]*)*([;&|)${nl}]|\$)"
+    dyn="(^|[^A-Za-z0-9_.-])(cd|pushd)[[:blank:]]+(-[A-Za-z-]*[[:blank:]]+)*[\"']?[^[:space:];&|]*[\$\`]"
+    [[ "$1" =~ $bare ]] && return 0
+    [[ "$1" =~ $dyn ]]
+}
+
 # _dyn_cmd_check <command-word> <args...>: a command word held in a variable
 # or substitution cannot be read (HIMMEL-5094). It denies when an argument
 # names HOME/~/.himmel, or when the command also names an archive tool and
@@ -1563,6 +1577,9 @@ _dyn_cmd_check() {
             deny "a command word held in a variable or substitution ($w) is handed a computed argument beside an archive tool and a HOME spelling, so it may extract into HOME; name the command and destination literally"
         fi
         case "$(_dir_kind "$CWD")" in HOME|HIMMEL|STATE) deny "a command word held in a variable or substitution ($w) runs beside an archive tool in HOME or the bank-lift dir, so it may extract there; name the command literally" ;; esac
+        if _cd_unknown_in "$CMD"; then
+            deny "a command word held in a variable or substitution ($w) runs beside an archive tool after a bare cd (HOME) or a cd to a computed directory, so it may extract into HOME; name the command literally"
+        fi
         if _cd_home_in "$CMD"; then
             deny "a command word held in a variable or substitution ($w) runs beside an archive tool after a cd into HOME or the bank-lift dir, so it may extract there; name the command literally"
         fi
