@@ -70,6 +70,26 @@ case "$lane" in
     deepseek) cfg="$home/.claude-deepseek/.claude.json" ;;
     *) echo "leg-pretrust: unknown lane: $lane" >&2; exit 2 ;;
 esac
+# Jailed rows (HIMMEL-5068, pilot p20): claude runs inside a bwrap jail where the
+# worktree is bound at another path and ~/.claude-<lane> is a per-row copy, so the
+# flag must land in THAT config under THAT path. LEG_PRETRUST_CONFIG names the
+# config file and LEG_PRETRUST_KEY the project key; both are optional, and the
+# directory is still checked above. The key must be absolute, newline-free and end
+# in the same last component as the checked directory (the jail re-binds the same
+# worktree, it never trusts a different one).
+if [ -n "${LEG_PRETRUST_CONFIG:-}" ]; then
+    case "$LEG_PRETRUST_CONFIG" in
+        /*/.claude.json) cfg="$LEG_PRETRUST_CONFIG" ;;
+        *) echo "leg-pretrust: LEG_PRETRUST_CONFIG must be an absolute path ending in /.claude.json" >&2; exit 2 ;;
+    esac
+fi
+if [ -n "${LEG_PRETRUST_KEY:-}" ]; then
+    case "$LEG_PRETRUST_KEY" in
+        *$'\n'*|*/|/*/..|/*/../*|/*/./*) refuse "LEG_PRETRUST_KEY has a newline, trailing / or dot segment" ;;
+        /*/"${abs##*/}") abs="$LEG_PRETRUST_KEY" ;;
+        *) refuse "LEG_PRETRUST_KEY must be absolute and end in /${abs##*/}" ;;
+    esac
+fi
 # Never create a lane config dir: the lane launcher seeds it, and a dir it did not
 # seed reads to it as a half-seeded one.
 [ -d "$(dirname "$cfg")" ] || { echo "leg-pretrust: lane config dir absent (launcher not seeded yet): $(dirname "$cfg")" >&2; exit 4; }

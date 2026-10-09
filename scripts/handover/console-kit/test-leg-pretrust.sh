@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015  # A && B || C is intentional in check(), as in test-headed-arm-leg.sh
+# shellcheck disable=SC2015,SC2016  # SC2015: A && B || C is intentional in check(), as in test-headed-arm-leg.sh; SC2016: group 10 greps literal $VAR text
 # scripts/handover/console-kit/test-leg-pretrust.sh - suite for leg-pretrust.sh
 # (HIMMEL-5056): the launcher's folder/hooks-trust pre-accept.
 #
@@ -158,6 +158,32 @@ check "8e existing mode 0644 kept" "$(stat -c %a "$cfg" 2>/dev/null || stat -f %
 rm -f "$cfg"
 bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1
 check "8f new file is 0600" "$(stat -c %a "$cfg" 2>/dev/null || stat -f %Lp "$cfg")" "600"
+
+# 9. (HIMMEL-5068, pilot p20) a jailed row: claude sees the worktree at another path
+# and a per-row copy of the lane config, so the flag goes to THAT file under THAT key.
+rm -f "$cfg" "$LEG_PRETRUST_HOME/.claude-deepseek/.claude.json"
+mkdir -p "$LEG_PRETRUST_HOME/.claude-deepseek" "$tmp/rowconf"
+printf '%s' '{"projects":{"/repo":{"hasTrustDialogAccepted":true}}}' > "$tmp/rowconf/.claude.json"
+mkdir -p "$LEG_PRETRUST_HOME/.himmel/eval/lane-quality/pilot/wt/lq-p20"
+jkey="/jail/repo/.claude/worktrees/lq-p20"
+rc=0; LEG_PRETRUST_CONFIG="$tmp/rowconf/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$LEG_PRETRUST_HOME/.himmel/eval/lane-quality/pilot/wt/lq-p20" >/dev/null 2>&1 || rc=$?
+check "9a jail key + row config: exit 0" "$rc" "0"
+check "9b jail key trusted in the row config" "$(trusted "$tmp/rowconf/.claude.json" "$jkey")" "true"
+check "9c row config keeps its other project" "$(trusted "$tmp/rowconf/.claude.json" "/repo")" "true"
+check "9d real lane config not created" "$([ -e "$LEG_PRETRUST_HOME/.claude-deepseek/.claude.json" ] && echo yes || echo no)" "no"
+for badkey in "relative/lq-p20" "/jail/other-name" "/jail/../x/lq-p20"; do
+  rc=0; LEG_PRETRUST_CONFIG="$tmp/rowconf/.claude.json" LEG_PRETRUST_KEY="$badkey" bash "$SCRIPT" deepseek "$LEG_PRETRUST_HOME/.himmel/eval/lane-quality/pilot/wt/lq-p20" >/dev/null 2>&1 || rc=$?
+  check "9e bad key $badkey: exit 3" "$rc" "3"
+done
+rc=0; LEG_PRETRUST_CONFIG="relative.json" bash "$SCRIPT" deepseek "$LEG_PRETRUST_HOME/.himmel/eval/lane-quality/pilot/wt/lq-p20" >/dev/null 2>&1 || rc=$?
+check "9f relative config path: exit 2" "$rc" "2"
+rc=0; LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek /tmp >/dev/null 2>&1 || rc=$?
+check "9g key override does not widen the dir check: exit 3" "$rc" "3"
+
+# 10. the pilot jail launcher seeds exactly its own jail key into exactly its row config.
+sb="$HERE/../../eval/lane-quality/pilot-4869/sandbox.sh"
+check "10a sandbox.sh launch seeds \$JWT into \$ROWCONF" "$(grep -c 'LEG_PRETRUST_CONFIG="$ROWCONF/.claude.json" LEG_PRETRUST_KEY="$JWT"' "$sb")" "1"
+check "10b only one pretrust call in sandbox.sh" "$(grep -c 'leg-pretrust.sh' "$sb")" "1"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASS - test-leg-pretrust.sh"; exit 0; fi
