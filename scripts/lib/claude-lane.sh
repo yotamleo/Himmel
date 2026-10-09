@@ -42,7 +42,7 @@ _CLAUDE_LANE_DIR="${BASH_SOURCE[0]%/*}"
 # scripts/hermes/egress-gate.sh); claude-openrouter still refuses it as unknown.
 claude_lane_egress() {
   local dir="${1:?claude_lane_egress: reviewed repo required}" lane="${HIMMEL_CLAUDE_LANE:-native}"
-  local prov corpus="" d prev list line v lroot="" hroot out verdict
+  local prov corpus="" d prev list line v lroot="" hroot hd out verdict
   case "$lane" in
     native) return 0 ;;
     openrouter) prov=openrouter ;;
@@ -81,7 +81,13 @@ claude_lane_egress() {
         "$lroot/"*) corpus=luna-personal ;;
       esac
     fi
-    hroot="$(cd -P "${HANDOVER_DIR:-/nonexistent}" 2>/dev/null && pwd -P)" || hroot=""
+    # HIMMEL-4420: handover_root reads only the live env, so a .env-only HANDOVER_DIR
+    # is loaded from himmel's own primary checkout (cwd = this lib, never the reviewed repo).
+    hd="${HANDOVER_DIR:-}"
+    if [ -z "$hd" ] && [ -f "$_CLAUDE_LANE_DIR/load-dotenv.sh" ]; then
+      hd="$(cd "$_CLAUDE_LANE_DIR" && . ./load-dotenv.sh && load_dotenv HANDOVER_DIR >/dev/null 2>&1; printf '%s' "${HANDOVER_DIR:-}")"
+    fi
+    hroot="$(cd -P "${hd:-/nonexistent}" 2>/dev/null && pwd -P)" || hroot=""
     if [ -n "$hroot" ] && [ "${corpus#luna-}" = "$corpus" ]; then
       case "$dir/" in "$hroot/"*) corpus=handover-state ;; esac
     fi

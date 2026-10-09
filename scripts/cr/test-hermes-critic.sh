@@ -320,7 +320,7 @@ HIMMEL_CLAUDE_LANE=openrouter LANE_CAPTURE="$work/lane-seen" CLAUDE_ARGV_CAPTURE
     || fail "clean repo under openrouter: critic run failed: $(head -c 400 "$work/lane-err")"
 grep -qx "cwd=$(cd -P "$repo" && pwd -P)" "$work/lane-seen" || fail "clean repo under openrouter: launcher did not get CLAUDE_OPENROUTER_CWD=<reviewed repo>: $(cat "$work/lane-seen")"
 : > "$work/claude-argv"
-HIMMEL_CLAUDE_LANE=bogusCLAUDE_ARGV_CAPTURE="$work/claude-argv" PATH="$bindir:$PATH" \
+HIMMEL_CLAUDE_LANE=bogus CLAUDE_ARGV_CAPTURE="$work/claude-argv" PATH="$bindir:$PATH" \
     bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route claude >/dev/null 2>"$work/err8c"
 rc=$?
 [ "$rc" -ne 0 ] || fail "unknown lane: expected a refusal, got rc=0"
