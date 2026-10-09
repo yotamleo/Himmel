@@ -91,7 +91,40 @@ check "empty ledger exits 0" "$?" "0"
 json="$(grep -m1 '^{' "$tmp/e.out")"
 check "empty ledger is JSON with zero branches" "$(q branches)" "0"
 CR_LEDGER="$tmp/missing.jsonl" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" > "$tmp/m.out" 2>&1
-check "missing ledger exits 0" "$?" "0"
+check "missing ledger exits 2" "$?" "2"
+check "missing ledger names the path" "$(grep -c "$tmp/missing.jsonl" "$tmp/m.out")" "1"
+check "missing ledger prints no JSON" "$(grep -c '^{' "$tmp/m.out")" "0"
+
+# no CR_LEDGER and not inside a git repo: no ledger to read, not a zero report
+( cd "$tmp" && env -u CR_LEDGER GIT_CEILING_DIRECTORIES="$tmp/.." bash "$CM" --known "$K" ) > "$tmp/nr.out" 2>&1
+check "outside a repo exits 2" "$?" "2"
+
+# a non-empty ledger with no usable record is an error, not a zero report
+printf 'garbage\n{not json\nnull\n' > "$tmp/allbad.jsonl"
+CR_LEDGER="$tmp/allbad.jsonl" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" > "$tmp/ab.out" 2>&1
+check "all-malformed ledger exits 2" "$?" "2"
+check "all-malformed prints no JSON" "$(grep -c '^{' "$tmp/ab.out")" "0"
+
+# some malformed lines: reported in the JSON and on stderr, still exit 0
+printf 'garbage\n' > "$tmp/mixed.jsonl"; cat "$L" >> "$tmp/mixed.jsonl"
+CR_LEDGER="$tmp/mixed.jsonl" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" > "$tmp/mx.out" 2> "$tmp/mx.err"
+check "mixed ledger exits 0" "$?" "0"
+json="$(grep -m1 '^{' "$tmp/mx.out")"
+check "skipped lines counted in JSON" "$(q ledger_lines_skipped)" "1"
+check "skipped lines noted on stderr" "$(grep -c 'skipped 1 of' "$tmp/mx.err")" "1"
+
+# an explicit --known that is missing or unparsable fails; the default stays tolerant
+CR_LEDGER="$L" bash "$CM" --now 2026-10-09T00:00:00Z --known "$tmp/nope.json" > "$tmp/k1.out" 2>&1
+check "missing --known exits 2" "$?" "2"
+printf '{oops' > "$tmp/badknown.json"
+CR_LEDGER="$L" bash "$CM" --now 2026-10-09T00:00:00Z --known "$tmp/badknown.json" > "$tmp/k2.out" 2>&1
+check "unparsable --known exits 2" "$?" "2"
+
+# a missing --groups file is a clean message, not a stack trace
+CR_LEDGER="$L" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" --groups "$tmp/nogroups.tsv" > "$tmp/g.out" 2>&1
+check "missing --groups exits 2" "$?" "2"
+check "missing --groups has no stack trace" "$(grep -c ' at ' "$tmp/g.out")" "0"
+check "missing --groups names the file" "$(grep -c 'nogroups.tsv' "$tmp/g.out")" "1"
 
 # an amend after --now is not applied: the disproved verdict lands at 10-01T00:05
 json="$(CR_LEDGER="$L" bash "$CM" --now 2026-10-01T00:03:00Z --known "$K" | grep -m1 '^{')"

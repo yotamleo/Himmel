@@ -27,21 +27,28 @@ DAYS=30
 NOW=""
 KNOWN="$_ah_d/known-findings.json"
 GROUPS_FILE=""
+KNOWN_EXPLICIT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --days) [ $# -ge 2 ] || { echo "cr-round-metrics.sh: --days requires an argument" >&2; exit 2; }; DAYS="$2"; shift 2;;
     --now) [ $# -ge 2 ] || { echo "cr-round-metrics.sh: --now requires an argument" >&2; exit 2; }; NOW="$2"; shift 2;;
     --groups) [ $# -ge 2 ] || { echo "cr-round-metrics.sh: --groups requires an argument" >&2; exit 2; }; GROUPS_FILE="$2"; shift 2;;
-    --known) [ $# -ge 2 ] || { echo "cr-round-metrics.sh: --known requires an argument" >&2; exit 2; }; KNOWN="$2"; shift 2;;
+    --known) [ $# -ge 2 ] || { echo "cr-round-metrics.sh: --known requires an argument" >&2; exit 2; }; KNOWN="$2"; KNOWN_EXPLICIT=1; shift 2;;
     *) echo "cr-round-metrics.sh: unknown option $1" >&2; exit 2;;
   esac
 done
 case "$DAYS" in ''|*[!0-9]*) echo "cr-round-metrics.sh: --days must be a number" >&2; exit 2;; esac
 
-ledger="${CR_LEDGER:-$(git rev-parse --git-common-dir 2>/dev/null)/cr-critic-scores.jsonl}"
+if [ -n "${CR_LEDGER:-}" ]; then
+  ledger="$CR_LEDGER"
+elif gcd="$(git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$gcd" ]; then
+  ledger="$gcd/cr-critic-scores.jsonl"
+else
+  echo "cr-round-metrics.sh: not inside a git repo and CR_LEDGER is unset - no ledger to read" >&2; exit 2
+fi
 
 # shellcheck disable=SC2016  # $-refs below are inside the single-quoted node script (JS), not shell
-LEDGER="$ledger" DAYS="$DAYS" NOW="$NOW" KNOWN="$KNOWN" GROUPS_FILE="$GROUPS_FILE" node -e '
+LEDGER="$ledger" DAYS="$DAYS" NOW="$NOW" KNOWN="$KNOWN" KNOWN_EXPLICIT="$KNOWN_EXPLICIT" GROUPS_FILE="$GROUPS_FILE" node -e '
 const fs = require("fs");
 const e = process.env;
 const now = e.NOW ? Date.parse(e.NOW) : Date.now();
@@ -49,14 +56,22 @@ if (!Number.isFinite(now)) { console.error("cr-round-metrics.sh: --now is not a 
 const since = now - Number(e.DAYS) * 86400000;
 if (!Number.isFinite(since) || Number.isNaN(new Date(since).getTime())) { console.error("cr-round-metrics.sh: --days is out of range"); process.exit(2); }
 
-// A missing or empty ledger is a valid zero-result report (same JSON shape); other read errors are not.
+// An empty ledger is a valid zero-result report; a missing or unreadable one is an error, never a zero.
 let raw = "";
 try { raw = fs.readFileSync(e.LEDGER, "utf8"); } catch (err) {
-  if (!err || err.code !== "ENOENT") { console.error("cr-round-metrics.sh: cannot read ledger: " + (err && err.code)); process.exit(2); }
+  console.error("cr-round-metrics.sh: cannot read ledger " + e.LEDGER + ": " + (err && err.code));
+  process.exit(2);
 }
 const records = [];
-for (const l of raw.split("\n").filter(Boolean)) {
-  try { const r = JSON.parse(l); if (r && typeof r === "object") records.push(r); } catch (_) { /* skip malformed */ }
+let skippedLines = 0;
+const lines = raw.split("\n").filter(Boolean);
+for (const l of lines) {
+  try { const r = JSON.parse(l); if (r && typeof r === "object") records.push(r); else skippedLines++; } catch (_) { skippedLines++; }
+}
+if (skippedLines > 0) console.error("cr-round-metrics.sh: skipped " + skippedLines + " of " + lines.length + " ledger lines (not JSON objects)");
+if (lines.length > 0 && records.length === 0) {
+  console.error("cr-round-metrics.sh: ledger " + e.LEDGER + " has " + lines.length + " lines and none is a record - refusing to report zero");
+  process.exit(2);
 }
 
 // Keyword classes, first match wins. Order puts the specific shapes before the broad ones.
@@ -76,6 +91,7 @@ function classify(text) {
   return "other";
 }
 
+// The default known-findings file may be absent (matched stays 0); an explicit --known must load.
 let knownRes = [];
 try {
   const k = JSON.parse(fs.readFileSync(e.KNOWN, "utf8"));
@@ -83,7 +99,9 @@ try {
     if (!c.learning_match) continue;
     try { knownRes.push(new RegExp(c.learning_match, "i")); } catch (_) { /* skip a bad pattern */ }
   }
-} catch (_) { /* no known-findings file: matched stays 0 */ }
+} catch (err) {
+  if (e.KNOWN_EXPLICIT) { console.error("cr-round-metrics.sh: cannot load --known " + e.KNOWN + ": " + (err && err.code || "unparsable")); process.exit(2); }
+}
 
 // Amend-merged verdicts, same keying as cr-scores.sh.
 const SEP = String.fromCharCode(31);
@@ -166,7 +184,12 @@ const top = Object.keys(classStats).filter(c => c !== "other").map(c => ({
 let groups;
 if (e.GROUPS_FILE) {
   const map = new Map();
-  for (const l of fs.readFileSync(e.GROUPS_FILE, "utf8").split("\n")) {
+  let gtxt;
+  try { gtxt = fs.readFileSync(e.GROUPS_FILE, "utf8"); } catch (err) {
+    console.error("cr-round-metrics.sh: cannot read --groups " + e.GROUPS_FILE + ": " + (err && err.code));
+    process.exit(2);
+  }
+  for (const l of gtxt.split("\n")) {
     const i = l.indexOf("\t");
     if (i > 0) map.set(l.slice(0, i).trim(), l.slice(i + 1).trim());
   }
@@ -187,6 +210,7 @@ if (e.GROUPS_FILE) {
 
 const out = {
   window_days: Number(e.DAYS),
+  ledger_lines_skipped: skippedLines,
   since: new Date(since).toISOString(),
   branches: inWindow.length,
   rounds: { p50: pctile(0.5), p90: pctile(0.9), max: vals.length ? vals[vals.length - 1] : 0},
