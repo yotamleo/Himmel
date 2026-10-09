@@ -115,12 +115,15 @@ done
 echo "hb=$((NOW - 5)) pid=2 key=k tick=ok state=waiting" > "$BRIDGE_ROOT/consoles/live-console.md.wait"
 echo "hb=$((NOW + 100000)) pid=3 key=k tick=ok state=waiting" > "$BRIDGE_ROOT/consoles/future.md.wait" # clock rollback: never live
 echo "hb=0$((NOW - 5)) pid=4 key=k tick=ok state=waiting" > "$BRIDGE_ROOT/consoles/zero-pad.md.wait" # leading zero: decimal, not octal
+i=0; while [ "$i" -lt 9 ]; do # 11 live in all: the display cap (8) must bite
+    echo "hb=$((NOW - 3)) pid=5 key=k tick=ok state=sampling" > "$BRIDGE_ROOT/consoles/live-extra-$i.md.wait"; i=$((i + 1))
+done
 printf '%s\n' '#!/usr/bin/env bash' "printf '11\\tnamed-console\\topus\\t200000\\n12\\t\\t\\t\\n'" > "$PRIMARY/scripts/telegram/console-census.sh"
 out=$(bg station-status - -); rc=$?
 assert_rc "S7 station-status with 51 waiter files succeeds" 0 "$rc"
-n=$(printf '%s\n' "$out" | grep -c '^waiter '); [ "$n" = 2 ] && echo "PASS S8 exactly the two live waiter lines" || { echo "FAIL S8 waiter lines: $n"; FAILED=$((FAILED + 1)); }
+n=$(printf '%s\n' "$out" | grep -c '^waiter '); [ "$n" = 8 ] && echo "PASS S8 live waiter lines capped at 8" || { echo "FAIL S8 waiter lines: $n"; FAILED=$((FAILED + 1)); }
 assert_contains "S9 the live waiter is listed" "waiter live-console:" "$out"
-assert_contains "S10 one summary line" "waiters: 2 live, 51 stale (oldest " "$out"
+assert_contains "S10 one summary line" "waiters: 11 live, 51 stale (oldest " "$out"
 assert_contains "S11 the primary line is present" "primary main" "$out"
 lines=$(printf '%s\n' "$out" | wc -l); [ "$lines" -lt 40 ] && echo "PASS S12 reply bounded ($lines lines)" || { echo "FAIL S12 $lines lines"; FAILED=$((FAILED + 1)); }
 first_primary=$(printf '%s\n' "$out" | grep -n '^primary ' | cut -d: -f1); first_waiter=$(printf '%s\n' "$out" | grep -n '^waiter' | head -1 | cut -d: -f1)
