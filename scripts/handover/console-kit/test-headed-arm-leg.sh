@@ -150,7 +150,10 @@ export HIMMELCTL_CACHE_DIR="$tmp/pinned-himmelctl-cache"
 # HIMMEL-3724: the re-dispatch refusal reads page/ack records from this dir;
 # pinned so no ambient ~/.himmel/state record can refuse (or pass) a case here.
 export HIMMEL_DENIAL_ACK_DIR="$tmp/pinned-denial-acks"
-mkdir -p "$HANDOVER_DIR" "$HIMMEL_FLEET_SLOTS" "$XDG_RUNTIME_DIR"
+# HIMMEL-5056: a real launch pre-trusts its cwd in the lane config under this home;
+# pinned so no case here writes the operator's real ~/.claude.json.
+export LEG_PRETRUST_HOME="$tmp/pinned-pretrust-home"
+mkdir -p "$HANDOVER_DIR" "$HIMMEL_FLEET_SLOTS" "$XDG_RUNTIME_DIR" "$LEG_PRETRUST_HOME"
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
@@ -3996,6 +3999,34 @@ some_doc="$mode43" run_leg "$d43m" "$tmp/repo43" "HIMMEL-43-mode" "claude-sonnet
 wait_record "$d43m" || true
 check "43k0 the mode-doc launch recorded an id" "$(grep -c '^session_ids:' "$mode43")" "1"
 check "43k the rewrite keeps the doc's mode" "$(stat -c %a "$mode43")" "600"
+
+# --- 44. HIMMEL-5056: a real launch pre-accepts folder/hooks trust ------------
+# The cwd of a console-created worktree is trusted before konsole starts, on the
+# lane's own config; a cwd outside the allowlist is left alone and still launches.
+pt_home="$tmp/pt-home"; pt_primary="$tmp/pt-primary"
+mkdir -p "$pt_home"
+git init -q "$pt_primary"
+git -C "$pt_primary" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+mkdir -p "$pt_primary/.claude/worktrees"
+git -C "$pt_primary" worktree add -q -b pt-wt "$pt_primary/.claude/worktrees/pt-wt"
+pt_key() { jq -r --arg k "$2" '.projects[$k].hasTrustDialogAccepted // "absent"' "$1" 2>/dev/null || echo "nofile"; }
+d44="$tmp/c44"; mk_launch_stubs "$d44" "HIMMEL-44-pretrust"
+check "44a before launch: no trust entry" "$(pt_key "$pt_home/.claude.json" "$pt_primary/.claude/worktrees/pt-wt")" "nofile"
+rc=0
+LEG_PRETRUST_HOME="$pt_home" RUN_LEG_ARGS=--no-profile run_leg "$d44" "$pt_primary/.claude/worktrees/pt-wt" "HIMMEL-44-pretrust" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d44" || true
+check "44b worktree launch: exit 0" "$rc" "0"
+check "44c worktree launch: trust accepted after" "$(pt_key "$pt_home/.claude.json" "$pt_primary/.claude/worktrees/pt-wt")" "true"
+d44b="$tmp/c44b"; mk_launch_stubs "$d44b" "HIMMEL-44-nopretrust"; mkdir -p "$tmp/repo44b"
+rc=0
+LEG_PRETRUST_HOME="$pt_home" RUN_LEG_ARGS=--no-profile run_leg "$d44b" "$tmp/repo44b" "HIMMEL-44-nopretrust" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d44b" || true
+check "44d out-of-allowlist cwd: launch still exits 0" "$rc" "0"
+check "44e out-of-allowlist cwd: not trusted" "$([ "$(pt_key "$pt_home/.claude.json" "$tmp/repo44b")" = true ] && echo trusted || echo untrusted)" "untrusted"
+# --dry-run never writes
+rm -f "$pt_home/.claude.json"
+LEG_PRETRUST_HOME="$pt_home" LEG_REPO="$pt_primary/.claude/worktrees/pt-wt" bash "$SCRIPT" --dry-run --no-profile HIMMEL-44-dry "$some_doc" "$tmp/sig44" "$PAST" "$tmp/log44" claude-sonnet-5 >/dev/null 2>&1 || true
+check "44f --dry-run writes no config" "$([ -e "$pt_home/.claude.json" ] && echo yes || echo no)" "no"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

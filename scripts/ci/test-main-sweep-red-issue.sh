@@ -40,6 +40,8 @@ cat > "$BIN/gh" <<'STUB'
 printf '%s\n' "gh $*" >> "$STUB/gh.log"
 case "$*" in
   "api "*"/jobs"*)          cat "$STUB/jobs.tsv" 2>/dev/null ;;
+  "api "*"/check-runs/"*"/annotations"*)
+    id="${2#*/check-runs/}"; id="${id%%/*}"; cat "$STUB/ann-$id" 2>/dev/null ;;
   "api "*"/compare/"*)      cat "$STUB/range.txt" 2>/dev/null ;;
   "api "*"/workflows/ci.yml/runs"*)
     if [ -e "$STUB/runs.json" ]; then
@@ -205,6 +207,43 @@ if command -v jq >/dev/null 2>&1; then
 else
   ok "SKIP earlier-green case (jq not installed)"
 fi
+
+# 11. An operator cancel of a sweep where no job ran (every job `cancelled`, no
+# timeout note) is not main's health: no issue may be opened, edited or closed.
+newcase cancelled-run
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cancelled https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf 'cancelled%sshell-unit%s11\ncancelled%slint%s12\ncancelled%sdoc-invariants%s13\n' "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+if [ "$rc" -eq 0 ]; then ok "a cancelled run exits 0"; else bad "a cancelled run exits $rc: $out"; fi
+hasnt "issue create" "$log" "a cancelled run with a failed aggregator opens no issue"
+hasnt "issue edit" "$log" "a cancelled run edits no issue"
+hasnt "issue comment" "$log" "a cancelled run comments on no issue"
+hasnt "issue close" "$log" "a cancelled run closes no issue"
+hasnt "issue list" "$log" "a cancelled run does not even look up the issue"
+
+# 12. One red shard plus siblings cancelled by fail-fast: the RUN concludes
+# `failure`, so it must read as red (an issue opens), never as a cancelled no-op.
+newcase failfast-red
+printf 'failure%sshell-unit-shard (ubuntu-latest, 3)\ncancelled%sshell-unit-shard (ubuntu-latest, 4)\ncancelled%sshell-unit-shard (ubuntu-latest, 5)\nfailure%sshell-unit (ubuntu-latest)\n' "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+if [ "$rc" -eq 0 ]; then ok "fail-fast red run exits 0"; else bad "fail-fast red run exits $rc: $out"; fi
+has "gh issue create" "$log" "a failed run with cancelled sibling shards opens the issue"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregator is reported failed"
+hasnt "failed: shell-unit-shard (ubuntu-latest, 4)" "$out" "a cancelled sibling is not reported as the failure"
+
+# 13. GitHub reports the RUN as `cancelled` when one job hits timeout-minutes, even
+# with a failed aggregator beside it: that must open the issue. A cancelled non-shard
+# job whose check-run note says it exceeded the maximum execution time is red too.
+newcase timeout-cancelled-run
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cancelled https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf 'cancelled%sshell-unit-shard (ubuntu-latest, 2)%s21\nfailure%sshell-unit (ubuntu-latest)%s22\ncancelled%slint%s23\ncancelled%sdoc-invariants%s24\n' "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+printf 'The job running on runner X has exceeded the maximum execution time of 25 minutes.\n' > "$STUB/ann-23"
+sweep
+if [ "$rc" -eq 0 ]; then ok "timed-out cancelled run exits 0"; else bad "timed-out cancelled run exits $rc: $out"; fi
+has "gh issue create" "$log" "a cancelled run with a timed-out shard and failed aggregator opens the issue"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the failed aggregator is reported"
+has "failed: lint" "$out" "a timed-out non-shard job is reported failed"
+hasnt "failed: doc-invariants" "$out" "a plain cancelled job (no timeout note) is not reported failed"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
