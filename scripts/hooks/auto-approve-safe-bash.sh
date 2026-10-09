@@ -398,13 +398,16 @@ tokenize_seg_words() {
                 # Keep the established Git-Bash/Windows `find C:\ <expr>`
                 # spelling as a drive-root token; the following space still
                 # delimits the next word instead of being consumed here.
-                case "$nx" in [[:space:]]) word+="$c"; have=1; i=$((i + 1)); continue ;; esac
+                case "$nx" in " "|$'\t'|$'\n'|$'\r') word+="$c"; have=1; i=$((i + 1)); continue ;; esac
                 word+="$c$nx"; have=1; i=$((i + 2)); continue ;;
-            # ponytail: splits on CR where bash does not (safe direction: a
-            # bash word still starts with its first sub-token, so a leading
+            # HIMMEL-5034: split on bash's IFS word separators (space, tab,
+            # newline); FF, VT and U+2028 are word bytes to bash, so a root
+            # walk needs a real separator.
+            # ponytail: also splits on CR where bash does not (safe direction:
+            # a bash word still starts with its first sub-token, so a leading
             # flag stays visible); revisit when any flag check relies on a
             # word's END or suffix rather than its prefix (HIMMEL-3886).
-            [[:space:]])
+            " "|$'\t'|$'\n'|$'\r')
                 if [ "$have" -eq 1 ]; then
                     RB_TOKENS+=("$word"); word=""; have=0
                 fi ;;
@@ -1768,7 +1771,7 @@ case "${FIND_ROOTWALK_OK:-}" in
     1|true|yes|on) ;;  # explicit truthy bypass — skip the deny scan entirely
     *)
         while IFS= read -r seg; do
-            seg="${seg#"${seg%%[![:space:]]*}"}"   # ltrim
+            seg="${seg#"${seg%%[! $'\t']*}"}"   # ltrim space/tab only (HIMMEL-5034)
             [ -z "$seg" ] && continue
             if segment_is_rootwalk_find "$seg"; then
                 emit_deny "a root-anchored find with no -maxdepth walks the WHOLE disk and can outlive its parent for 20+ minutes in headless/cadence sessions, where the fall-through prompt is unattended (HIMMEL-2121). Use the Glob tool, or scope it to a repo-rooted directory: find <dir> ... -maxdepth N. One-run bypass: set FIND_ROOTWALK_OK=1 in the LAUNCHING shell."
@@ -1889,7 +1892,7 @@ ql_unquoted_sep=0
 case "$SCAN_MASK" in *';'*|*'|'*|*'&'*|*$'\n'*) ql_unquoted_sep=1 ;; esac
 ql_segs=0; ql_only=""
 while IFS= read -r seg; do
-    seg="${seg#"${seg%%[![:space:]]*}"}"   # ltrim
+    seg="${seg#"${seg%%[! $'\t']*}"}"   # ltrim space/tab only, same as the root-walk loop (HIMMEL-5034)
     [ -z "$seg" ] && continue
     ql_segs=$((ql_segs + 1)); ql_only="$seg"
 done <<EOF
@@ -1901,7 +1904,7 @@ fi
 
 all_safe=1
 while IFS= read -r seg; do
-    seg="${seg#"${seg%%[![:space:]]*}"}"   # ltrim
+    seg="${seg#"${seg%%[! $'\t']*}"}"   # ltrim space/tab only, same as the root-walk loop (HIMMEL-5034)
     [ -z "$seg" ] && continue
     if ! segment_is_safe "$seg"; then all_safe=0; break; fi
 done <<EOF
