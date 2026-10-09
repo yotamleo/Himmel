@@ -15,7 +15,9 @@ legs.json is a list of objects. Required keys per leg: label (N<k>), keys
 prior, scope, scope_short, commit. Optional: hook (true: the launcher exports
 the hook-integrity bypass, the brief says so; default false), judge (true: the
 console runs an opus judge before GO; default false), extra (appended to the
-RED-first contract line), model (default claude-sonnet-5-5). The brief follows
+RED-first contract line), model (default claude-sonnet-5-5), lane (the manifest
+lane the printed add line passes as --lane; default native, the lane of the
+launchers written here). The brief follows
 the v3 shape of docs/handover/leg-brief-template.md; invariant rules live in the
 leg preface and are not repeated.
 
@@ -59,6 +61,9 @@ def validate(leg, i):
         die('leg %s: branch %r must be type/slug' % (leg['label'], leg['branch']))
     if not re.match(r'^[a-z0-9][a-z0-9-]*$', leg['slug']):
         die('leg %s: slug %r must be kebab-case' % (leg['label'], leg['slug']))
+    lane = leg.get('lane', 'native')
+    if not isinstance(lane, str) or not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', lane):
+        die('leg %s: lane %r must be a lowercase word (native, claudex, ...)' % (leg['label'], leg['lane']))
     if re.search(r'<[^<>\s]+>', leg['prior']) or leg['prior'].strip().lower().rstrip('.') == 'none':
         die('leg %s: prior art must be filled (a bare none or a <placeholder> fails brief-lint)' % leg['label'])
 
@@ -227,7 +232,9 @@ def main():
         print('%s %s %s' % (l['label'], l['nonce'], doc))
     if a.manifest:
         for l in legs:
-            print('bash scripts/handover/console-kit/fleet-manifest.sh add %s %s' % (shlex.quote(a.manifest), shlex.quote(os.path.join(a.bucket, l['stem'] + '.md'))))
+            # HIMMEL-5089: a missing --lane is stored `unknown` and relay-batch refuses it; the
+            # launchers written above are native headed-arm-leg launches unless the leg says otherwise.
+            print('bash scripts/handover/console-kit/fleet-manifest.sh add %s %s --lane %s' % (shlex.quote(a.manifest), shlex.quote(os.path.join(a.bucket, l['stem'] + '.md')), shlex.quote(l.get('lane', 'native'))))
         print('launch with: ' + '; '.join('bash %s/launch-%s.sh' % (a.bucket, l['label']) for l in legs))
 
 

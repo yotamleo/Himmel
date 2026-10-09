@@ -71,6 +71,24 @@ has "the launcher passes the deadline and model" "$l1" "1791475000"
 has "the launcher is syntactically valid bash" "$(bash -n "$BUCKET/launch-N901.sh" 2>&1 && echo ok)" "ok"
 [ -x "$BUCKET/launch-N901.sh" ] && pass "launchers are executable" || fail "launcher not executable"
 has "it prints one manifest add per leg" "$out" "fleet-manifest.sh add $WORK/fleet.json $D2"
+# HIMMEL-5089: the printed add line carries --lane, so the manifest never stores lane unknown.
+has "the add line for a default leg carries --lane native" "$out" "fleet-manifest.sh add $WORK/fleet.json $D1 --lane native"
+has "and so does the second leg's" "$out" "fleet-manifest.sh add $WORK/fleet.json $D2 --lane native"
+# The printed lines, run as printed from the repo root, build a manifest relay-batch resolves.
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+printf '%s\n' "$out" | grep '^bash scripts/handover/console-kit/fleet-manifest.sh add ' > "$WORK/adds.txt"
+while IFS= read -r addline; do (cd "$REPO_ROOT" && eval "$addline" >/dev/null 2>&1); done < "$WORK/adds.txt"
+cp "$WORK/fleet.json" "$WORK/console.fleet.json" 2>/dev/null
+# shellcheck disable=SC2016  # the backticks are literal markers in the Live state
+printf '## Live state\nlegs: `N901:tok1:lock:1` `N902:tok2:lock:2`\n' > "$WORK/console.md"
+cat > "$WORK/census.sh" <<'EOC'
+#!/usr/bin/env bash
+printf '1\tHIMMEL-9001-N901-plain-fix-2026-10-08\tm\t0\n2\tHIMMEL-9002-N902-hook-fix-2026-10-08\tm\t0\n'
+EOC
+rb="$(RELAY_BATCH_CENSUS="$WORK/census.sh" bash "$HERE/relay-batch.sh" "$WORK/console.md" --successor X-console 2>&1)"
+lacks "relay-batch on a gen-briefs-built manifest prints no UNRESOLVED-LANE" "$rb" "UNRESOLVED-LANE"
+has "relays the first leg" "$rb" "SENDMESSAGE to=HIMMEL-9001-N901-plain-fix-2026-10-08"
+has "and relays the second leg" "$rb" "SENDMESSAGE to=HIMMEL-9002-N902-hook-fix-2026-10-08"
 # HIMMEL-5047: the sidecar Telegram /launch-leg checks is written with the launcher.
 side="$(cat "$WORK/fleet.launchers.sha256" 2>/dev/null)"
 # hashlib, not sha256sum: macOS ships shasum only.
@@ -106,6 +124,22 @@ python3 "$SUT" "$WORK/legs.json" --base 4ccb59d --console BZ --bucket "$WORK/b3"
 python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); d=dict(l[0]); d["label"]="N999"; d["keys"]=["HIMMEL-9999"]; l.append(d); json.dump(l,open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/dupbr.json"
 python3 "$SUT" "$WORK/dupbr.json" --base 4ccb59d --console BZ --bucket "$WORK/b4" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/dupbr.err"; rc=$?
 [ "$rc" = 1 ] && grep -q 'duplicate leg branches' "$WORK/dupbr.err" && pass "two legs sharing a branch are refused" || fail "dup branch rc=$rc"
+
+# A per-leg lane key is carried through and validated.
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["lane"]="claudex"; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/lane-ok.json"
+lout="$(python3 "$SUT" "$WORK/lane-ok.json" --base 4ccb59d --console BZ --bucket "$WORK/b5" --repo "$REPO" --handover-root /h --no-worktree --manifest "$WORK/f5.json" 2>&1)"
+has "a leg's lane key is printed as --lane" "$lout" "--lane claudex"
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["lane"]="Bad Lane"; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/lane-bad.json"
+python3 "$SUT" "$WORK/lane-bad.json" --base 4ccb59d --console BZ --bucket "$WORK/b6" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/lane-bad.err"; rc=$?
+[ "$rc" = 1 ] && grep -q 'lane' "$WORK/lane-bad.err" && [ ! -e "$WORK/b6/launch-N901.sh" ] && pass "an invalid lane is refused before anything is written" || fail "bad lane rc=$rc"
+# A non-string lane (a JSON number) is refused too, not a TypeError after the artifacts are written.
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["lane"]=123; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/lane-num.json"
+python3 "$SUT" "$WORK/lane-num.json" --base 4ccb59d --console BZ --bucket "$WORK/b7" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/lane-num.err"; rc=$?
+[ "$rc" = 1 ] && grep -q 'lane' "$WORK/lane-num.err" && [ ! -e "$WORK/b7/launch-N901.sh" ] && pass "a numeric lane is refused before anything is written" || fail "numeric lane rc=$rc"
+# A trailing newline is not a lowercase word: the whole value must match.
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["lane"]="native\n"; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/lane-nl.json"
+python3 "$SUT" "$WORK/lane-nl.json" --base 4ccb59d --console BZ --bucket "$WORK/b8" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/lane-nl.err"; rc=$?
+[ "$rc" = 1 ] && grep -q 'lane' "$WORK/lane-nl.err" && [ ! -e "$WORK/b8/launch-N901.sh" ] && pass "a lane with a trailing newline is refused" || fail "newline lane rc=$rc"
 
 python3 "$SUT" >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && pass "no arguments is a usage error (rc 2)" || fail "usage rc=$rc"
