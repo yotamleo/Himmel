@@ -240,7 +240,7 @@ steal_stale_reclaim_lock() {
     # the rename; restore only into an empty slot (mv onto an existing dir
     # would nest), and the check-then-mv gap stays open — a second steal
     # racing a third reclaimer inside that gap loses one marker, upgrade path
-    # is a flock-style owner file once a portable one exists (HIMMEL-2196).
+    # is a flock-style owner file once a portable one exists (HIMMEL-5107).
     if [ -e "$RECLAIM_LOCK" ]; then
       rm -rf "$moved" 2>/dev/null || true
     else
