@@ -56,6 +56,13 @@
 # $1, enforced here; the launcher also reserves each call's budget in its ledger).
 # The native bank is read for the record but never gates an api run. --dry-run
 # checks all of that and prints the plan and the command, spending nothing.
+# Known limits (HIMMEL-5069), accepted and documented:
+#  R1 the $1 cap is per sweep; the ledger's cap_usd for the account is the bound across sweeps.
+#  R2 --max-budget-usd is checked between turns, so one call can overshoot by up to one turn.
+#  R5 a model name containing [ is refused by the launcher (fails closed); use the plain id.
+# On the api lane LQ_LANE_BIN is ignored (the launcher is always the repo's), and acceptance
+# runs with the API key and lane selectors removed from its environment.
+# The scrub in the launcher is the bwrap sandbox: where bwrap cannot mount (HIMMEL-5073), the agent has no Bash.
 #
 # Output: <out>/runs.jsonl (one JSON row per task) plus per-task logs, under
 # ~/.himmel/eval/lane-quality/<run-id>/ by default.
@@ -283,7 +290,8 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
   tr=""
   [ -n "$sid" ] && tr="$(find "$TRANSCRIPTS" -name "$sid.jsonl" -print 2>/dev/null | head -1)"
   metrics="$(transcript_metrics "$tr" "$OUT/$stem.report.md")"
-  timeout "$TIMEOUT" bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$stem.accept.log" 2>&1; acc_rc=$?
+  # HIMMEL-5069 R3: acceptance runs agent-written code, so the API key and lane selectors are removed first.
+  timeout "$TIMEOUT" bash "$HERE/../../api-lane/strip-env.sh" -- bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$stem.accept.log" 2>&1; acc_rc=$?
   acc_line="$(grep -E '^accept: [0-9]+/[0-9]+$' "$OUT/$stem.accept.log" | tail -1)"
   # Staged against the fixture commit, so a file the agent committed counts too.
   git -C "$wt" add -A
@@ -447,7 +455,8 @@ cmd_run() {
     echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
   fi
   if [ "$LANE" = api ]; then
-    AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/api-lane/claude-api.sh}"
+    # HIMMEL-5069 R4: LQ_LANE_BIN is ignored here, so no env can route the key past the launcher's gates.
+    AGENT_BIN="$REPO/scripts/api-lane/claude-api.sh"
   fi
   if [ "$LANE" = claudex ]; then
     # The claudex launcher wraps claude, so -p and --output-format json work

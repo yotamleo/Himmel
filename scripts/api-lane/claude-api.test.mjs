@@ -89,6 +89,14 @@ test('funded API account proceeds while the native bank is exhausted; child sees
   assert.equal(row.spent_est_usd, '0.012345');
 });
 
+test('HIMMEL-5073: the scrub forces default permission mode, so the launcher declares the tools the fixtures need', () => {
+  const f = fixture();
+  assert.equal(f.run().status, 0);
+  const seen = readFileSync(f.paths.env, 'utf8');
+  assert.match(seen, /--allowedTools Read,Edit,Write,Glob,Grep,Bash/);
+  assert.match(seen, /--permission-mode plan/);
+});
+
 test('source metadata is preserved in the secret-free launch record', () => {
   const f = fixture();
   assert.equal(f.run().status, 0);

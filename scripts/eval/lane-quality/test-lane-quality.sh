@@ -68,6 +68,8 @@ case "$prompt" in
   *sweep/a.sh*) t=class-sweep ;; *CHANGELOG*) t=guard-cmd ;; *) t=finding-verify ;;
 esac
 bash "$LQ_FAKE_RUN" materialize "$t" "$PWD" --reference >/dev/null
+# HIMMEL-5069 R3: the candidate script dumps its env when acceptance runs it.
+[ -z "${LQ_FAKE_ACCEPTENV:-}" ] || sed -i "1a env >\"$LQ_FAKE_ACCEPTENV\"" lq-work/cleanup-old.sh
 # Misbehaviour knobs: a candidate that hangs, a commit outside lq-work/, and a
 # bank that runs dry during the agent call.
 [ -z "${LQ_FAKE_HANG:-}" ] || printf '#!/usr/bin/env bash\nsleep 10\n' >lq-work/semver-cmp.sh
@@ -163,18 +165,21 @@ check "new tasks pass acceptance end to end" '[ "$(jq -s "map(.accept_ok) | all"
 
 # HIMMEL-4986: --lane api routes the agent through scripts/api-lane/claude-api.sh with a
 # hard $1 cap in code, no judge, and no subscription OAuth token in the launcher's env.
-cat >"$TMP/bin/claude-api" <<'FAKE'
+# HIMMEL-5069 R4: the api lane takes its launcher from the repo tree only (LQ_LANE_BIN is ignored),
+# so the fake launcher stands at the path run.sh derives from LQ_REPO.
+mkdir -p "$TMP/repo/scripts/api-lane"
+cat >"$TMP/repo/scripts/api-lane/claude-api.sh" <<'FAKE'
 #!/usr/bin/env bash
 { echo "key=${ANTHROPIC_API_KEY:-}"; echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-}"; echo "job=${HIMMEL_API_JOB_ID:-}"; echo "args=$*"; } >>"$LQ_FAKE_APIENV"
 [ -z "${LQ_FAKE_API_REFUSE:-}" ] || { echo "claude-api: refused: fake refusal" >&2; exit 2; }
 exec "$LQ_CLAUDE_BIN" "$@"
 FAKE
-chmod +x "$TMP/bin/claude-api"
+chmod +x "$TMP/repo/scripts/api-lane/claude-api.sh"
 APIENV="$TMP/api.env"; : >"$TMP/fake.log"
 api_run() { # api_run <out> <args...>: the lane env the operator would set, plus a poisoned OAuth token
   local out="$1"; shift
   HIMMEL_API_LANE=on HIMMEL_API_ACCOUNT=B HIMMEL_API_KEY_ID=key-b ANTHROPIC_API_KEY=sk-ant-dummy-0000 \
-    CLAUDE_CODE_OAUTH_TOKEN=oauth-dummy LQ_LANE_BIN="$TMP/bin/claude-api" LQ_FAKE_APIENV="$APIENV" \
+    CLAUDE_CODE_OAUTH_TOKEN=oauth-dummy LQ_FAKE_APIENV="$APIENV" \
     bash "$RUN" run --lane api --model claude-sonnet-5-5 --out "$out" "$@"
 }
 api_run "$TMP/out-api0" --no-judge --max-usd 1.5 >"$TMP/api0.log" 2>&1
@@ -205,6 +210,17 @@ rm -f "$APIENV"
 LQ_FAKE_API_REFUSE=1 api_run "$TMP/out-api6" --no-judge --tasks cr-fix,class-sweep >"$TMP/api6.log" 2>&1
 rc=$?
 check "a launcher refusal is recorded as an error and stops the sweep" '[ "$(wc -l <"$TMP/out-api6/runs.jsonl" | tr -d " ")" = 1 ] && [ "$(jq -s ".[0].is_error" "$TMP/out-api6/runs.jsonl")" = true ] && grep -q "unknown" "$TMP/api6.log"'
+
+# HIMMEL-5069 R3: acceptance runs agent-written code; the API key must not be in its environment.
+ACCENV="$TMP/accept.env"; rm -f "$ACCENV" "$APIENV"
+LQ_FAKE_ACCEPTENV="$ACCENV" api_run "$TMP/out-api7" --no-judge --tasks cr-fix >"$TMP/api7.log" 2>&1
+check "acceptance code ran (the env dump exists)" '[ -s "$ACCENV" ]'
+check "acceptance runs without ANTHROPIC_API_KEY and the lane selectors" '[ -s "$ACCENV" ] && ! grep -q "^ANTHROPIC_API_KEY=" "$ACCENV" && ! grep -q "^HIMMEL_API_" "$ACCENV"'
+# HIMMEL-5069 R4: LQ_LANE_BIN must not replace the launcher on the api lane.
+printf '#!/usr/bin/env bash\ntouch "%s/poison.ran"\nexit 0\n' "$TMP" >"$TMP/bin/poison"; chmod +x "$TMP/bin/poison"
+rm -f "$APIENV" "$TMP/poison.ran"
+LQ_LANE_BIN="$TMP/bin/poison" api_run "$TMP/out-api8" --no-judge --tasks cr-fix >"$TMP/api8.log" 2>&1
+check "LQ_LANE_BIN does not replace the api launcher" '[ ! -e "$TMP/poison.ran" ] && [ -s "$APIENV" ]'
 
 # HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
 printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"

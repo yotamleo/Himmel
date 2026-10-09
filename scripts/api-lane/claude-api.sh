@@ -84,6 +84,11 @@ BANK_VERDICT="$(env -u CLAUDE_CODE_OAUTH_TOKEN CADENCE_BANK_LANE=api CADENCE_BAN
   bash "$REPO/scripts/lib/bank-preflight.sh")" || BANK_VERDICT=BANK-UNKNOWN
 [ "$BANK_VERDICT" = "PROCEED" ] || refuse "api bank gate said $BANK_VERDICT"
 
+# HIMMEL-5073: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 (what keeps the key out of Bash-tool children) forces
+# permission mode "default", which in -p denies Edit/Write/Bash unless declared here. The scrub is the bwrap
+# sandbox, so it cannot be dropped; this allowance is the fixture-work tool set, and the sandbox bounds Bash.
+ALLOWED_TOOLS="Read,Edit,Write,Glob,Grep,Bash"
+
 OUT="$(mktemp "${TMPDIR:-/tmp}/claude-api-out.XXXXXX")" || refuse "no scratch file"
 trap 'rm -f "$OUT"' EXIT
 
@@ -98,7 +103,7 @@ env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_PROFILE -u ANTHROPIC_FEDERATION_RULE
   -u ANTHROPIC_ORGANIZATION_ID -u ANTHROPIC_AUTH_TOKEN -u HIMMEL_API_LANE -u HIMMEL_API_KEY_ID \
   ANTHROPIC_BASE_URL=https://api.anthropic.com CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1 \
   "$CLAUDE_BIN" "${ARGS[@]}" --model "$MODEL" --permission-mode "$MODE" \
-  --max-budget-usd "$BUDGET" --output-format json >"$OUT"
+  --allowedTools "$ALLOWED_TOOLS" --max-budget-usd "$BUDGET" --output-format json >"$OUT"
 RC=$?
 
 # --- settle on verified cost, otherwise keep the reservation as unknown ---
