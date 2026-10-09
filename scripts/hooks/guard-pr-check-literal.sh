@@ -872,8 +872,14 @@ git_mentions_only() { # git_mentions_only <command-word index>
             -O* | -[!-]*O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
             -c* | --config*)
                 # Match the config KEY (git folds its case), never the value.
-                case "$w" in -c) xk=${ST_W[j + 1]:-} ;; -c*) xk=${w#-c} ;; *) xk=$w ;; esac
-                xk=$(printf '%s' "${xk%%=*}" | tr '[:upper:]' '[:lower:]')
+                # --config-env=KEY=ENVVAR and `--config-env KEY=ENVVAR` carry the key too.
+                case "$w" in
+                    -c | --config-env) xk=${ST_W[j + 1]:-}; xk=${xk%%=*} ;;
+                    --config-env=*) xk=${w#--config-env=}; xk=${xk%%=*} ;;
+                    -c*) xk=${w#-c}; xk=${xk%%=*} ;;
+                    *) xk=$w ;;
+                esac
+                xk=$(printf '%s' "$xk" | tr '[:upper:]' '[:lower:]')
                 case "$xk" in
                     *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshcommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
                 esac ;;

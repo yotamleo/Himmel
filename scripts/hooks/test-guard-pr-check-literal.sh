@@ -1657,7 +1657,10 @@ for v in \
     'git log --output=out.txt' \
     'git log --output=out.txt -- scripts/cr/' \
     "git -c diff.x.command=bash diff" \
-    'git -c core.PAGER=bash grep -e .'; do
+    'git -c core.PAGER=bash grep -e .' \
+    'git --config-env=alias.x=V x' \
+    'git --config-env alias.x=V x' \
+    'git --config-env=core.pager=V grep -e .'; do
     run "HIMMEL-4958 exec option any pathspec [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 for v in \
