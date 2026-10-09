@@ -47,15 +47,31 @@ contains() { case "$2" in *"$3"*) echo "ok - $1" ;; *) echo "FAIL - $1: output d
 # The repo whose common dir holds the review-round state.
 prim="$tmp/prim"
 git init -q "$prim" || exit 1
-state="$(git -C "$prim" rev-parse --path-format=absolute --git-common-dir)/cr-review-rounds"
+common="$(git -C "$prim" rev-parse --path-format=absolute --git-common-dir)"
+state="$common/cr-review-rounds"
 mkdir -p "$state" || exit 1
 
 # gh stub: prints the JSON in $GH_JSON.
 cat > "$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
-cat "$GH_JSON"
+n=0
+if [ -n "${GH_COUNT:-}" ]; then n="$(cat "$GH_COUNT" 2>/dev/null || echo 0)"; n=$((n+1)); echo "$n" > "$GH_COUNT"; fi
+if [ -n "${GH_JSON2:-}" ] && [ "$n" -ge 2 ]; then cat "$GH_JSON2"; else cat "$GH_JSON"; fi
 EOF
 chmod +x "$tmp/gh"
+# A lock-library wrapper that drops owner.json after a real acquire-wait of the
+# lock named in $OWNERLESS_FLAG, as when the owner.json write failed.
+cat > "$tmp/locklib" <<'EOF'
+#!/usr/bin/env bash
+bash "$REAL_LOCK" "$@"; rc=$?
+if [ "$rc" = 0 ] && [ "$1" = acquire-wait ] && [ -f "${OWNERLESS_FLAG:-/nonexistent}" ] && [ "$3" = "$(cat "$OWNERLESS_FLAG")" ]; then
+    slug="$(printf '%s' "$3" | sed 's/[^a-zA-Z0-9-]/-/g')"
+    rm -f "$COMMON/himmel-cr-review-round/$slug.lock/owner.json"
+fi
+exit "$rc"
+EOF
+chmod +x "$tmp/locklib"
+export REAL_LOCK="$REPO/scripts/lib/shared-branch-lock.sh"
 gh_json() { # <head> [cross] [state]
     printf '{"headRefName":"%s","headRefOid":"%s","isCrossRepository":%s,"state":"%s"}\n' \
         "$BRANCH" "$1" "${2:-false}" "${3:-OPEN}" > "$tmp/pr.json"
@@ -164,6 +180,30 @@ reset_state 3
 rm -f "$state/$BRANCH.head"
 rc=0; out=$(run 2>&1) || rc=$?
 check "missing .head refuses" "$rc" 12
+reset_state 3
+
+# --- 4b. a race and two failures inside the grant ---------------------------
+b3="$(snap_state)"
+printf '{"headRefName":"%s","headRefOid":"%s","isCrossRepository":false,"state":"OPEN"}\n' "$BRANCH" "$SHA_B" > "$tmp/pr2.json"
+rm -f "$tmp/ghc"
+rc=0; out=$(run GH_JSON2="$tmp/pr2.json" GH_COUNT="$tmp/ghc" 2>&1) || rc=$?
+check "head moving between the two reads refuses" "$rc" 15
+check "a moved head changes nothing" "$(snap_state)" "$b3"
+mkdir "$state/grant-round.audit"
+rc=0; out=$(run 2>&1) || rc=$?
+check "audit append failure refuses" "$rc" 5
+check "audit failure leaves the counter at 3" "$(cat "$state/$BRANCH.round")" 3
+check "audit failure consumes no qid" "$([ -e "$state/$BRANCH.verdicts" ] && echo present || echo absent)" absent
+rmdir "$state/grant-round.audit"
+for which in _grant-round-qid-scan "$BRANCH"; do
+    reset_state 3
+    printf '%s\n' "$which" > "$tmp/ownerless.flag"
+    rc=0; out=$(run GRANT_ROUND_LOCK_LIB="$tmp/locklib" OWNERLESS_FLAG="$tmp/ownerless.flag" COMMON="$common" 2>&1) || rc=$?
+    check "owner-less $which lock refuses" "$rc" 5
+    check "owner-less $which refusal leaves no lock behind" "$(ls -d "$common"/himmel-cr-review-round/*.lock 2>/dev/null | wc -l | tr -d ' ')" 0
+    check "owner-less $which refusal changes nothing" "$(snap_state)" "$b3"
+done
+rm -f "$tmp/ownerless.flag"
 reset_state 3
 
 # --- 5. a valid record grants exactly one round ------------------------------

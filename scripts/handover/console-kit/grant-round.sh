@@ -167,7 +167,14 @@ fi
 owner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$branch" 2>/dev/null)"
 case "$owner" in
     '{"pid":'*) ;;
-    *) echo "grant-round: counter lock holder state for $branch is missing or unreadable; refusing" >&2; exit 5 ;;
+    *)
+        # We just acquired it, so a plain release is ours to make: release-if-owner
+        # needs an owner and an owner-less lock is never TTL-reclaimed.
+        (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
+            bash "$LOCK_LIB" release "." "$branch" >/dev/null 2>&1) || true
+        echo "grant-round: counter lock holder state for $branch is missing or unreadable; refusing" >&2
+        exit 5
+        ;;
 esac
 # A qid is consumed across branches, so the consumed-qid scan needs one lock all grants share.
 glock="_grant-round-qid-scan"
@@ -179,6 +186,18 @@ if ! (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round SHARED_BRANC
     exit 5
 fi
 gowner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$glock" 2>/dev/null)"
+case "$gowner" in
+    '{"pid":'*) ;;
+    *)
+        # Same as the branch lock above: release both plainly, never scan unowned.
+        (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
+            bash "$LOCK_LIB" release "." "$glock" >/dev/null 2>&1) || true
+        (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
+            bash "$LOCK_LIB" release-if-owner "." "$branch" "$owner" >/dev/null 2>&1) || true
+        echo "grant-round: qid lock holder state is missing or unreadable; refusing" >&2
+        exit 5
+        ;;
+esac
 release() {
     (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
         bash "$LOCK_LIB" release-if-owner "." "$glock" "$gowner" >/dev/null 2>&1) || true
@@ -225,12 +244,25 @@ if ! { cat "$verd_f" 2>/dev/null || [ ! -e "$verd_f" ]; } > "$tmp_verd" \
     rm -f "$tmp_verd" "$tmp_round" "$pre_verd"
     fail 5 "cannot stage the grant for $branch"
 fi
-# The qid must not stay spent on a round that was never granted.
+# The audit line goes in before either rename: a failed append then changes nothing.
+audit_tail="pr=$PR branch=$branch head=$HEAD_SHA record=$record"
+if ! printf '%s %s round=%s->2 by=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$audit_tail" "$round" \
+        "${CLAUDE_CODE_SESSION_ID:-unknown}" >> "$audit_f"; then
+    rm -f "$tmp_verd" "$tmp_round" "$pre_verd"
+    fail 5 "cannot append the audit line to $audit_f; nothing was granted"
+fi
+# The qid must not stay spent on a round that was never granted; the audit line then says so.
 # A signal after the .round rename must keep the grant: .round was >= 3 under the lock, so 2 means it landed.
-undo() { [ "$(cat "$round_f" 2>/dev/null)" = 2 ] && return 0; if [ -e "$pre_verd" ]; then mv "$pre_verd" "$verd_f"; else rm -f "$verd_f"; fi; rm -f "$tmp_round"; }
+undo() {
+    [ "$(cat "$round_f" 2>/dev/null)" = 2 ] && return 0
+    if [ -e "$pre_verd" ]; then mv "$pre_verd" "$verd_f"; else rm -f "$verd_f"; fi
+    rm -f "$tmp_round"
+    printf '%s ROLLED-BACK %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$audit_tail" >> "$audit_f" 2>/dev/null || true
+}
 trap 'undo; release; exit 5' INT TERM HUP
 if ! mv "$tmp_verd" "$verd_f"; then
-    rm -f "$tmp_verd" "$tmp_round" "$pre_verd"
+    rm -f "$tmp_verd"
+    undo
     fail 5 "cannot record the judge record $record as consumed for $branch"
 fi
 if ! mv "$tmp_round" "$round_f"; then
@@ -239,9 +271,6 @@ if ! mv "$tmp_round" "$round_f"; then
 fi
 trap - INT TERM HUP
 rm -f "$pre_verd"
-printf '%s pr=%s branch=%s head=%s record=%s round=%s->2 by=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    "$PR" "$branch" "$HEAD_SHA" "$record" "$round" "${CLAUDE_CODE_SESSION_ID:-unknown}" >> "$audit_f" \
-    || echo "grant-round: warning - could not append the audit line to $audit_f" >&2
 release
 echo "granted one review round on $branch (PR $PR): round $round -> 2, $record consumed, backup .round.bak-$ts"
 exit 0
