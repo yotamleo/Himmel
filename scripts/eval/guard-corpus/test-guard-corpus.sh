@@ -80,7 +80,7 @@ python3 "$GEN" --seed 1 --seeds-file "$TMP/seeds.txt" -o "$TMP/corpus.jsonl"
 
 # --- 2. planted base-deny/head-allow is flagged -------------------------------
 OUT=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/head-hook.sh" \
-        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC=$?
+        --corpus "$TMP/corpus.jsonl" --jobs 4 --timeout-run 60 2>&1); RC=$?
 has "regression: flagged" "$OUT" "base-deny/head-allow (REGRESSION): "
 hasnt "regression: not zero" "$OUT" "(REGRESSION): 0"
 if [ "$RC" = "1" ]; then pass "regression: exit code 1"
@@ -88,7 +88,7 @@ else fail "regression: expected exit 1, got $RC"; fi
 
 # control: base vs base (identical) => zero regressions, exit 0
 OUT2=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
-        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC2=$?
+        --corpus "$TMP/corpus.jsonl" --jobs 4 --timeout-run 60 2>&1); RC2=$?
 has "regression-control: zero" "$OUT2" "(REGRESSION): 0"
 if [ "$RC2" = "0" ]; then pass "regression-control: exit 0"
 else fail "regression-control: expected exit 0, got $RC2"; fi
@@ -101,7 +101,7 @@ for l in open(sys.argv[1]):
     print(r["eval"], r["status"], m["regressions"] > 0, m["deny_coverage"], r["config"]["hook"])' "$HIMMEL_EVAL_RUNS_LEDGER" 2>&1)
 if [ "$LROWS" = "guard-corpus ok True 1.0 head-hook.sh
 guard-corpus ok False 1.0 base-hook.sh" ]; then pass "ledger: one row per diff"
-else fail "ledger: unexpected rows: $LROWS"; fi
+else fail "ledger: unexpected rows: $LROWS $(printf '%s\n' "$OUT" | grep 'ODD-RC')"; fi
 if python3 "$HERE/../lib/eval_runs.py" validate "$HIMMEL_EVAL_RUNS_LEDGER" >/dev/null 2>&1; then pass "ledger: rows pass validate"
 else fail "ledger: rows fail validate"; fi
 

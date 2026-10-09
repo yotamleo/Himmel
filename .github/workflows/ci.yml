@@ -835,8 +835,9 @@ jobs:
       # No `.list`/`.sources` suffix on the glob: ubuntu-24.04 runner images
       # ship these as deb822 `.sources` files, not legacy one-line `.list`
       # files, and a suffix-anchored glob silently matched nothing.
-      # HIMMEL-4912: install bubblewrap here too so Linux corpus/replay suites
-      # exercise the real containment boundary rather than capability-skip.
+      # HIMMEL-4912: install bubblewrap (and socat, which the live pilot-4869
+      # jail checks drive) here too so Linux corpus/replay suites exercise the
+      # real containment boundary rather than capability-skip.
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
         # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Each apt call
@@ -852,12 +853,12 @@ jobs:
           # HIMMEL-4073: try the plain install first (the runner's package
           # index is usually fresh enough); only a failure pays for an index
           # refresh and a retry. Each branch logs which path ran.
-          if sudo timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 at bubblewrap; then
+          if sudo timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 at bubblewrap socat; then
             echo "at/atd install: plain install succeeded, index refresh skipped"
           else
             echo "at/atd install: plain install failed, falling back to index refresh + retry"
             sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
-            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at bubblewrap
+            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at bubblewrap socat
           fi
           sudo systemctl enable --now atd || sudo service atd start || true
       # HIMMEL-4912: ubuntu-24.04 refuses unprivileged user namespaces by default

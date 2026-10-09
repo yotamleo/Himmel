@@ -709,7 +709,8 @@ def main(argv):
                   % (r["idx"], r["family"], r["transform"]))
         print("  rc not in {0,2}: %d" % len(odd))
         for r in odd[:50]:
-            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["base"], r["head"]))
+            print("    ODD-RC idx=%d base=%s head=%s rb=%s rh=%s tb=%.1fs th=%.1fs"
+                  % (r["idx"], r["base"], r["head"], r["rb"], r["rh"], r["tb"], r["th"]))
         print("  TIMEOUT RISK (>= %.1fs): %d" % (args.timeout_warn, len(slow)))
         for r in slow[:50]:
             print("    TIMEOUT-RISK idx=%d tb=%.2f th=%.2f transform=%s"
