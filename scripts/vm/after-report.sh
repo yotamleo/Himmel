@@ -649,6 +649,11 @@ SUITE_RC=$(grep -oE '^EXITCODE=[0-9]+' "$LOCAL_LOG" | tail -n1 | cut -d= -f2)
 # genuinely clean, empty run, which is worse than posting nothing at all.
 # The presence of the run's OWN "== Summary ==" line is what actually
 # proves it reached a verdict; gate the whole PASS/SKIP/FAIL shape on it.
+# The tree the guest run says it scanned (HIMMEL-5104), the same line the
+# runner puts in its own SUMMARY; a log without one (older guest runner, or a
+# run killed before the plan header) says so rather than omitting the line.
+scanning_line=$(grep -m1 '^scanning: ' "$LOCAL_LOG" 2>/dev/null || true)
+[ -n "$scanning_line" ] || scanning_line="scanning: unknown (no scanning line in the guest log)"
 if grep -q '^== Summary ==' "$LOCAL_LOG"; then
     pass=$(grep -oE '^ PASS: [0-9]+' "$LOCAL_LOG" | tail -n1 | awk '{print $2}')
     skip=$(grep -oE '^ SKIP: [0-9]+' "$LOCAL_LOG" | tail -n1 | awk '{print $2}')
@@ -658,8 +663,8 @@ if grep -q '^== Summary ==' "$LOCAL_LOG"; then
     budget_expired=0
     grep -q '^ERROR: run budget of' "$LOCAL_LOG" && budget_expired=1
 
-    summary_block=$(printf '== Summary ==\n head: %s\n scope: %s\n PASS: %s\n SKIP: %s\n FAIL: %s' \
-        "$REPORT_HEAD" "scripts" "${pass:-0}" "${skip:-0}" "${fail_count:-0}")
+    summary_block=$(printf '== Summary ==\n head: %s\n %s\n scope: %s\n PASS: %s\n SKIP: %s\n FAIL: %s' \
+        "$REPORT_HEAD" "$scanning_line" "scripts" "${pass:-0}" "${skip:-0}" "${fail_count:-0}")
     if [ -n "$timed_out" ] && [ "$timed_out" -gt 0 ] 2>/dev/null; then
         summary_block="${summary_block}
 $(printf ' TIMED OUT: %s (counted in FAIL)' "$timed_out")"
@@ -677,8 +682,8 @@ $(printf ' CHANGED-SINCE: origin/main (suites were conditionally filtered — no
     summary_block="${summary_block}
 $(printf ' RAN-IN: VM clone %s (HIMMEL-2623 — a separate host, not this machine'"'"'s lock domain)' "$CLONE_NAME")"
 else
-    summary_block=$(printf 'DIED-BEFORE-SUMMARY: the guest run exited (rc=%s) before printing its own "== Summary ==" — no PASS/SKIP/FAIL verdict exists for this run.\n head: %s\n scope: %s\n RAN-IN: VM clone %s (HIMMEL-2623)' \
-        "$SUITE_RC" "$REPORT_HEAD" "scripts" "$CLONE_NAME")
+    summary_block=$(printf 'DIED-BEFORE-SUMMARY: the guest run exited (rc=%s) before printing its own "== Summary ==" — no PASS/SKIP/FAIL verdict exists for this run.\n head: %s\n %s\n scope: %s\n RAN-IN: VM clone %s (HIMMEL-2623)' \
+        "$SUITE_RC" "$REPORT_HEAD" "$scanning_line" "scripts" "$CLONE_NAME")
     # HIMMEL-2689: no verdict is a failure of the run, whatever EXITCODE the
     # guest captured — "could not determine a verdict" must never share an
     # exit code with "the verdict was pass". Folded into SUITE_RC so the one

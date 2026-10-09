@@ -76,7 +76,11 @@
 #             least one suite failed, OR zero suites ran for any OTHER reason
 #             (a resolved-to-nothing scan root is a misconfiguration, not a
 #             pass — HIMMEL-1128), OR the run budget expired with suites still
-#             unrun; 2 — REFUSED, either another full-suite run already holds
+#             unrun; 6 — REFUSED, the caller sits in another git work tree
+#             than the script's, or the scan root lies inside one, so the run
+#             would scan a tree the caller did not mean (HIMMEL-2504,
+#             HIMMEL-5104; own code so a lock-held 2 is not mistaken for it);
+#             2 — REFUSED, either another full-suite run already holds
 #             the machine lock (HIMMEL-1338), SUITE_TIER_MODE was set to
 #             something other than fast/extended/all (HIMMEL-2120), or --shard
 #             was given a malformed <i>/<n> value (HIMMEL-2872);
@@ -190,6 +194,11 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # cwd away (HIMMEL-2504): the scan-root guard after arg parsing compares it with
 # REPO_ROOT. Empty when the caller is not inside a work tree. Physical (-P) form
 # on both sides so a symlinked spelling of the same tree is not a mismatch.
+# An exported GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR would redirect every git
+# call below (the caller's tree, REPORT_HEAD, the scanning line) and the suites
+# inherit it too; the runner always means the repo of its own cwd, so drop them
+# (HIMMEL-5104).
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
 caller_top=$(git rev-parse --show-toplevel 2>/dev/null) && caller_top=$(cd "$caller_top" 2>/dev/null && pwd -P) || caller_top=""
 cd "$REPO_ROOT" || exit 1
 
@@ -2797,8 +2806,8 @@ done
 # Scan-root guard (HIMMEL-2504). The cd to REPO_ROOT above means a runner called
 # by absolute path from another checkout (a worktree invoking the primary's
 # copy) silently runs THAT repo's suites, and with --pr posts a green SUMMARY
-# for code the caller's tree does not contain. Refuse (rc 2, this runner's
-# refusal code) when the caller sits in a git work tree that is not the
+# for code the caller's tree does not contain. Refuse (rc 6, its own code
+# since HIMMEL-5104) when the caller sits in a git work tree that is not the
 # script's own, unless --scan-repo-of-script says that is intended. A caller
 # outside any work tree (caller_top empty) is not a mismatch, so CI and the
 # normal invocation from the repo root are unaffected.
@@ -2807,7 +2816,26 @@ if [ "$scan_repo_of_script" -eq 0 ] && [ -n "$caller_top" ]; then
   if [ "$caller_top" != "$_script_top" ]; then
     printf 'run-shell-tests.sh: REFUSED - called from git work tree %s, but this script belongs to %s and would scan THAT tree, not yours (HIMMEL-2504).\n' "$caller_top" "$_script_top" >&2
     printf '  Run the copy in your own tree (scripts/ci/run-shell-tests.sh), or pass --scan-repo-of-script to scan the script'"'"'s repo on purpose.\n' >&2
-    exit 2
+    exit 6
+  fi
+fi
+
+# An absolute (or ../-escaping) scan root can point into ANOTHER work tree while
+# the cd above left the scanning line naming REPO_ROOT. --scan-repo-of-script
+# does not excuse that: it says "the script's repo", not "this other one"
+# (HIMMEL-5104). A root outside every work tree is unaffected.
+_scan_dir=$(cd "${scan%/}" 2>/dev/null && pwd -P) || _scan_dir=""
+if [ -n "$_scan_dir" ]; then
+  # An empty answer is "no tree known" (a fake git in a test prints nothing, and
+  # `cd ""` would succeed in place), so only a printed path counts as a toplevel.
+  _scan_top=$(git -C "$_scan_dir" rev-parse --show-toplevel 2>/dev/null) || _scan_top=""
+  [ -n "$_scan_top" ] && { _scan_top=$(cd "$_scan_top" 2>/dev/null && pwd -P) || _scan_top=""; }
+  _root_top=$(git rev-parse --show-toplevel 2>/dev/null) || _root_top=""
+  [ -n "$_root_top" ] && { _root_top=$(cd "$_root_top" 2>/dev/null && pwd -P) || _root_top=""; }
+  if [ -n "$_scan_top" ] && [ -n "$_root_top" ] && [ "$_scan_top" != "$_root_top" ]; then
+    printf 'run-shell-tests.sh: REFUSED - scan root %s is inside git work tree %s, but this run is rooted at %s; the scanning line would name the wrong tree (HIMMEL-5104).\n' "$_scan_dir" "$_scan_top" "$(pwd -P)" >&2
+    printf '  Run the copy of this script that lives in that tree instead.\n' >&2
+    exit 6
   fi
 fi
 
