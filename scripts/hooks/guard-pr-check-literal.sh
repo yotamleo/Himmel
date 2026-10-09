@@ -834,11 +834,11 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # BASH_CMDS, PATH or a var a later ${x@P} or $[x] runs), echo (it expands
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
-PR_GIT_UNSAFE=0 PR_TOKFAIL=0
+PR_GIT_UNSAFE=0 PR_TOKFAIL=0 PR_GIT_EXEC=0
 # A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
 PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -862,6 +862,40 @@ git_mentions_only() { # git_mentions_only <command-word index>
             --oneline) ;;
             -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
                 --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; bad=1 ;;
+        esac
+        # HIMMEL-4958: an exec/write option is denied whatever the pathspec; a
+        # directory or empty pathspec matches guarded scripts without naming them.
+        case "$w" in
+            # Benign long options that share a prefix with an exec option.
+            --oneline | --on* | --output-indicator-* | --extended-regexp) ;;
+            # Only the prefixes of --output and --open-files-in-pager (--ou* would
+            # also hit --ours); a bare --o* also hit --others and --objects.
+            --exec* | --upload* | --receive* | ext::* | --ext* | --op* | \
+                --ou | --out | --outp | --outpu | --output | \
+                --ou=* | --out=* | --outp=* | --outpu=* | --output=*) PR_GIT_EXEC=1 ;;
+            -c* | --config*)
+                if [ -n "$sub" ] && [ "${w#--}" = "$w" ]; then
+                    # After the subcommand -c* is a short-flag cluster (grep -c),
+                    # not a config option; -O inside it is the pager/orderfile flag.
+                    case "$w" in
+                        *O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
+                    esac
+                else
+                    # Match the config KEY (git folds its case), never the value.
+                    # --config-env=KEY=ENVVAR and `--config-env KEY=ENVVAR` carry the key too.
+                    case "$w" in
+                        -c | --config-env) xk=${ST_W[j + 1]:-}; xk=${xk%%=*} ;;
+                        --config-env=*) xk=${w#--config-env=}; xk=${xk%%=*} ;;
+                        -c*) xk=${w#-c}; xk=${xk%%=*} ;;
+                        *) xk=$w ;;
+                    esac
+                    xk=$(printf '%s' "$xk" | tr '[:upper:]' '[:lower:]')
+                    case "$xk" in
+                        *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshcommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
+                    esac
+                fi ;;
+            # -O runs a pager only for grep; diff/log/show take it as an orderfile.
+            -O* | -[!-]*O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
         esac
         if [ "$dir" = 1 ]; then
             dir=0
@@ -954,8 +988,8 @@ if [ "$PR_TOKFAIL" = 0 ]; then
 fi
 case "$flat" in
     *[cC][rR]/*|*[hH]andover/*) ;;
-    *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || ! heredoc_data_only || exit 0 ;;
-    *) [ "$mentions" -eq 1 ] || exit 0 ;;
+    *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || [ "$PR_GIT_EXEC" = 1 ] || ! heredoc_data_only || exit 0 ;;
+    *) [ "$mentions" -eq 1 ] || [ "$PR_GIT_EXEC" = 1 ] || exit 0 ;;
 esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
@@ -974,10 +1008,10 @@ fence=${fence% }
 # deferred to the check after the env -S deny, which words the cause better.
 envs_deferred=0
 [[ $cmd =~ (^|[^[:alnum:]_])env[[:space:]].*(-S|--split-string) ]] && envs_deferred=1
-if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+    deny "git execution/config options or ambiguous option-value boundaries cannot be proven to be pathspec mentions (a guarded script is named, or the option runs a program whatever the pathspec); drop the option or run the script as its own literal command (HIMMEL-4916)."
 fi
 
 # norm <path> - drop empty and . segments. A .. is kept, so the path no longer
@@ -1532,10 +1566,10 @@ if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \
 fi
 # An env -S line deferred here from the early check, so the more specific
 # env -S deny above names the cause when it applies.
-if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ] || [ "$PR_GIT_EXEC" = 1 ]; }; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+    deny "git execution/config options or ambiguous option-value boundaries cannot be proven to be pathspec mentions (a guarded script is named, or the option runs a program whatever the pathspec); drop the option or run the script as its own literal command (HIMMEL-4916)."
 fi
 [ "$hit" -eq 1 ] || exit 0
 # ponytail: a glob through a directory symlink the text does not spell as

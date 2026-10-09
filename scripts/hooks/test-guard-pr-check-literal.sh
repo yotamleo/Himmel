@@ -1640,6 +1640,51 @@ for v in \
     'git add -- --foo{a,b} scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4953 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# HIMMEL-4958: a directory or empty pathspec matches the guarded scripts
+# without naming them; a git exec/write option is denied whatever the pathspec.
+# shellcheck disable=SC2016 # literal attack payloads, never expanded here
+for v in \
+    'git grep -Obash -e . -- scripts/cr/' \
+    'git grep -Obash -e .' \
+    'git grep -Obash -e . -- scripts/handover/' \
+    'git grep --open-files-in-pager=bash -e .' \
+    'git -c core.pager=bash grep -e . -- scripts/cr/' \
+    'git -c core.pager=bash grep -e .' \
+    "git -c alias.x='!bash' x" \
+    "git -c alias.x='!bash' x scripts/cr/" \
+    'git diff --ext-diff' \
+    'git diff --ext-diff -- scripts/cr/' \
+    'git log --output=out.txt' \
+    'git log --output=out.txt -- scripts/cr/' \
+    "git -c diff.x.command=bash diff" \
+    'git -c core.PAGER=bash grep -e .' \
+    'git --config-env=alias.x=V x' \
+    'git --config-env alias.x=V x' \
+    'git --config-env=core.pager=V grep -e .' \
+    'git log --out=out.txt' \
+    'git grep --open=bash -e .' \
+    'git grep -cObash -e .'; do
+    run "HIMMEL-4958 exec option any pathspec [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git grep -e . -- scripts/cr/' \
+    'git grep -e .' \
+    'git log --oneline -3' \
+    'git diff --stat' \
+    'git diff -Oorderfile' \
+    "git -c user.name='pager duty' grep -e ." \
+    'git log -Oorderfile --oneline' \
+    'git grep --only-matching -e .' \
+    'git -c user.name=t -c user.email=t@t commit -m x' \
+    'git ls-files --others' \
+    'git ls-files --others -- scripts/cr/ scripts/lib/ scripts/check-ci.sh' \
+    'git checkout --ours -- docs/x.md' \
+    'git rev-list --objects HEAD' \
+    'git log --output-indicator-new=+ --oneline' \
+    'git -cuser.name=Overlord commit -m x' \
+    'git grep --extended-regexp -e .'; do
+    run "HIMMEL-4958 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
 # guarded mention is unsafe, since it can assemble the git word; split the command.
 # shellcheck disable=SC2016 # the $( is literal hook input
