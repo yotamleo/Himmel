@@ -1034,6 +1034,51 @@ assert_rc 'quoted path with ) then shutdown'     2 "$(run_case "$(j_bash '"/tmp/
 assert_rc 'path with ) then shutdown'            2 "$(run_case "$(j_bash '/tmp/a)/shutdown now')")"
 assert_rc 'path with )) then shutdown'           2 "$(run_case "$(j_bash '/tmp/a))/shutdown now')")"
 assert_rc 'path with )/b/ then shutdown'         2 "$(run_case "$(j_bash '/tmp/a)/b/shutdown now')")"
+# HIMMEL-4321: the stop-at-paren EXEPFX is sound only behind a `(` or `){` CMDPOS
+# anchor. Four prefixes have none behind them and keep the class that crosses
+# `(` and `){` inside a program path (CMDPOS_PFX_X): the -exec/-x flag of
+# _rmpos_flag, FIND_RM_PAT, the tail of XARGS_RM_PAT, and the launcher tail of
+# MASS_CMDPOS. One group of rows per consumer; each was rc 0 behind the shared stop.
+assert_rc '_rmpos_flag: watch -x path with ){ rm'   2 "$(run_case "$(j_bash 'watch -x /tmp/a){/rm -rf d')")"
+assert_rc '_rmpos_flag: watch -x path with (b) rm'  2 "$(run_case "$(j_bash 'watch -x /tmp/a(b)/rm -rf d')")"
+assert_rc '_rmpos_flag: watch -x quoted ){ rm'      2 "$(run_case "$(j_bash 'watch -x "/tmp/a){/rm" -rf d')")"
+assert_rc 'FIND_RM_PAT: find -exec path with ){ rm' 2 "$(run_case "$(j_bash 'find . -exec /tmp/a){/rm {} +')")"
+assert_rc 'FIND_RM_PAT: find -execdir ){ rm'        2 "$(run_case "$(j_bash 'find . -execdir /tmp/a){/rm {} +')")"
+assert_rc 'FIND_RM_PAT: find -ok ){ rm'             2 "$(run_case "$(j_bash 'find . -ok /tmp/a){/rm {} +')")"
+assert_rc 'FIND_RM_PAT: find -exec quoted ){ rm'    2 "$(run_case "$(j_bash 'find . -exec "/tmp/a){/rm" {} +')")"
+assert_rc 'FIND_RM_PAT: find -exec sudo ){ rm'      2 "$(run_case "$(j_bash 'find . -exec sudo /tmp/a){/rm {} +')")"
+assert_rc 'FIND_RM_PAT: find -exec env ){ rm'       2 "$(run_case "$(j_bash 'find . -exec env /tmp/a){/rm {} +')")"
+assert_rc 'FIND_RM_PAT: find -exec c: drive ){ rm'  2 "$(run_case "$(j_bash 'find . -exec c:/a){/rm {} +')")"
+assert_rc 'FIND_RM_PAT: find -exec path with (b) rm' 2 "$(run_case "$(j_bash 'find . -exec /tmp/a(b)/rm {} +')")"
+assert_rc 'FIND_RM_PAT: fd -x path with ){ rm'      2 "$(run_case "$(j_bash 'fd x -x /tmp/a){/rm')")"
+assert_rc 'FIND_RM_PAT: fd --exec path with ){ rm'  2 "$(run_case "$(j_bash 'fd x --exec /tmp/a){/rm')")"
+assert_rc 'FIND_RM_PAT: fd -x path with (b) rm'     2 "$(run_case "$(j_bash 'fd x -x /tmp/a(b)/rm')")"
+assert_rc 'XARGS_RM_PAT: xargs path with ){ rm'     2 "$(run_case "$(j_bash 'ls | xargs /tmp/a){/rm')")"
+assert_rc 'XARGS_RM_PAT: xargs -0 path ){ rm'       2 "$(run_case "$(j_bash 'ls | xargs -0 /tmp/a){/rm')")"
+assert_rc 'XARGS_RM_PAT: xargs quoted ){ rm'        2 "$(run_case "$(j_bash 'ls | xargs "/tmp/a){/rm"')")"
+assert_rc 'XARGS_RM_PAT: xargs sudo ){ rm'          2 "$(run_case "$(j_bash 'ls | xargs sudo /tmp/a){/rm')")"
+assert_rc 'XARGS_RM_PAT: xargs busybox ){ rm'       2 "$(run_case "$(j_bash 'ls | xargs busybox /tmp/a){/rm')")"
+assert_rc 'XARGS_RM_PAT: xargs path with (b) rm'    2 "$(run_case "$(j_bash 'ls | xargs /tmp/a(b)/rm')")"
+assert_rc 'XARGS_RM_PAT: xargs -0 c:/p(x86)/rm'     2 "$(run_case "$(j_bash 'ls | xargs -0 c:/p(x86)/rm')")"
+assert_rc 'MASS_CMDPOS tail: busybox (b) find -delete' 2 "$(run_case "$(j_bash 'busybox /tmp/a(b)/find . -delete')")"
+assert_rc 'MASS_CMDPOS tail: busybox ){ find -delete'  2 "$(run_case "$(j_bash 'busybox /tmp/a){/find . -delete')")"
+assert_rc 'MASS_CMDPOS tail: busybox (b) xargs rm'     2 "$(run_case "$(j_bash 'ls | busybox /tmp/a(b)/xargs rm')")"
+# Each of those prefixes stays linear on a 10 KB run of `(` and of `){` in the
+# program path (budget 4s, pad built before the clock starts).
+# shellcheck disable=SC2046 # one word per repeat is the point
+printf -v pad_o '(%.0s' $(seq 1 10000)
+pad_b=$(awk 'BEGIN{for(i=0;i<5000;i++) printf "){"}')
+for pad_name in o b; do
+    if [ "$pad_name" = o ]; then pad=$pad_o; else pad=$pad_b; fi
+    for shape in '_rmpos_flag|watch -x PAD/rm -rf d' 'FIND_RM_PAT|find . -exec PAD/rm {} +' \
+                 'XARGS_RM_PAT|ls | xargs PAD/rm' 'MASS_CMDPOS tail|busybox PAD/find . -delete'; do
+        label=${shape%%|*}; body=${shape#*|}
+        t0=$SECONDS
+        assert_rc "$label 10KB pad_$pad_name path run (linear, denied)" 2 "$(run_case "$(j_bash "${body//PAD/$pad}")")"
+        if [ $((SECONDS - t0)) -gt 4 ]; then
+            echo "FAIL $label pad_$pad_name took $((SECONDS - t0))s (budget 4s)"; FAILED=$((FAILED + 1)); fi
+    done
+done
 # HIMMEL-4158: a value word may be built from quoted ('…', "…", $'…'),
 # escaped and bare segments; a flag word may carry a quoted value too.
 assert_rc "sudo -u 'a b'c rm -rf"        2 "$(run_case "$(j_bash "sudo -u 'a b'c rm -rf /x")")"

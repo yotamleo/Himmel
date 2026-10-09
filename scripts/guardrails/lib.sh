@@ -490,6 +490,12 @@ guard_cmdpos_grammar() {
     # command-position anchors, so a `((((…` or `){){){…` run is not rescanned
     # from every anchor (quadratic); parity_guard.py's _EXE_PREFIX is the twin.
     EXEPFX='["'\'']?([a-z]:)?(([^[:space:]|;&(`"'\'')]|[)][^({[:space:]])*[)]?[/\\])?'
+    # EXEPFX_X crosses `(` and `){` inside a path as the pre-4321 class did.
+    # The stop above is sound only where a `(` or `){` anchor resumes the scan
+    # after it (CMDPOS); a prefix no anchor follows (a find -exec or xargs
+    # program path) keeps this one. It needs no stop: its scan starts at a flag
+    # or wrapper word, not at every `(` of a run.
+    EXEPFX_X='["'\'']?([a-z]:)?([^[:space:]|;&`"'\'']*[/\\])?'
     ASSIGN='[[:alnum:]_]+=('\''[^'\'']*'\''|"[^"]*"|[^[:space:]|;&]*)'
     # HIMMEL-3983: a compound-statement keyword also starts a command, and so
     # does a function body (`f() { ...`, `function f { ...`). A bare `)` is
@@ -517,6 +523,10 @@ guard_cmdpos_grammar() {
     # CMDPOS_PFX is the run after the separator, for a caller that anchors it
     # behind its own launcher (find -exec in block-destructive-commands.sh).
     CMDPOS_PFX='(('"$ASSIGN"'|'"$kw"'|'"$EXEPFX"'('"$wrap"'))[[:space:]]+)*'"$EXEPFX"
+    # CMDPOS_PFX_X is CMDPOS_PFX over EXEPFX_X, for a prefix with no CMDPOS
+    # anchor behind it. Never put it behind CMDPOS itself.
+    # shellcheck disable=SC2034 # consumed by the CALLER after sourcing
+    CMDPOS_PFX_X='(('"$ASSIGN"'|'"$kw"'|'"$EXEPFX_X"'('"$wrap"'))[[:space:]]+)*'"$EXEPFX_X"
     # shellcheck disable=SC2034 # consumed by the CALLER after sourcing, not in this file
     CMDPOS='(^|[|;&(`]|[)][[:space:]]*[{])[[:space:]]*'"$CMDPOS_PFX"
 }
