@@ -13,6 +13,12 @@
 #   4. each lane writes the config file its claude reads.
 #   5. concurrent writers lose no keys.
 #   6. an unparseable config is refused (exit 4) and left byte-identical.
+#   7. (HIMMEL-5068) the lock is claude's own <cfg>.lock dir (proper-lockfile: mkdir,
+#      stale after 10 s): a live claude's lock is waited on, a stale one is reclaimed
+#      unless OUR sidecar owner is still alive.
+#   8. a resolved path with a newline in its name is refused; non-object projects /
+#      projects[key] are refused byte-identical; a symlinked config is written
+#      through (link kept); the file mode is kept as found (new file 0600).
 # Everything runs under LEG_PRETRUST_HOME in a temp dir; the real ~/.claude.json
 # is never touched.
 set -uo pipefail
@@ -92,7 +98,7 @@ for i in $(seq 1 $n); do [ "$(trusted "$cfg" "$primary/.claude/worktrees/c$i")" 
 check "5a concurrent: all $n entries present" "$got" "$n"
 check "5b concurrent: pre-existing project kept" "$(trusted "$cfg" /pre)" "true"
 check "5c concurrent: top-level key kept" "$(jq -r .keep "$cfg")" "me"
-check "5d concurrent: lock released" "$([ -e "$cfg.leg-pretrust.lock" ] && echo held || echo free)" "free"
+check "5d concurrent: lock released" "$([ -e "$cfg.lock" ] && echo held || echo free)" "free"
 
 # 6. unparseable config is never clobbered.
 printf '%s' '{"projects": {oops' > "$cfg"
@@ -100,7 +106,58 @@ before="$(cksum < "$cfg")"
 rc=0; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?
 check "6a unparseable config: exit 4" "$rc" "4"
 check "6b unparseable config: byte-identical" "$(cksum < "$cfg")" "$before"
-check "6c unparseable config: lock released" "$([ -e "$cfg.leg-pretrust.lock" ] && echo held || echo free)" "free"
+check "6c unparseable config: lock released" "$([ -e "$cfg.lock" ] && echo held || echo free)" "free"
+
+# 7. claude's own <cfg>.lock (HIMMEL-5068).
+rm -f "$cfg"; printf '%s' '{"keep":"me"}' > "$cfg"
+mkdir "$cfg.lock"   # a live claude mid-save holds this (fresh mtime)
+bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 & pid=$!
+sleep 1
+check "7a claude's lock held: pretrust waits, writes nothing" "$(trusted "$cfg" "$primary/.claude/worktrees/wt1")" "absent"
+rmdir "$cfg.lock"; wait "$pid"
+check "7b claude's lock released: pretrust lands" "$(trusted "$cfg" "$primary/.claude/worktrees/wt1")" "true"
+check "7c lock released afterwards" "$([ -e "$cfg.lock" ] && echo held || echo free)" "free"
+deadpid="$(bash -c 'echo $$')"
+stale_lock() { rm -rf "$cfg.lock" "$cfg.leg-pretrust.owner"; mkdir "$cfg.lock"; touch -t 200001010000 "$cfg.lock"; }
+printf '%s' '{"keep":"me"}' > "$cfg"
+stale_lock
+rc=0; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?
+check "7d stale lock, no sidecar owner (dead claude): reclaimed" "$rc" "0"
+printf '%s' '{"keep":"me"}' > "$cfg"
+stale_lock; echo "$deadpid" > "$cfg.leg-pretrust.owner"
+rc=0; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?
+check "7e stale lock, dead owner: reclaimed" "$rc" "0"
+printf '%s' '{"keep":"me"}' > "$cfg"
+stale_lock; echo "$$" > "$cfg.leg-pretrust.owner"
+rc=0; export LEG_PRETRUST_LOCK_TRIES=15; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?; unset LEG_PRETRUST_LOCK_TRIES
+check "7f stale lock, LIVE owner: not reclaimed (exit 5)" "$rc" "5"
+check "7g live owner's lock left in place" "$([ -d "$cfg.lock" ] && echo held || echo free)" "held"
+check "7h nothing written" "$(trusted "$cfg" "$primary/.claude/worktrees/wt1")" "absent"
+rm -rf "$cfg.lock" "$cfg.leg-pretrust.owner"
+
+# 8. odd shapes.
+nl="$LEG_PRETRUST_HOME/.himmel/eval/nl"$'\n'
+mkdir -p "$nl"; rm -f "$cfg"
+rc=0; bash "$SCRIPT" native "$nl" >/dev/null 2>&1 || rc=$?
+check "8a newline in resolved path: exit 3" "$rc" "3"
+check "8b newline in resolved path: no config written" "$([ -e "$cfg" ] && echo yes || echo no)" "no"
+for shape in '{"projects":[1]}' '{"projects":"x"}' "{\"projects\":{\"$primary/.claude/worktrees/wt1\":5}}"; do
+  printf '%s' "$shape" > "$cfg"; before="$(cksum < "$cfg")"
+  rc=0; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?
+  check "8c non-object shape $shape: exit 4" "$rc" "4"
+  check "8c non-object shape $shape: byte-identical" "$(cksum < "$cfg")" "$before"
+done
+real="$tmp/real-claude.json"; printf '%s' '{"keep":"me"}' > "$real"; rm -f "$cfg"; ln -s "$real" "$cfg"
+rc=0; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?
+check "8d symlinked config: exit 0" "$rc" "0"
+check "8d symlinked config: link kept" "$([ -L "$cfg" ] && echo link || echo replaced)" "link"
+check "8d symlinked config: target written" "$(trusted "$real" "$primary/.claude/worktrees/wt1")" "true"
+rm -f "$cfg"; printf '%s' '{"keep":"me"}' > "$cfg"; chmod 644 "$cfg"
+bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1
+check "8e existing mode 0644 kept" "$(stat -c %a "$cfg" 2>/dev/null || stat -f %Lp "$cfg")" "644"
+rm -f "$cfg"
+bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1
+check "8f new file is 0600" "$(stat -c %a "$cfg" 2>/dev/null || stat -f %Lp "$cfg")" "600"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASS - test-leg-pretrust.sh"; exit 0; fi

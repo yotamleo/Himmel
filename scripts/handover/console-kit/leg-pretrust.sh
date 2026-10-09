@@ -36,10 +36,16 @@ fi
 [ -d "$dir" ] || { echo "leg-pretrust: not a directory: $dir" >&2; exit 2; }
 command -v node >/dev/null 2>&1 || { echo "leg-pretrust: node not on PATH" >&2; exit 2; }
 
-abs="$(cd -P "$dir" 2>/dev/null && pwd -P)" || { echo "leg-pretrust: cannot resolve: $dir" >&2; exit 2; }
+# The trailing "x" keeps $(...) from eating a newline that is part of the directory name.
+abs="$(cd -P "$dir" 2>/dev/null && pwd -P && printf x)" || { echo "leg-pretrust: cannot resolve: $dir" >&2; exit 2; }
+abs="${abs%x}"; abs="${abs%$'\n'}"   # drop the x, then the one newline pwd added
 home="$(cd -P "${LEG_PRETRUST_HOME:-$HOME}" 2>/dev/null && pwd -P)" || { echo "leg-pretrust: cannot resolve HOME" >&2; exit 2; }  # LEG_PRETRUST_HOME: test seam
 
 refuse() { echo "leg-pretrust: REFUSED $abs: $1" >&2; exit 3; }
+
+case "$abs" in
+    *$'\n'*|*/) refuse "path has a newline or ends in / (it would not round-trip as a projects key)" ;;
+esac
 
 ok=0
 case "$abs/" in
@@ -68,25 +74,49 @@ esac
 # seed reads to it as a half-seeded one.
 [ -d "$(dirname "$cfg")" ] || { echo "leg-pretrust: lane config dir absent (launcher not seeded yet): $(dirname "$cfg")" >&2; exit 4; }
 
-# mkdir lock beside the config; a holder that died is reclaimed after 1-2 min.
-lock="$cfg.leg-pretrust.lock"
+# Take the lock claude itself takes when it saves this file (claude 2.1.295
+# saveConfigWithLock: proper-lockfile with lockfilePath "<cfg>.lock" - a mkdir
+# directory whose mtime the holder refreshes every 5 s, stale after 10 s), so
+# pretrust and a live claude exclude each other. Nothing may live INSIDE that
+# dir (claude releases it with rmdir), so our owner pid is a sidecar file.
+# ponytail: pid reuse can keep a dead owner "alive", a pid on another host is
+# not checked; upgrade path is a host+start-time stamp in the sidecar.
+lock="$cfg.lock"
+owner="$cfg.leg-pretrust.owner"
+mtime_of() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# Stale = claude's own rule (no mtime refresh for >10 s) AND no live owner of ours.
+lock_reclaimable() {
+    local m opid
+    m="$(mtime_of "$lock")" || return 1
+    [ -n "$m" ] && [ $(( $(date +%s) - m )) -gt 10 ] || return 1
+    opid="$(cat "$owner" 2>/dev/null)"
+    [ -n "$opid" ] && kill -0 "$opid" 2>/dev/null && return 1
+    return 0
+}
+tries="${LEG_PRETRUST_LOCK_TRIES:-150}"   # x 0.1 s; > a 10 s stale window. LEG_PRETRUST_LOCK_TRIES: test seam
 waited=0
 until mkdir "$lock" 2>/dev/null; do
-    if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-        rm -f "$lock/owner"; rmdir "$lock" 2>/dev/null || true
+    if [ -d "$lock" ] && lock_reclaimable; then
+        rmdir "$lock" 2>/dev/null || true
         continue
     fi
     waited=$((waited + 1))
-    [ "$waited" -le 100 ] || { echo "leg-pretrust: lock timeout: $lock" >&2; exit 5; }
+    [ "$waited" -le "$tries" ] || { echo "leg-pretrust: lock timeout: $lock" >&2; exit 5; }
     sleep 0.1
 done
-echo "$$" > "$lock/owner" 2>/dev/null || true
+echo "$$" > "$owner" 2>/dev/null || true
 # Release only a lock we still own: a reclaimed-then-retaken lock is the successor's.
-trap '[ "$(cat "$lock/owner" 2>/dev/null)" = "$$" ] && { rm -f "$lock/owner"; rmdir "$lock" 2>/dev/null; }; true' EXIT
+trap '[ "$(cat "$owner" 2>/dev/null)" = "$$" ] && { rm -f "$owner"; rmdir "$lock" 2>/dev/null; }; true' EXIT
 
 WT_KEY="$abs" WT_CONFIG="$cfg" node -e '
 const fs = require("fs");
-const p = process.env.WT_CONFIG, key = process.env.WT_KEY;
+const key = process.env.WT_KEY;
+// A symlinked config is written THROUGH (the link stays); the rename targets the real file.
+let p = process.env.WT_CONFIG;
+try { if (fs.lstatSync(p).isSymbolicLink()) p = fs.realpathSync(p); } catch (e) {
+    if (e.code !== "ENOENT") { console.error("leg-pretrust: cannot resolve " + p + " (" + e.message + ")"); process.exit(4); }
+    try { fs.lstatSync(p); console.error("leg-pretrust: " + p + " is a dangling symlink - refusing to write"); process.exit(4); } catch (_) {}
+}
 const obj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const sig = () => { try { const s = fs.statSync(p); return s.mtimeMs + ":" + s.size; } catch (_) { return "none"; } };
 // Live claude sessions write this file without our lock, so re-check its
@@ -103,13 +133,20 @@ for (let attempt = 0; attempt < 5; attempt++) {
         }
     }
     if (!obj(j)) { console.error("leg-pretrust: " + p + " is not a JSON object - refusing to overwrite"); process.exit(4); }
-    if (!obj(j.projects)) j.projects = {};
-    if (!obj(j.projects[key])) j.projects[key] = {};
+    // A present-but-non-object projects / projects[key] is data we do not own: refuse, never overwrite.
+    if (j.projects !== undefined && !obj(j.projects)) { console.error("leg-pretrust: " + p + " has a non-object projects - refusing to overwrite"); process.exit(4); }
+    if (j.projects === undefined) j.projects = {};
+    if (j.projects[key] !== undefined && !obj(j.projects[key])) { console.error("leg-pretrust: " + p + " has a non-object projects[" + key + "] - refusing to overwrite"); process.exit(4); }
+    if (j.projects[key] === undefined) j.projects[key] = {};
     if (j.projects[key].hasTrustDialogAccepted === true) process.exit(0);
     j.projects[key].hasTrustDialogAccepted = true;
     const tmp = p + ".tmp-pretrust-" + process.pid;
+    // Keep the mode as found (claude does the same); a new file gets the 0600 default claude uses.
+    let mode = 0o600;
+    try { mode = fs.statSync(p).mode & 0o777; } catch (_) {}
     try {
         fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
+        fs.chmodSync(tmp, mode);
         if (sig() !== before) { fs.unlinkSync(tmp); continue; }
         fs.renameSync(tmp, p);
         process.exit(0);
