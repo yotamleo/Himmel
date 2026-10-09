@@ -715,9 +715,12 @@ STUB
 chmod +x "$TMP/deny-all-hook.sh"
 python3 "$GEN" --seed 1 -o "$TMP/benign-corpus.jsonl"
 OUT14=$(python3 "$DIFF" --base "$TMP/deny-all-hook.sh" --head "$TMP/deny-all-hook.sh" \
-        --corpus "$TMP/benign-corpus.jsonl" --jobs 4 2>&1)
+        --corpus "$TMP/benign-corpus.jsonl" --jobs 4 2>&1); RC14=$?
 has "over-deny: allow-expected denials counted" "$OUT14" "OVER-DENY idx="
 hasnt "over-deny: count not zero" "$OUT14" "(denied by base 0;"
+# HIMMEL-4563: over-deny is friction, never an exit code (HIMMEL-4537).
+if [ "$RC14" = "0" ]; then pass "over-deny: exit status 0"
+else fail "over-deny: expected exit 0, got $RC14"; fi
 else defer "14 over-deny"; fi
 
 # --- 15. HIMMEL-4586: BOM-prefixed JSON stdout is inconclusive, never a pass ---
