@@ -1695,6 +1695,9 @@ for v in \
     'git commit -mOops' \
     'git commit -CORIG_HEAD' \
     'git commit -tOther' \
+    'git merge -sOurs' \
+    'git merge -XOurs' \
+    'git push -oOpt' \
     'git stash push -mOld' \
     'git checkout -bOld-fix' \
     'git branch -DOld' \
