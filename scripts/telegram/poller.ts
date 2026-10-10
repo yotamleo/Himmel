@@ -7,7 +7,7 @@ import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta
 import { classify, type Route } from "./router";
 import { routeToConsole, routeFleetCommand, staleConsoleCommand, consoleReplyTarget, rememberConsoleReply, type ConsoleRouteGate, type ConsoleReplyFn } from "./console-route";
 import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, CONFIRM_OPS, BREAK_GLASS_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { getUpdates, getMe, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { installTimestampedLogging } from "./log-timestamp";
 import { cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, operatorChatId, requireMentionForChat, vaultForChat, type Access } from "./gate";
@@ -701,7 +701,11 @@ const pendingPath = (root: string) => join(root, "break-glass-pending.json");
 // and validity test as break-glass.sh (a string with no control characters), but
 // read with JSON.parse: a registry it rejects (BOM, two documents) or an id with
 // no valid rule returns null and NO confirm code is issued, so the shell's more
-// lenient jq read never resolves a rule the operator did not see.
+// lenient jq read never resolves a rule the operator did not see. A rule with a
+// lone surrogate is refused too (jq reads it as U+FFFD, JSON.parse keeps it), and
+// on /confirm the shell is handed the sha256 of the approved text and refuses a
+// registry whose text differs (HIMMEL-5127).
+const RULE_SHOWN_PREFIX = " → ";
 function allowRuleText(id: string): string | null {
   let rule: unknown;
   try {
@@ -709,8 +713,8 @@ function allowRuleText(id: string): string | null {
     rule = (JSON.parse(readFileSync(reg, "utf8")) as Record<string, unknown>)[id];
   } catch { rule = undefined; }
   // eslint-disable-next-line no-control-regex
-  if (typeof rule !== "string" || rule === "" || /[\u0000-\u001f\u007f-\u009f]/.test(rule)) return null;
-  return ` → ${rule}`;
+  if (typeof rule !== "string" || rule === "" || /[\u0000-\u001f\u007f-\u009f]/.test(rule) || !rule.isWellFormed() || rule.includes("\ufffd")) return null;
+  return `${RULE_SHOWN_PREFIX}${rule}`;
 }
 
 async function issueConfirm(root: string, msg: DeliveredMsg, route: { op: string; arg: string; time: string }, now: number): Promise<{ code: string; rule: string }> {
@@ -833,7 +837,12 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
       await reply("⚠️ confirm refused — no matching pending command (wrong, expired or already used). Nothing ran; send the command again for a new code.");
       return;
     }
-    route = { kind: "auto", op: p.op as "revert-main", arg: p.arg, time: p.time };
+    // allow-rule: the executor is bound to the exact text the operator approved
+    // (HIMMEL-5127); the time slot, unused by this op, carries its sha256.
+    const time = p.op === "allow-rule" && p.rule
+      ? createHash("sha256").update(p.rule.slice(RULE_SHOWN_PREFIX.length), "utf8").digest("hex")
+      : p.time;
+    route = { kind: "auto", op: p.op as "revert-main", arg: p.arg, time };
   }
   const res = await dispatchAutoAction({ runScript: deps.runScript }, route);
   await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, backups: res.backups, time: route.time, rc: res.rc, result: auditResult(route.op, res.rc) });

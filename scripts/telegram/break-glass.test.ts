@@ -7,12 +7,14 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { KNOWN_OPS, CONFIRM_OPS, parseEnabledOps, type AuditFields } from "./auto-action";
 import { classify, type Route } from "./router";
 import { handleInbound, handleAutoCommand } from "./poller";
 
 const BREAK_GLASS = ["station-status", "revert-main", "repin-hooks", "launch-leg", "cr-reset", "close-wrapped", "relaunch-console", "restart-bridge", "allow-rule"];
 const now = () => Math.floor(Date.now() / 1000);
+const sha256 = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
 const auto = (text: string): Extract<Route, { kind: "auto" }> => {
   const r = classify(text);
   if (r.kind !== "auto") throw new Error(`not an auto route: ${text}`);
@@ -189,6 +191,56 @@ test("an allow-rule /confirm refuses when the registry rule changed after the pr
   }
 });
 
+test("an allow-rule /confirm hands the executor the sha256 of the approved rule text (HIMMEL-5127)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-ar-bind-"));
+  const reg = join(root, "rules.json");
+  await writeFile(reg, JSON.stringify({ "fixture-one": "Bash(fixture:*)" }));
+  const prev = process.env.BREAK_GLASS_ALLOW_REGISTRY;
+  process.env.BREAK_GLASS_ALLOW_REGISTRY = reg;
+  try {
+    const h = harness();
+    const code = await issue(root, h, "/allow-rule fixture-one");
+    await confirm(root, h, code);
+    expect(h.runs).toEqual([["allow-rule", "fixture-one", sha256("Bash(fixture:*)")]]);
+  } finally {
+    if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
+  }
+});
+
+test("an allow-rule issues no confirm code for a rule with a lone surrogate (HIMMEL-5127)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-ar-sur-"));
+  const reg = join(root, "rules.json");
+  // jq 1.7 reads \ud800 as U+FFFD while JSON.parse keeps the lone surrogate: the two readers disagree.
+  await writeFile(reg, '{"fixture-one":"Bash(a\\ud800b)"}');
+  const prev = process.env.BREAK_GLASS_ALLOW_REGISTRY;
+  process.env.BREAK_GLASS_ALLOW_REGISTRY = reg;
+  try {
+    const h = harness();
+    await issue(root, h, "/allow-rule fixture-one");
+    expect(h.replies[0]).toContain("no reviewed rule");
+    expect(h.replies[0]).not.toMatch(/\/confirm [0-9a-f]{8}/);
+  } finally {
+    if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
+  }
+});
+
+test("an allow-rule issues no confirm code for a rule containing U+FFFD (HIMMEL-5127)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-ar-fffd-"));
+  const reg = join(root, "rules.json");
+  // The executor refuses U+FFFD (jq may produce it from a lone surrogate), so the prompt must not offer it.
+  await writeFile(reg, '{"fixture-one":"Bash(a\\ufffdb)"}');
+  const prev = process.env.BREAK_GLASS_ALLOW_REGISTRY;
+  process.env.BREAK_GLASS_ALLOW_REGISTRY = reg;
+  try {
+    const h = harness();
+    await issue(root, h, "/allow-rule fixture-one");
+    expect(h.replies[0]).toContain("no reviewed rule");
+    expect(h.replies[0]).not.toMatch(/\/confirm [0-9a-f]{8}/);
+  } finally {
+    if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
+  }
+});
+
 test("a mutating op issues a code and runs nothing; the matching /confirm runs it once", async () => {
   for (const text of BREAK_GLASS.filter((op) => op !== "station-status").map((op) => ({
     "revert-main": "/revert-main 2202", "repin-hooks": "/repin-hooks", "launch-leg": "/launch-leg N7 --hook-bypass",
@@ -203,7 +255,9 @@ test("a mutating op issues a code and runs nothing; the matching /confirm runs i
     expect(h.audits.map((a) => [a.op, a.result])).toEqual([[r.op, "confirm-issued"]]);
     expect(JSON.stringify(h.audits)).not.toContain(code);
     await confirm(root, h, code);
-    expect(h.runs).toEqual([[r.op, r.arg, r.time]]);
+    // allow-rule (HIMMEL-5127): the time slot carries the sha256 of the approved rule text.
+    const wantTime = r.op === "allow-rule" ? sha256("Bash(bash scripts/handover/merge-forward-check.sh:*)") : r.time;
+    expect(h.runs).toEqual([[r.op, r.arg, wantTime]]);
     expect(h.audits.map((a) => [a.op, a.result])).toEqual([[r.op, "confirm-issued"], [r.op, "break-glass-ok"]]);
     expect(h.replies[h.replies.length - 1]).toContain("done=1");
     await confirm(root, h, code);

@@ -40,7 +40,11 @@
 #                              text comes only from the checked-in registry
 #                              allow-rules.json (id -> exact text), never from the
 #                              message; idempotent, and the old file is backed up
-#                              (<file>.bak-<epoch>-<pid>) before every write
+#                              (<file>.bak-<epoch>-<pid>) before every write.
+#                              (HIMMEL-5127) the <time> slot carries the sha256
+#                              of the rule text the operator approved; a registry
+#                              whose current text hashes differently is refused
+#                              (26), and a "-" or malformed hash is refused (1)
 #
 # Exit codes:
 #   (allow-rule: 20 registry missing / 26 id not in the registry or its entry is
@@ -461,17 +465,37 @@ op_restart_bridge() {
 # added to permissions.allow of the primary's UNTRACKED local settings file (the
 # tracked one would dirty the primary and break /repin-hooks' ff-only pull).
 op_allow_rule() {
-    local id="$ARG" reg tgt rule new bak
+    local id="$ARG" reg tgt rule new bak docs got
     if ! [[ "$id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
         echo "ERR break-glass: bad rule id: '$id'" >&2
         return 1
     fi
     reg="${BREAK_GLASS_ALLOW_REGISTRY:-$SCRIPT_DIR/allow-rules.json}"
     [ -f "$reg" ] || { echo "ERR break-glass: allow-rule registry not found: $reg" >&2; return 20; }
-    rule="$(jq -r --arg id "$id" 'if type == "object" and (.[$id] | type) == "string" and (.[$id] | test("\\p{Cc}") | not) then .[$id] else empty end' "$reg" 2>/dev/null)" \
+    # HIMMEL-5127: the poller reads this file with JSON.parse, which rejects a BOM
+    # and a second document; jq reads both. Refuse them here too, so the two
+    # readers can never resolve different text from the same file.
+    docs="$(jq -s 'length' "$reg" 2>/dev/null)" || { echo "ERR break-glass: cannot read the allow-rule registry" >&2; return 20; }
+    if [ "$docs" != 1 ] || [ "$(head -c 3 "$reg" | od -An -tx1 | tr -d ' \n')" = efbbbf ]; then
+        echo "ERR break-glass: the allow-rule registry is not one clean JSON document" >&2
+        return 26
+    fi
+    rule="$(jq -r --arg id "$id" 'if type == "object" and (.[$id] | type) == "string" and (.[$id] | (test("\\p{Cc}") or contains("\ufffd")) | not) then .[$id] else empty end' "$reg" 2>/dev/null)" \
         || { echo "ERR break-glass: cannot read the allow-rule registry" >&2; return 20; }
     if [ -z "$rule" ] || [[ "$rule" =~ [[:cntrl:]] ]]; then
         echo "ERR break-glass: no reviewed rule for id '$id'" >&2
+        return 26
+    fi
+    # HIMMEL-5127: the third argument is the sha256 of the rule text the operator
+    # approved. The poller supplies it; a registry rewritten after the approval
+    # resolves different text here and is refused, so nothing unapproved is applied.
+    if ! [[ "$TIME" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "ERR break-glass: allow-rule needs the sha256 of the approved rule text" >&2
+        return 1
+    fi
+    got="$(printf '%s' "$rule" | sha256sum | cut -d' ' -f1)"
+    if [ "$got" != "$TIME" ]; then
+        echo "ERR break-glass: the registry rule for '$id' differs from the approved text; nothing written" >&2
         return 26
     fi
     tgt="${BREAK_GLASS_ALLOW_TARGET:-$PRIMARY/.claude/settings.local.json}"
