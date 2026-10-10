@@ -29,9 +29,15 @@
 #       charset and still matches its own rows
 #   F16 one repo is one id across URL spellings and worktrees; a relative or
 #       local-path origin stays case-exact and keeps its .git, a default port
-#       drops (HIMMEL-5144, HIMMEL-5145)
+#       drops (HIMMEL-5144, HIMMEL-5145); an absolute local origin is
+#       lexically normalised, a file:// path is percent-decoded and its scheme
+#       is case-insensitive, file://host/... is never joined under the
+#       checkout (HIMMEL-5157)
 #   F17 with no override, the row's repo is the shared lib's id for the
 #       runner's own checkout (HIMMEL-5147)
+#   F18 a runner that cannot read the id lib writes no ledger row, names the
+#       lib and prints no unbound-variable line (HIMMEL-5156, HIMMEL-5157)
+#   F19 neither caller defines the id functions itself (HIMMEL-5156)
 #
 # Usage: bash scripts/ci/test-run-shell-tests-flake.sh
 set -uo pipefail
@@ -409,10 +415,65 @@ if [ -n "$f1" ] && [ "$f1" != "$p3" ] && [ "$f1" = "$p4" ] && [ "$f2" = "$p3" ];
 else
   fail "F16: file:// ids: file:///srv/r.git [$f1] /srv/r [$p3] /srv/r.git [$p4] file:///srv/r [$f2]"
 fi
+# HIMMEL-5157: an absolute local origin is lexically normalised like a relative
+# one, a file:// path is percent-decoded and its scheme is case-insensitive, and
+# file://host/path is a host form that is never joined under the checkout.
+mk_url_repo "$sb/a1" "/srv/x/../r.git"
+mk_url_repo "$sb/a2" "/srv/./r.git"
+mk_url_repo "$sb/a3" "/srv//r.git"
+a1=$(_flake_repo_id "$sb/a1" 2>&1); a2=$(_flake_repo_id "$sb/a2" 2>&1); a3=$(_flake_repo_id "$sb/a3" 2>&1)
+if [ -n "$a1" ] && [ "$a1" = "$p4" ] && [ "$a2" = "$p4" ] && [ "$a3" = "$p4" ]; then
+  pass "F16: /srv/x/../r.git, /srv/./r.git and /srv//r.git are /srv/r.git"
+else
+  fail "F16: absolute origin ids: a1 [$a1] a2 [$a2] a3 [$a3] vs /srv/r.git [$p4]"
+fi
+mk_url_repo "$sb/d1" "file:///srv/my%20repo.git"
+mk_url_repo "$sb/d2" "/srv/my repo.git"
+mk_url_repo "$sb/d3" "FILE:///srv/r.git"
+mk_url_repo "$sb/d4" "FILE:///srv/r"
+mk_url_repo "$sb/d5" "file:///srv/my%2520repo.git"
+mk_url_repo "$sb/d6" "/srv/my%20repo.git"
+dd1=$(_flake_repo_id "$sb/d1" 2>&1); dd2=$(_flake_repo_id "$sb/d2" 2>&1); dd3=$(_flake_repo_id "$sb/d3" 2>&1)
+dd4=$(_flake_repo_id "$sb/d4" 2>&1); dd5=$(_flake_repo_id "$sb/d5" 2>&1); dd6=$(_flake_repo_id "$sb/d6" 2>&1)
+if [ -n "$dd1" ] && [ "$dd1" = "$dd2" ]; then
+  pass "F16: file:///srv/my%20repo.git is /srv/my repo.git"
+else
+  fail "F16: percent-decoding: file:// [$dd1] vs plain path [$dd2]"
+fi
+if [ "$dd5" != "$dd1" ] && [ "$dd6" != "$dd2" ] && [ "$dd5" = "$dd6" ]; then
+  pass "F16: a decoded path is not decoded twice, and a plain path is never decoded"
+else
+  fail "F16: decode scope: %2520 [$dd5] vs %20 plain [$dd6] vs decoded [$dd1]"
+fi
+if [ -n "$dd3" ] && [ "$dd3" = "$p4" ] && [ "$dd4" = "$p3" ] && [ "$dd3" != "$dd4" ]; then
+  pass "F16: FILE:// is file:// and still distinct from the no-.git path"
+else
+  fail "F16: scheme case: FILE:///srv/r.git [$dd3] want [$p4]; FILE:///srv/r [$dd4] want [$p3]"
+fi
+mk_url_repo "$sb/h1" "file://host/r.git"
+mk_url_repo "$sb/h2" "file://HOST/r.git"
+mk_url_repo "$sb/h3" "host/r.git"
+mk_url_repo "$sb/h4" "file://localhost/srv/r.git"
+mk_url_repo "$sb/h5" "file://localhostx/srv/r.git"
+h1=$(_flake_repo_id "$sb/h1" 2>&1); h2=$(_flake_repo_id "$sb/h2" 2>&1); h3=$(_flake_repo_id "$sb/h3" 2>&1)
+h4=$(_flake_repo_id "$sb/h4" 2>&1); h5=$(_flake_repo_id "$sb/h5" 2>&1)
+if [ -n "$h1" ] && [ "$h1" = "$h2" ] && [ "$h1" != "$h3" ] && [ "$h1" != "$p4" ]; then
+  pass "F16: file://host/r.git is a host form, not the checkout-relative host/r.git"
+else
+  fail "F16: file://host ids: host [$h1] HOST [$h2] relative host/r.git [$h3] /srv/r.git [$p4]"
+fi
+if [ "$h4" = "$p4" ] && [ "$h5" != "$p4" ]; then
+  pass "F16: file://localhost/... is the local path; localhostx is another host"
+else
+  fail "F16: localhost: [$h4] want [$p4]; localhostx [$h5] must differ"
+fi
 mk_url_repo "$sb/ra/co" "../r.git"; mk_url_repo "$sb/rb/co" "../r.git"
 gq -C "$sb/ra/co" commit -q --allow-empty -m x
-git -C "$sb/ra/co" worktree add -q "$sb/ra/co-wt" -b rwt 2>/dev/null
-r1=$(_flake_repo_id "$sb/ra/co" 2>&1); r2=$(_flake_repo_id "$sb/rb/co" 2>&1); r3=$(_flake_repo_id "$sb/ra/co-wt" 2>&1)
+# The worktree sits under a parent other than the checkout's, so a lib that
+# resolved the relative origin against the worktree would give another id (HIMMEL-5157).
+mkdir -p "$sb/rw"
+git -C "$sb/ra/co" worktree add -q "$sb/rw/co-wt" -b rwt 2>/dev/null
+r1=$(_flake_repo_id "$sb/ra/co" 2>&1); r2=$(_flake_repo_id "$sb/rb/co" 2>&1); r3=$(_flake_repo_id "$sb/rw/co-wt" 2>&1)
 if [ -n "$r1" ] && [ "$r1" != "$r2" ] && [ "$r1" = "$r3" ]; then
   pass "F16: ../r.git from two parents is two ids; a worktree shares its checkout's id"
 else
@@ -490,8 +551,8 @@ mk_flake_sandbox "$sb" "" 1
 mv "$sb/scripts/test-pass.sh" "$sb/scripts/test-flaky.sh" "$sb/suites/"
 out=$(cd "$sb" && env -u SUITE_TIER_MODE -u SUITE_FLAKE_REPO_ID SUITE_FLAKE_LEDGER="$sb/ledger.jsonl" bash "$sb/co/scripts/ci/run-shell-tests.sh" "$sb/suites" 2>&1); rc=$?
 if [ "$rc" -eq 0 ] && grepq "$out" -E '^ FLAKE: 1' && [ "$(ledger_rows "$sb")" = 0 ] \
-    && grepq "$out" -F 'flake-repo-id'; then
-  pass "F18: no lib, no row, the lib is named, the verdict is the same"
+    && grepq "$out" -F 'flake-repo-id' && ! grepq "$out" -F 'unbound variable'; then
+  pass "F18: no lib, no row, the lib is named, no unbound variable, the verdict is the same"
 else
   fail "F18: rc=$rc rows=$(ledger_rows "$sb") ledger: $(cat "$sb/ledger.jsonl" 2>&1) out: $out"
 fi

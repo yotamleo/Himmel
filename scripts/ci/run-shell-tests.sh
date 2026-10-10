@@ -3444,7 +3444,7 @@ if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
 fi
 # An override is reduced to a charset that is inert in JSON and in awk -v
 # (which would otherwise interpret a backslash and miss its own rows).
-SUITE_FLAKE_REPO_ID=$(printf '%s' "$SUITE_FLAKE_REPO_ID" | tr -c 'A-Za-z0-9._:@-' '_')
+SUITE_FLAKE_REPO_ID=$(printf '%s' "${SUITE_FLAKE_REPO_ID:-}" | tr -c 'A-Za-z0-9._:@-' '_')
 
 # _suite_no_retry <suite> — 0 when the first 20 lines carry a `# no-retry` mark.
 _suite_no_retry() {
