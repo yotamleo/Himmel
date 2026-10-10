@@ -601,6 +601,28 @@ const failuresSection = (() => {
     } catch { return unavailable; }
 })();
 
+// Suite flakes (HIMMEL-5131): this checkout's suite-flake ledger rows over the last
+// BOARD_FLAKE_DAYS (default 7) days, one row per suite, most-flaked first. The rows
+// come from the checkout's own scripts/observability/suite-flake-summary.sh (repo id
+// filtered, bounded tail); a checkout without it renders no panel. An unreadable
+// ledger reads "suite flakes unavailable"; never fatal; not part of the fingerprint.
+const flakesSection = (() => {
+    const reader = join(repo, 'scripts', 'observability', 'suite-flake-summary.sh');
+    if (!existsSync(reader)) return '';
+    const d = Number.parseInt(process.env.BOARD_FLAKE_DAYS || '', 10);
+    const days = Number.isInteger(d) && d > 0 && d <= 3650 ? d : 7;
+    const title = `<h2>Suite flakes — last ${days} days</h2>`;
+    try {
+        const out = execFileSync('bash', [reader, '--days', String(days), '--format', 'counts'],
+            { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        if (out === '?') return `<section data-flakes="?">${title}<p class="none">suite flakes unavailable</p></section>`;
+        const rows = out.split('\n').map((l) => /^(\d+)\t(.+)$/.exec(l)).filter(Boolean).slice(0, 10);
+        if (!rows.length) return `<section data-flakes="0">${title}<p class="none">no suite flakes in the last ${days} days</p></section>`;
+        const tr = rows.map((m) => `<tr data-suite="${safe(m[2], 80)}"><td>${safe(m[2], 80)}</td><td>${m[1]}</td></tr>`).join('\n');
+        return `<section data-flakes="${rows.length}">${title}<table><tr><th>suite</th><th>flakes</th></tr>\n${tr}\n</table></section>`;
+    } catch { return `<section data-flakes="?">${title}<p class="none">suite flakes unavailable</p></section>`; }
+})();
+
 const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -654,6 +676,7 @@ ${ladder}
 </section>
 ${costSection}
 ${failuresSection}
+${flakesSection}
 ${panel('Needs the console', needRows, 'nothing waiting on the console')}
 ${panel('Open operator decisions', decisions.map((d) => `<li>${safe(d)}</li>`).join('\n'), 'none recorded (Live state decisions:)')}
 ${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}${releases.map((r) => `\n${releasePanel(r)}`).join('')}

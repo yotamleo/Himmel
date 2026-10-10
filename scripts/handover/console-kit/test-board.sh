@@ -637,6 +637,38 @@ QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null
 same 'failures panel: at most 10 rows' "$(grep -o '<tr data-class=' "$M/board.html" | wc -l | tr -d ' ')" "10"
 : > "$FL"
 
+# --- HIMMEL-5131: the suite-flake panel reads the checkout's own reader script.
+# RED control (pre-change board.mjs): no data-flakes section at all.
+mkdir -p "$W/repo/scripts/observability"
+cp "$HERE/../../observability/suite-flake-summary.sh" "$W/repo/scripts/observability/suite-flake-summary.sh"
+export SUITE_FLAKE_LEDGER="$W/suite-flake.jsonl" SUITE_FLAKE_REPO_ID=board-test-repo
+fknow=$(date +%s)
+fk() { printf '{"v":1,"ts":%s,"host":"h","source":"run-shell-tests","kind":"flake","suite":"%s","repo":"%s","case":"c","rc":1,"sha":"s","run":"1"}\n' "$1" "$2" "$3"; }
+rm -f "$SUITE_FLAKE_LEDGER"
+mrun >/dev/null
+contains 'flakes panel: no ledger reads the empty line (HIMMEL-5131)' "$(cat "$M/board.html")" '<section data-flakes="0"><h2>Suite flakes — last 7 days</h2><p class="none">no suite flakes in the last 7 days</p></section>'
+{
+    fk $((fknow - 100)) test-x.sh board-test-repo
+    fk $((fknow - 200)) test-x.sh board-test-repo
+    fk $((fknow - 300)) 'test-<b>.sh' board-test-repo
+    fk $((fknow - 400)) test-other.sh other-repo
+    fk $((fknow - 20 * 86400)) test-old.sh board-test-repo
+} > "$SUITE_FLAKE_LEDGER"
+mrun >/dev/null; rc=$?
+same 'flakes panel: render succeeds, rc 0 (HIMMEL-5131)' "$rc" "0"
+same 'flakes panel: per-suite counts for this repo inside the window, escaped' "$(sed -n '/data-flakes=/,/<\/section>/p' "$M/board.html")" '<section data-flakes="2"><h2>Suite flakes — last 7 days</h2><table><tr><th>suite</th><th>flakes</th></tr>
+<tr data-suite="test-x.sh"><td>test-x.sh</td><td>2</td></tr>
+<tr data-suite="test-&lt;b&gt;.sh"><td>test-&lt;b&gt;.sh</td><td>1</td></tr>
+</table></section>'
+rm -f "$SUITE_FLAKE_LEDGER"; mkdir -p "$SUITE_FLAKE_LEDGER"
+mrun >/dev/null; rc=$?
+same 'flakes panel: unreadable ledger, rc 0 (HIMMEL-5131)' "$rc" "0"
+contains 'flakes panel: unreadable ledger reads unavailable (HIMMEL-5131)' "$(cat "$M/board.html")" 'suite flakes unavailable'
+rmdir "$SUITE_FLAKE_LEDGER"
+rm -f "$W/repo/scripts/observability/suite-flake-summary.sh"
+mrun >/dev/null
+lacks 'flakes panel: a checkout without the reader renders no panel (HIMMEL-5131)' "$(cat "$M/board.html")" 'data-flakes='
+
 # --- a console FOR another checkout shows that checkout's PRs, not himmel's.
 # console.sh records the project on the doc's project line; every gh call must
 # run there. `none — ...` (a himmel console) keeps --repo. A recorded path that
