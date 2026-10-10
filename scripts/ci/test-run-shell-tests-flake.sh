@@ -478,17 +478,19 @@ mk_url_repo "$sb/n4" "file://LOCALHOST/srv/r.git"
 mk_url_repo "$sb/n5" "/host/r.git"
 n1=$(_flake_repo_id "$sb/n1" 2>&1); n2=$(_flake_repo_id "$sb/n2" 2>&1); n3=$(_flake_repo_id "$sb/n3" 2>&1)
 n4=$(_flake_repo_id "$sb/n4" 2>&1); n5=$(_flake_repo_id "$sb/n5" 2>&1)
-if [ -n "$n1" ] && [ "$n1" != "$f2" ] && [ "$n1" != "$n2" ] && [ "$n2" != "$f2" ]; then
+# an id is origin-<digits>: captured stderr from a failed lookup is not one
+_isid() { case "$1" in origin-[0-9]*) return 0 ;; *) return 1 ;; esac; }
+if _isid "$n1" && _isid "$n2" && [ "$n1" != "$f2" ] && [ "$n1" != "$n2" ] && [ "$n2" != "$f2" ]; then
   pass "F16: file:///srv/r%0A and %0A%0A are distinct from file:///srv/r and each other"
 else
   fail "F16: trailing newline: %0A [$n1] %0A%0A [$n2] vs file:///srv/r [$f2]"
 fi
-if [ -n "$n3" ] && [ "$n3" != "$f2" ]; then
+if _isid "$n3" && [ "$n3" != "$f2" ]; then
   pass "F16: file:///srv/r%00 stays escaped and is distinct from /srv/r"
 else
   fail "F16: %00: [$n3] vs file:///srv/r [$f2]"
 fi
-if [ "$n4" = "$p4" ] && [ "$h1" != "$n5" ]; then
+if _isid "$n4" && _isid "$n5" && [ "$n4" = "$p4" ] && [ "$h1" != "$n5" ]; then
   pass "F16: file://LOCALHOST/... is the local path; file://host/r.git is not /host/r.git"
 else
   fail "F16: LOCALHOST [$n4] want [$p4]; host form [$h1] vs /host/r.git [$n5] must differ"
