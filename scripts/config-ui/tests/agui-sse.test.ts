@@ -1,10 +1,10 @@
 import { test, expect, afterEach } from "bun:test";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
 import { mapFile } from "../agui/journal-mapper.ts";
-import { journalStream } from "../agui/sse.ts";
+import { journalStream, resolveJournal } from "../agui/sse.ts";
 
 // HIMMEL-4480 PR2: GET /api/agui/<run> streams a session journal as AG-UI over SSE.
 // seams: env.HOME (a temp HOME whose ~/.claude/projects holds the fixture journals),
@@ -52,7 +52,12 @@ async function readUntil(r: Response, done: (events: Record<string, unknown>[]) 
   let text = "";
   const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
-    const { value, done: end } = await reader.read();
+    // the deadline bounds the awaited read too: a stalled stream is cancelled, not left to bun's per-test timeout
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<"expired">((r) => { timer = setTimeout(r, deadline - Date.now(), "expired"); });
+    const next = await Promise.race([reader.read(), expired]).finally(() => clearTimeout(timer));
+    if (next === "expired") { await reader.cancel(); break; }
+    const { value, done: end } = next;
     if (end) break;
     text += dec.decode(value, { stream: true });
     if (done(parse(text))) break;
@@ -120,6 +125,48 @@ test("a project directory symlinked out of ~/.claude/projects is not served", as
   symlinkSync(join(h, "elsewhere"), join(h, ".claude", "projects", "-linked"));
   const { port } = boot(h);
   expect((await get(port, RUN)).status).toBe(404);
+});
+
+// HIMMEL-4657: the containment check and the open are separate steps; a swap in between must not be served.
+const direct = { threadId: RUN, pollMs: 20, idleMs: 200, maxMs: 5000, redact: (v: unknown) => v, onClose: () => {} };
+async function resolved(h: string): Promise<string> {
+  const found = await resolveJournal(h, RUN);
+  if (!("path" in found)) throw new Error(`not resolved: ${found.status}`);
+  return found.path;
+}
+
+test("a journal swapped for an outside symlink after it was resolved is not streamed", async () => {
+  const h = home();
+  journal(h, "-proj", RUN, "");
+  const p = await resolved(h);
+  const outside = join(h, "outside.jsonl");
+  writeFileSync(outside, readFileSync(join(FIX, "happy-path.jsonl")));
+  rmSync(p);
+  symlinkSync(outside, p);
+  await expect(new Response(journalStream(p, direct)).text()).rejects.toThrow();
+});
+
+test("a project directory swapped for an outside symlink after it was resolved is not streamed", async () => {
+  if (!existsSync("/proc/self/fd")) return; // a parent-directory swap is caught through procfs
+  const h = home();
+  journal(h, "-proj", RUN, "");
+  const p = await resolved(h);
+  mkdirSync(join(h, "elsewhere"));
+  writeFileSync(join(h, "elsewhere", `${RUN}.jsonl`), readFileSync(join(FIX, "happy-path.jsonl")));
+  const dir = join(h, ".claude", "projects", "-proj");
+  renameSync(dir, join(h, "moved"));
+  symlinkSync(join(h, "elsewhere"), dir);
+  await expect(new Response(journalStream(p, direct)).text()).rejects.toThrow();
+});
+
+test("readUntil gives up on a stalled stream at its own deadline and cancels the reader", async () => {
+  let cancelled = false;
+  const stalled = new Response(new ReadableStream({ pull: () => new Promise<void>(() => {}), cancel: () => { cancelled = true; } }));
+  const t0 = Date.now();
+  const { events } = await readUntil(stalled, () => false, 100);
+  expect(Date.now() - t0).toBeLessThan(1000);
+  expect(events).toEqual([]);
+  expect(cancelled).toBe(true);
 });
 
 test("a fixture journal streams the mapper's AG-UI events as SSE, then closes once the run ended and the file idles", async () => {
