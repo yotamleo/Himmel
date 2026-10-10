@@ -345,7 +345,10 @@ expect_open() {   # <name> <label>: marker is not `done`, no record, launcher fa
   local name="$1" label="$2" dir="$T/$1" state rc
   state="$(cat "$dir/$SID.recorder" 2>/dev/null)"
   gone_run "$name" "$dir"; rc=$?
-  if [ "$state" != "done" ] && [ ! -s "$dir/$SID.json" ] && [ "$rc" -eq 0 ]; then
+  # The marker must be the state the injected failure leaves (`failed`, or
+  # `started` for a kill): an absent or empty marker would fail open through the
+  # launcher's no-marker path and pass without the failure ever being reached.
+  if { [ "$state" = "failed" ] || [ "$state" = "started" ]; } && [ ! -s "$dir/$SID.json" ] && [ "$rc" -eq 0 ]; then
     ok "HIMMEL-5171: $label -> marker '$state', launcher fails open"
   else
     bad "HIMMEL-5171 $label: marker='$state' record=$([ -s "$dir/$SID.json" ] && echo present || echo none) launcher rc=$rc err=$(cat "$T/$name.err")"
