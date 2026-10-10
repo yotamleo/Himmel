@@ -672,5 +672,139 @@ check "31 ps empty, pid confirmed gone (ESRCH): reaped" "0" "$RC31"
 kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
 rm -f "$LIVE_DIR"/*.json
 
+# 32-35 (HIMMEL-5119): a row carries a heartbeat; the next admission reaps a row
+# whose heartbeat is older than HIMMEL_DISPATCH_ROW_TTL_SECS even when its pids
+# are alive (wedged worker) or the launch never persisted a worker pid.
+run_sut "$FAKE_OK" "$W/artifact32.txt" >/dev/null 2>&1
+check "32 dispatch row records a heartbeat" "number" "$(jq -r '.heartbeat | type' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
+rm -f "$LIVE_DIR"/*.json
+NOW32="$(date +%s)"
+sleep 60 & LIVE_PID=$!
+sleep 60 & WORKER_PID=$!
+mk_hb_row() { # <name> <heartbeat epoch>
+  jq -n --arg p "$LIVE_PID" --arg s "$(proc_start "$LIVE_PID")" --arg w "$WORKER_PID" --arg ws "$(proc_start "$WORKER_PID")" --argjson hb "$2" \
+    '{id:"hb", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+      worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb}' > "$LIVE_DIR/$1.json"
+}
+mk_hb_row fresh "$NOW32"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact33.txt"; RC33=$?
+check "33 live pids with a fresh heartbeat: slot kept" "1" "$RC33"
+check "33 fresh-heartbeat row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/fresh.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+mk_hb_row stale "$((NOW32 - 7200))"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact34.txt"; RC34=$?
+check "34 live pids with a stale heartbeat: reaped, admission succeeds" "0" "$RC34"
+check "34 stale-heartbeat row is marked interrupted" "interrupted" "$(jq -r '.status' "$LIVE_DIR/stale.json" 2>/dev/null)"
+check "34 the wedged worker was killed (start time matched)" "gone" "$(kill -0 "$WORKER_PID" 2>/dev/null && echo alive || echo gone)"
+check "34 the wrapper pid is left alone" "alive" "$(kill -0 "$LIVE_PID" 2>/dev/null && echo alive || echo gone)"
+rm -f "$LIVE_DIR"/*.json
+# 35: dead wrapper, launching mark, no worker pid persisted: kept while the
+# heartbeat is fresh (fail closed), reaped once it is past the TTL.
+jq -n --arg d "$DEAD_PID" --argjson hb "$NOW32" '{id:"lfresh", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($d|tonumber), pid_start:"Thu Jan 1 00:00:00 1970", launching:true, heartbeat:$hb}' > "$LIVE_DIR/lfresh.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact35.txt"; RC35=$?
+check "35 launching row without worker pid, fresh heartbeat: slot kept" "1" "$RC35"
+rm -f "$LIVE_DIR"/*.json
+jq -n --arg d "$DEAD_PID" --argjson hb "$((NOW32 - 7200))" '{id:"lstale", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($d|tonumber), pid_start:"Thu Jan 1 00:00:00 1970", launching:true, heartbeat:$hb}' > "$LIVE_DIR/lstale.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact35b.txt"; RC35B=$?
+check "35 launching row without worker pid past the TTL: reaped" "0" "$RC35B"
+check "35 stale launching row is marked interrupted" "interrupted" "$(jq -r '.status' "$LIVE_DIR/lstale.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill "$LIVE_PID" "$WORKER_PID" 2>/dev/null; wait "$LIVE_PID" "$WORKER_PID" 2>/dev/null
+
+# 36 (HIMMEL-5107): the dir-fallback steal restores a displaced LIVE reclaimer's
+# marker atomically. Drives steal_stale_reclaim_lock itself (extracted from the
+# SUT) with a seam stub, so the race is sequenced, not timed: the marker is
+# replaced by a live owner between the pid read and the rename (steal-seen), and a
+# third reclaimer takes the emptied slot after the mismatch is seen (steal-restore).
+STEAL_FN="$W/steal-fn.sh"
+sed -n '/^steal_stale_reclaim_lock() {/,/^}/p' "$SUT" > "$STEAL_FN"
+check "36 steal function extracted" "1" "$(grep -c '^steal_stale_reclaim_lock' "$STEAL_FN")"
+sleep 60 & OWNER_PID=$!
+sleep 60 & THIRD_PID=$!
+steal_run() { # <tag> <third|none>
+  (
+    RECLAIM_LOCK="$W/reclaim36-$1"
+    STEAL_MODE="$2"
+    mkdir "$RECLAIM_LOCK"; printf '%s' "$DEAD_PID" > "$RECLAIM_LOCK/pid"
+    # shellcheck disable=SC2329  # invoked by the sourced steal function
+    seam() {
+      case "$1" in
+        steal-seen) printf '%s' "$OWNER_PID" > "$RECLAIM_LOCK/pid" ;;
+        steal-restore)
+          if [ "$STEAL_MODE" = third ]; then mkdir "$RECLAIM_LOCK"; printf '%s' "$THIRD_PID" > "$RECLAIM_LOCK/pid"; fi ;;
+      esac
+    }
+    # shellcheck disable=SC1090
+    . "$STEAL_FN"
+    steal_stale_reclaim_lock
+  ) >/dev/null 2>&1
+}
+steal_run empty none
+check "36 displaced live marker is restored into the empty slot" "$OWNER_PID" "$(cat "$W/reclaim36-empty/pid" 2>/dev/null)"
+check "36 no .dead leftover after restore" "0" "$(ls -d "$W"/reclaim36-empty.dead.* 2>/dev/null | wc -l | tr -d ' ')"
+steal_run taken third
+check "36 third reclaimer's marker survives the restore race" "$THIRD_PID" "$(cat "$W/reclaim36-taken/pid" 2>/dev/null)"
+check "36 no marker nested inside the third reclaimer's slot" "1" "$(ls -A "$W/reclaim36-taken" 2>/dev/null | wc -l | tr -d ' ')"
+check "36 no .dead leftover after losing the race" "0" "$(ls -d "$W"/reclaim36-taken.dead.* 2>/dev/null | wc -l | tr -d ' ')"
+kill "$OWNER_PID" "$THIRD_PID" 2>/dev/null; wait "$OWNER_PID" "$THIRD_PID" 2>/dev/null
+
+# 37 (HIMMEL-5119, codex-1): an expired row whose worker ignores SIGTERM keeps
+# its slot; admitting a second dispatch beside a live worker exceeds the cap.
+sleep 60 & LIVE37=$!
+( trap '' TERM; exec sleep 60 ) & WORKER37=$!
+sleep 0.3
+jq -n --arg p "$LIVE37" --arg s "$(proc_start "$LIVE37")" --arg w "$WORKER37" --arg ws "$(proc_start "$WORKER37")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb37", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb}' > "$LIVE_DIR/hb37.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact37.txt"; RC37=$?
+check "37 expired row with a SIGTERM-ignoring worker: slot kept" "1" "$RC37"
+check "37 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb37.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill -KILL "$LIVE37" "$WORKER37" 2>/dev/null; wait "$LIVE37" "$WORKER37" 2>/dev/null
+
+# 38 (HIMMEL-5119, codex-2): an expired row whose worker pid is recorded but whose
+# start time is unknown cannot be shown dead; a live worker keeps the slot.
+sleep 60 & LIVE38=$!
+sleep 60 & WORKER38=$!
+jq -n --arg p "$LIVE38" --arg s "$(proc_start "$LIVE38")" --arg w "$WORKER38" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb38", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:"", heartbeat:$hb}' > "$LIVE_DIR/hb38.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact38.txt"; RC38=$?
+check "38 expired row, worker pid alive with unknown start: slot kept" "1" "$RC38"
+check "38 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb38.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill "$LIVE38" "$WORKER38" 2>/dev/null; wait "$LIVE38" "$WORKER38" 2>/dev/null
+
+# 39 (HIMMEL-5119, codex-1): the row carries its launcher's TTL; an admitter with a
+# shorter default TTL must not reap a row still inside its own.
+sleep 60 & LIVE39=$!
+sleep 60 & WORKER39=$!
+jq -n --arg p "$LIVE39" --arg s "$(proc_start "$LIVE39")" --arg w "$WORKER39" --arg ws "$(proc_start "$WORKER39")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb39", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb, ttl_secs:100000}' > "$LIVE_DIR/hb39.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact39.txt"; RC39=$?
+check "39 row inside its own longer TTL: slot kept" "1" "$RC39"
+check "39 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb39.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill "$LIVE39" "$WORKER39" 2>/dev/null; wait "$LIVE39" "$WORKER39" 2>/dev/null
+# 41 (HIMMEL-5119, codex-1 round 3): the worker root dies on SIGTERM but a
+# descendant ignores it; a live descendant keeps the slot just like a live root.
+sleep 60 & LIVE41=$!
+( bash -c 'trap "" TERM; exec sleep 60' & wait ) & WORKER41=$!
+sleep 0.5
+KID41="$(pgrep -P "$WORKER41" | head -n1)"
+jq -n --arg p "$LIVE41" --arg s "$(proc_start "$LIVE41")" --arg w "$WORKER41" --arg ws "$(proc_start "$WORKER41")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb41", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb}' > "$LIVE_DIR/hb41.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact41.txt"; RC41=$?
+check "41 expired row, root dies but a descendant ignores SIGTERM: slot kept" "1" "$RC41"
+check "41 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb41.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill -KILL "$LIVE41" "$WORKER41" "$KID41" 2>/dev/null; wait "$LIVE41" "$WORKER41" 2>/dev/null
+
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 run_sut "$FAKE_OK" "$W/artifact40.txt" >/dev/null 2>&1
+check "40 dispatch row records its TTL" "3600" "$(jq -r '.ttl_secs' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
+rm -f "$LIVE_DIR"/*.json
+
 echo "---$PASS passed, $FAIL failed, $SKIP skipped ---"
 [ "$FAIL" -eq 0 ]

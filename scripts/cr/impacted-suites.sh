@@ -830,6 +830,7 @@ scripts/himmelctl/test/*.sh scripts/himmelctl/test/test-suite-hermeticity.sh
 marketplace/plugins/lean-skills/skills/* marketplace/plugins/lean-skills/hooks/test-note-superpowers-prefix.sh
 marketplace/plugins/handover/templates/*-next-session.md marketplace/plugins/handover/scripts/test-skill-e2e.sh
 marketplace/plugins/*/hooks/hooks.json scripts/codex/test-codex-hook-parity.sh
+templates/luna-second-brain/scripts/* templates/luna-second-brain/scripts/test-vault-git.sh
 EOF
 }
 scan_roots > "$work/scan-roots" || io_fail "writing the scan-roots map"
@@ -940,12 +941,14 @@ fi
 # .ps1, every launch site, every ledger), so a file it never names can still
 # break it, and the textual match above would skip it. A suite that carries the
 # header line `# selector: tree-scan` is therefore listed whenever the range adds,
-# deletes or renames any file. The marker is read at BOTH the merge-base and the
-# head, so a PR cannot narrow the set by removing a marker; a suite no longer in
+# deletes, renames or retypes (regular file to symlink) any file. The marker is
+# read at BOTH the merge-base and the head; a PR that removes a suite's marker
+# must also change that suite, which the changed-suite rule already selects, so
+# the merge-base read is a second guard, not the only one. A suite no longer in
 # the head tree is dropped. ponytail: a content-only edit to a scanned file does
 # not trigger it (the cost would be every PR), upgrade path is "always" if a
 # modify-only break is ever recorded.
-if ! tree_shape=$(git diff -z --diff-filter=AD --name-only --no-renames "$mb" "$head_sha" | tr '\0' '\n'); then
+if ! tree_shape=$(git diff -z --diff-filter=ADT --name-only --no-renames "$mb" "$head_sha" | tr '\0' '\n'); then
     echo "impacted-suites.sh: git diff ${mb}..${head_sha} failed" >&2; exit 2
 fi
 if [ -n "$tree_shape" ]; then

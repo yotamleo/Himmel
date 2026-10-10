@@ -816,8 +816,58 @@ fi
 rm -rf "$sb13f"
 fi
 
+# 13g — the HIMMEL-2475 sweep rows (gitleaks, flock, node x2, jq x6) are each
+# pinned behaviourally (HIMMEL-5120): with the row's tool off PATH the suite is
+# [SKIPped loudly with `capability: <tool> not on PATH` and never executed. One
+# sandbox per tool holds every suite that tool gates; the PATH carries every
+# runner dependency except that tool, so the verdict cannot depend on this host.
+sweep13g_rows="
+gitleaks scripts/guardrails/test-gitleaks-retired-org.sh
+flock scripts/handover/console-kit/test-leg-doc-lock.sh
+node scripts/hooks/test-check-hook-lib-suites.sh
+node scripts/observability/test-agent-runtime-census.sh
+jq scripts/hooks/test-check-hook-file-parse.sh
+jq scripts/hooks/test-crlf-boundary.sh
+jq scripts/hooks/test-trigger-cr-on-pr-create.sh
+jq scripts/hooks/test-trigger-cr-on-push.sh
+jq scripts/lib/test-merge-block-alert.sh
+jq scripts/observability/test-tool-call-census.sh
+"
+for tool13g in gitleaks flock node jq; do
+  sb13g=$(mktemp -d "${TMPDIR:-/tmp}/rst-case13g.XXXXXX") || { fail "13g: mktemp failed ($tool13g)"; continue; }
+  mkdir -p "$sb13g/bin" "$sb13g/scripts"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$sb13g/scripts/test-pass.sh"
+  chmod +x "$sb13g/scripts/test-pass.sh"
+  rows13g=""
+  while read -r t13g s13g; do
+    [ "$t13g" = "$tool13g" ] || continue
+    mkdir -p "$sb13g/$(dirname "$s13g")"
+    # shellcheck disable=SC2016  # $0 must expand in the generated suite, not here
+    printf '#!/usr/bin/env bash\ntouch "$0.ran"\nexit 0\n' > "$sb13g/$s13g"
+    chmod +x "$sb13g/$s13g"
+    rows13g="$rows13g $s13g"
+  done <<< "$sweep13g_rows"
+  for tool in awk basename bash cat chmod cp cut date dirname env find flock git grep \
+      head hostname mkdir mktemp mv node npm perl pgrep ps python3 readlink realpath rm rmdir sed sh touch \
+      sha256sum sha1sum md5sum cksum sleep sort stat tail timeout tr uname uniq wc xargs; do
+    [ "$tool" != "$tool13g" ] || continue
+    tool_path=$(command -v "$tool") || continue
+    ln -s "$tool_path" "$sb13g/bin/$tool"
+  done
+  out13g=$(PATH="$sb13g/bin" bash "$RUNNER" "$sb13g/scripts" 2>&1); rc13g=$?
+  for s13g in $rows13g; do
+    if [ "$rc13g" -eq 0 ] && [ ! -f "$sb13g/$s13g.ran" ] \
+        && grepq "$out13g" -F "$s13g — capability: $tool13g not on PATH"; then
+      pass "13g: $tool13g absent -> $s13g SKIPped loudly, not run"
+    else
+      fail "13g: $tool13g absent -> expected a loud capability skip for $s13g; rc=$rc13g out: $out13g"
+    fi
+  done
+  rm -rf "$sb13g"
+done
+
 # --------------------------------------------------------------------------
-# Case 14— tier suites / SUITE_TIER + SUITE_TIER_MODE (HIMMEL-2120).
+# Case 14: tier suites / SUITE_TIER + SUITE_TIER_MODE (HIMMEL-2120).
 #   The production SUITE_TIER table now carries three extended entries (Task
 #   6), but every case here still drives the filter through the SUITE_TIER
 #   env override — the same seam SUITE_REQUIRE_TOOL already exposes for its

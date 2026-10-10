@@ -152,6 +152,13 @@ fi
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# HIMMEL-5119: a row's `heartbeat` (epoch seconds) is stamped at each lifecycle
+# write (row create, launching mark, worker pid record). A row older than the TTL
+# is reaped even with live pids, and a launching row with no worker pid ages out
+# too. Default is well above the longest expected dispatch (--max-turns bounded).
+ROW_TTL_SECS="${HIMMEL_DISPATCH_ROW_TTL_SECS:-14400}"
+case "$ROW_TTL_SECS" in ''|*[!0-9]*) ROW_TTL_SECS=14400 ;; esac
+
 # Process start time of <pid> ("" when it is gone or ps is unavailable). Paired
 # with the pid it identifies one process even after the pid is reused. TZ=UTC
 # LC_ALL=C (as proc-tree.sh does, HIMMEL-3791): lstart is printed in the caller's
@@ -179,6 +186,73 @@ pid_gone() { # <pid> <recorded start>
   [ -n "$2" ] && [ "$2" != "$cur" ]
 }
 
+# True when the row's heartbeat is older than the TTL. A row with no heartbeat
+# (written before HIMMEL-5119) is unknown, never stale.
+row_heartbeat_stale() {
+  local hb ttl
+  hb="$(jq -r '.heartbeat // empty' "$1" 2>/dev/null)"
+  case "$hb" in ''|*[!0-9]*) return 1 ;; esac
+  # The row carries the TTL its launcher chose; the admitter's own is the fallback.
+  ttl="$(jq -r '.ttl_secs // empty' "$1" 2>/dev/null)"
+  case "$ttl" in ''|*[!0-9]*) ttl="$ROW_TTL_SECS" ;; esac
+  [ $(( $(date +%s) - hb )) -gt "$ttl" ]
+}
+
+# Descendant pids of <pid> from one ps snapshot (breadth-first, bounded depth).
+tree_descendants() {
+  local snap found="" frontier="$1" next c pp pass=0
+  snap="$(ps -eo pid=,ppid= 2>/dev/null)" || return 0
+  while [ -n "$frontier" ] && [ "$pass" -lt 16 ]; do
+    next=""
+    while read -r c pp; do
+      case " $frontier " in
+        *" $pp "*)
+          case " $found $1 " in
+            *" $c "*) ;;
+            *) next="$next $c"; found="$found $c" ;;
+          esac ;;
+      esac
+    done <<< "$snap"
+    frontier="${next# }"
+    pass=$((pass + 1))
+  done
+  printf '%s\n' "${found# }"
+}
+
+# Kill the row's worker tree, only while its recorded start time still matches
+# (a reused pid is never touched). A wedged worker must not outlive its slot:
+# returns 1 when that worker is still alive after the kill (SIGTERM ignored), so
+# the caller keeps the slot rather than admit a second dispatch beside it.
+# ponytail: a row with no worker_pid/worker_start (launch gap) cannot be
+# confirmed dead and is released on TTL alone; upgrade path is a wrapper-side
+# process-group record (HIMMEL-5119).
+kill_expired_worker() {
+  local wpid wstart i kids k alive
+  wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
+  wstart="$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
+  case "$wpid" in ''|*[!0-9]*) return 0 ;; esac
+  # Gone or reused: nothing to kill. Alive (or unknown) with no start time to
+  # match against: its identity cannot be confirmed, so the slot stays held.
+  pid_gone "$wpid" "$wstart" && return 0
+  [ -n "$wstart" ] && [ -n "$(proc_start "$wpid")" ] || return 1
+  # Snapshot the descendants first: once the root dies they are reparented and
+  # no longer reachable from it.
+  kids="$(tree_descendants "$wpid")"
+  kill_tree "$wpid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 10 ]; do
+    alive=0
+    pid_gone "$wpid" "$wstart" || alive=1
+    for k in $kids; do
+      if kill -0 "$k" 2>/dev/null; then alive=1; fi
+    done
+    [ "$alive" = 0 ] && return 0
+    sleep 0.2
+    i=$((i + 1))
+  done
+  return 1
+}
+
 row_holder_dead() {
   local pid wpid
   command -v ps >/dev/null 2>&1 || return 1
@@ -197,16 +271,25 @@ row_holder_dead() {
 }
 
 count_active() {
-  local dir="$1" n=0 f status
+  local dir="$1" n=0 f status expired
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
     status="$(jq -r '.status // ""' "$f" 2>/dev/null)"
     case "$status" in
       dispatched|running)
-        if row_holder_dead "$f"; then
+        expired=0
+        if row_heartbeat_stale "$f"; then
+          expired=1
+          # A worker that survives the kill keeps the slot (fail closed).
+          kill_expired_worker "$f" || expired=2
+        fi
+        if [ "$expired" = 2 ]; then
+          echo "claude-headless.sh: expired row $f worker survived the kill; slot kept" >&2
+          n=$((n + 1))
+        elif [ "$expired" = 1 ] || row_holder_dead "$f"; then
           if jq --arg terminal_at "$(now_iso)" '.status = "interrupted" | .terminal_at = $terminal_at' "$f" > "$f.tmp" 2>/dev/null \
               && mv "$f.tmp" "$f" 2>/dev/null; then
-            echo "claude-headless.sh: reaped dead dispatched row $f" >&2
+            echo "claude-headless.sh: reaped dead or expired dispatched row $f" >&2
           else
             # Fail closed: an unpersisted reap keeps the slot held.
             rm -f "$f.tmp" 2>/dev/null
@@ -319,25 +402,29 @@ steal_stale_reclaim_lock() {
     seen="$(cat "$RECLAIM_LOCK/pid" 2>/dev/null || true)"
   fi
   if [ -n "$seen" ] && kill -0 "$seen" 2>/dev/null; then return 0; fi
+  seam steal-seen
   mv "$RECLAIM_LOCK" "$moved" 2>/dev/null || return 0
   if [ "$(cat "$moved/pid" 2>/dev/null || true)" = "$seen" ]; then
     rm -rf "$moved" 2>/dev/null || true
   else
-    # ponytail: dir fallback only (flock absent). Between the pid read and the
-    # rename a live reclaimer may take the marker we then move; while it is out
-    # of the slot a third process can take the slot and be admitted, and the
-    # first reclaimer then deletes that lock too — two admitted at cap-1, after
-    # three preemptions inside the steal window. Restore only into an empty
-    # slot (mv onto an existing dir would nest). Upgrade path: a kernel lock
-    # without flock(1), or require flock on macOS (HIMMEL-5107). Also open
-    # there: an owner pid still empty after 0.2s counts as dead, and
-    # HIMMEL_HEADLESS_SEAM_DIR / _NO_FLOCK are not in chokepoints.json
-    # seam_env_vars.
-    if [ -e "$RECLAIM_LOCK" ]; then
-      rm -rf "$moved" 2>/dev/null || true
-    else
-      mv "$moved" "$RECLAIM_LOCK" 2>/dev/null || rm -rf "$moved" 2>/dev/null || true
+    # Between the pid read and the rename a live reclaimer's marker may be the
+    # one we moved. Restore it by mkdir (atomic create-if-absent) and re-record
+    # its pid, never by mv: an mv onto a slot a third process took in the
+    # meantime nests the marker or replaces theirs (HIMMEL-5107). Losing the
+    # mkdir means the slot is taken and the displaced owner's own ownership
+    # re-check (reclaim_stale_lock) refuses it.
+    # ponytail: dir fallback only (flock absent). The displaced owner's
+    # check-then-rm in reclaim_stale_lock is still not atomic, so a steal landing
+    # between its pid re-check and its rm can still let two reclaimers proceed;
+    # no portable kernel lock exists without flock(1). Upgrade path: require
+    # flock on macOS (HIMMEL-5107). Also open: an owner pid still empty after
+    # 0.2s counts as dead, and HIMMEL_HEADLESS_SEAM_DIR / _NO_FLOCK are not in
+    # chokepoints.json seam_env_vars.
+    seam steal-restore
+    if mkdir "$RECLAIM_LOCK" 2>/dev/null; then
+      cp "$moved/pid" "$RECLAIM_LOCK/pid" 2>/dev/null || true
     fi
+    rm -rf "$moved" 2>/dev/null || true
   fi
 }
 lock_acquire() {
@@ -388,13 +475,16 @@ lock_release() {
 # (killed, crashed), that row would otherwise stay "dispatched" forever,
 # permanently consuming a concurrency slot. Mark it "interrupted" instead —
 # a real terminal state, so it stops counting as active. Full staleness
-# detection for a HUNG-but-still-running worker (heartbeats/TTL reaping) is
-# Chain 4's job (architecture doc §3); this only covers THIS process's own
-# death, which needs no heartbeat. A SIGKILL skips this trap, so the row also
-# records pid + pid_start and the next admission reaps it (count_active,
-# HIMMEL-2197). ponytail: no heartbeat/TTL, so a wedged-but-alive worker still
-# holds its slot; upgrade path is HIMMEL-5119 (Chain 4 heartbeats, architecture
-# doc §3).
+# detection for a HUNG-but-still-running worker is the heartbeat TTL (below);
+# this only covers THIS process's own death, which needs no heartbeat. A SIGKILL
+# skips this trap, so the row also records pid + pid_start and the next
+# admission reaps it (count_active, HIMMEL-2197). HIMMEL-5119: the row's
+# heartbeat is stamped at lifecycle writes only (create, launching, worker pid);
+# a worker alive past HIMMEL_DISPATCH_ROW_TTL_SECS is reaped and killed.
+# ponytail: the TTL is a wall-clock bound, not a progress probe (the worker's
+# progress is unobservable), so a legitimate dispatch longer than the TTL loses
+# its slot; raise the TTL for such callers, or add a worker-side heartbeat once
+# the envelope streams progress.
 #
 # codex-1 follow-up: marking the row terminal is not enough on its own — the
 # actual claude session runs as a BACKGROUND child (_LAUNCHED_CLAUDE_PID, set
@@ -555,9 +645,9 @@ ID="$(node -e "process.stdout.write(require('crypto').randomUUID())")" || { lock
 ROW="$LIVE_DIR/$ID.json"
 jq -n --arg id "$ID" --arg role "$ROLE" --arg worktree "$WORKTREE" --arg ticket "$TICKET" \
   --arg dispatched_at "$(now_iso)" --arg artifact "$ARTIFACT" \
-  --arg pid "$$" --arg pid_start "$(proc_start "$$")" \
+  --arg pid "$$" --arg pid_start "$(proc_start "$$")" --arg hb "$(date +%s)" --arg ttl "$ROW_TTL_SECS" \
   '{id:$id, role:$role, worktree:$worktree, ticket:$ticket, status:"dispatched",
-    pid:($pid|tonumber), pid_start:$pid_start,
+    pid:($pid|tonumber), pid_start:$pid_start, heartbeat:($hb|tonumber), ttl_secs:($ttl|tonumber),
     dispatched_at:$dispatched_at, terminal_at:null, artifact:$artifact,
     outcome:null, artifact_check:null}' > "$ROW.tmp" || { lock_release; die "could not write registry row: $ROW"; }
 mv "$ROW.tmp" "$ROW" || { lock_release; die "could not write registry row: $ROW"; }
@@ -622,11 +712,10 @@ STDOUT_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stdout.XXXXXX")"
 # lets that compound across every headless dispatch in a long session.
 DEDUPED_PATH="$(dedupe_path "$PATH")"
 # HIMMEL-2197: mark the row BEFORE the fork. A wrapper SIGKILLed between the
-# fork and the worker_pid write below must not look launch-free to the reaper.
-# ponytail: such a row keeps its slot forever (no heartbeat/TTL), upgrade path
-# is HIMMEL-5119.
+# fork and the worker_pid write below must not look launch-free to the reaper;
+# the heartbeat stamped here (HIMMEL-5119) bounds how long such a row holds a slot.
 if [ -n "${ROW:-}" ] && [ -f "$ROW" ]; then
-  if ! { jq '.launching = true' "$ROW" > "$ROW.tmp" 2>/dev/null && mv "$ROW.tmp" "$ROW" 2>/dev/null; }; then
+  if ! { jq --argjson hb "$(date +%s)" '.launching = true | .heartbeat = $hb' "$ROW" > "$ROW.tmp" 2>/dev/null && mv "$ROW.tmp" "$ROW" 2>/dev/null; }; then
     rm -f "$ROW.tmp" 2>/dev/null
     die "could not mark registry row launching: $ROW"
   fi
@@ -664,8 +753,8 @@ _LAUNCHED_CLAUDE_PID=$!
 # HIMMEL-2197: record the worker so a SIGKILLed wrapper's surviving worker keeps
 # its slot (row_holder_dead). Best effort: a failed write leaves the row as is.
 if [ -n "${ROW:-}" ] && [ -f "$ROW" ]; then
-  jq --arg wpid "$_LAUNCHED_CLAUDE_PID" --arg wstart "$(proc_start "$_LAUNCHED_CLAUDE_PID")" \
-    '.worker_pid = ($wpid|tonumber) | .worker_start = $wstart' "$ROW" > "$ROW.tmp" 2>/dev/null \
+  jq --arg wpid "$_LAUNCHED_CLAUDE_PID" --arg wstart "$(proc_start "$_LAUNCHED_CLAUDE_PID")" --argjson hb "$(date +%s)" \
+    '.worker_pid = ($wpid|tonumber) | .worker_start = $wstart | .heartbeat = $hb' "$ROW" > "$ROW.tmp" 2>/dev/null \
     && mv "$ROW.tmp" "$ROW" 2>/dev/null
 fi
 wait "$_LAUNCHED_CLAUDE_PID"

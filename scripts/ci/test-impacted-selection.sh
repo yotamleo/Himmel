@@ -23,6 +23,8 @@
 #   IS13 a PR that renames a file selects it
 #   IS14 a PR that only modifies an existing file does not select it
 #   IS15 lint: a suite that walks the real tree without the marker is flagged
+#   IS18 an allowlisted suite's narrow-regex walk still fails; wide-only is exempt
+#   IS19 a missing / unflagged / reasonless allowlist entry fails
 #
 # Platform guard: bash-only, no .ps1 twin; git + tar, Linux CI is the caller.
 #
@@ -61,6 +63,9 @@ printf '#!/usr/bin/env bash\n# drives tools/foo.sh\nexit 0\n' > "$SB/scripts/tes
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/scripts/test-bar.sh"
 printf '#!/usr/bin/env bash\n# selector: tree-scan\nexit 0\n' > "$SB/scripts/test-tree.sh"
 printf '# doc\n' > "$SB/docs/note.md"
+mkdir -p "$SB/templates/luna-second-brain/scripts"
+printf '# tpl\n' > "$SB/templates/luna-second-brain/scripts/setup.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/templates/luna-second-brain/scripts/test-vault-git.sh"
 g add -A; g commit -q -m "chore: pre-selector"
 PRE=$(g rev-parse HEAD)
 
@@ -109,6 +114,16 @@ g checkout -q -B renamed "$BASE"
 g mv "$SB/scripts/tools/foo.sh" "$SB/scripts/tools/foo2.sh"
 g commit -q -m "rename a file"
 H_REN=$(g rev-parse HEAD)
+# HIMMEL-5122: a typechange (regular file -> symlink) and a template-script edit.
+g checkout -q -B typed "$BASE"
+rm -f "$SB/scripts/tools/foo.sh"
+ln -s ../test-bar.sh "$SB/scripts/tools/foo.sh"
+g commit -q -am "typechange a file"
+H_TYP=$(g rev-parse HEAD)
+g checkout -q -B tpl "$BASE"
+printf '# edit\n' >> "$SB/templates/luna-second-brain/scripts/setup.sh"
+g commit -q -am "edit a template script"
+H_TPL=$(g rev-parse HEAD)
 g checkout -q "$BASE" 2>/dev/null
 
 sel() { (cd "$SB" && bash "$SEL" "$@" 2>&1); }
@@ -219,29 +234,130 @@ if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \
   pass "IS14: a content-only edit does not select the tree-scan suite"
 else fail "IS14: rc=$rc out: $out"; fi
 
-# --- IS15 -------------------------------------------------------------------
+# --- IS16 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_TYP"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'suite scripts/test-tree.sh'; then
+  pass "IS16: a typechange selects the tree-scan suite"
+else fail "IS16: rc=$rc out: $out"; fi
+
+# --- IS17 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_TPL"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \
+   && grepq "$out" -x 'suite templates/luna-second-brain/scripts/test-vault-git.sh' \
+   && ! grepq "$out" -x 'suite scripts/test-bar.sh'; then
+  pass "IS17: a template script edit selects test-vault-git.sh"
+else fail "IS17: rc=$rc out: $out"; fi
+
+# --- IS15 / IS18 / IS19 -----------------------------------------------------
 # Lint: a suite that enumerates the REAL repo tree (git ls-files / ls-tree /
-# find rooted at the repo variable) must carry the marker, or an added file it
-# never names breaks it while the selector skips it. A tripwire, not a parser:
-# it reads uncommented lines naming REPO / REPO_ROOT / SRC_ROOT / `repo,`.
+# find rooted at a repo or root variable) must carry the marker, or an added
+# file it never names breaks it while the selector skips it. A tripwire, not a
+# parser: it reads uncommented walk lines naming a *repo* / *root* variable or
+# `repo,`.
+#
+# HIMMEL-5122: the widened regex also reaches suites that walk a FIXTURE root,
+# so an allowlist table (`<suite>|<reason>`) exempts a suite -- but ONLY for hits
+# the widened regex adds beyond main's narrow regex ($REPO / $REPO_ROOT /
+# $SRC_ROOT). A narrow hit in an allowlisted suite still fails (IS18), and an
+# entry that is missing, no longer flagged, marked, or reasonless fails (IS19),
+# so the table cannot go stale or hide a walk main already caught.
+IS15_NARROW='\$\{?(REPO|REPO_ROOT|SRC_ROOT)\}?|, *repo\b'
+IS15_WIDE='\$\{?[A-Za-z_]*(repo|root)[A-Za-z_0-9]*\}?|, *repo\b'
+
+# is15_walks <file> <grep -E flag> <regex>: the uncommented walk lines it hits.
+is15_walks() {
+  grep -vE '^[[:space:]]*#' "$1" \
+    | grep -E '(ls-files|ls-tree|find )' \
+    | grep -vE 'ls-files -s|--error-unmatch' \
+    | grep "$2" "$3" || true
+}
+
+# is15_scan <root> <allow-table>; suite paths on stdin; prints the offenders.
+is15_scan() {
+  local root=$1 allow=$2 ts out=""
+  while IFS= read -r ts; do
+    [ -n "$ts" ] || continue
+    if [ ! -r "$root/$ts" ]; then out="$out $ts(unreadable)"; continue; fi
+    grep -qx '# selector: tree-scan' "$root/$ts" && continue
+    # A hit main's narrow regex already caught is never exempt.
+    if [ -n "$(is15_walks "$root/$ts" -E "$IS15_NARROW")" ]; then out="$out $ts"; continue; fi
+    [ -n "$(is15_walks "$root/$ts" -iE "$IS15_WIDE")" ] || continue
+    case " $(printf '%s\n' "$allow" | cut -d'|' -f1 | tr '\n' ' ') " in
+      *" $ts "*) continue ;;
+    esac
+    out="$out $ts"
+  done
+  # Every allowlist entry must exist, be unmarked, still be flagged by the
+  # widened regex, and carry its own reason.
+  local p reason
+  while IFS='|' read -r p reason; do
+    [ -n "$p" ] || continue
+    if [ ! -r "$root/$p" ]; then out="$out $p(stale:missing)"; continue; fi
+    if grep -qx '# selector: tree-scan' "$root/$p"; then out="$out $p(stale:marked)"; continue; fi
+    if [ -z "$reason" ]; then out="$out $p(no-reason)"; continue; fi
+    if [ -z "$(is15_walks "$root/$p" -iE "$IS15_WIDE")" ]; then out="$out $p(stale:not-flagged)"; fi
+  done <<< "$allow"
+  printf '%s' "$out"
+}
+
+# real tree, left unmarked on purpose, one reason per entry.
+IS15_ALLOW='scripts/test-adopt.sh|real tree, cost-excluded (HIMMEL-5123 follow-up if a selector-miss row names it)
+scripts/himmelctl/test/test-versioned-layout.sh|real tree, cost-excluded (HIMMEL-5123 follow-up if a selector-miss row names it)
+scripts/hooks/test-gitattributes-no-driver.sh|real tree, selected by the changed-suite name match, runs 0.01 s (not cost-excluded)
+scripts/test-uninstall-real-home-callers.sh|real tree, selected only by the case-sensitive content_rules ERE in impacted-suites.sh; lowercase .ps1 / quote-split callers are a known gap (follow-up ticket)
+scripts/ci/test-run-shell-tests.sh|real tree, marker owed after PR 2276 (HIMMEL-5123 item 1)
+scripts/cr/test-pr-check-run.sh|real tree, selected by the scripts/*.sh scan_roots row
+scripts/test-check-plugin-drift.sh|real tree, selected by the *package.json scan_roots row
+scripts/cr/test-pr-check-rounds.sh|fixture root, not the repo tree
+scripts/handover/console-kit/test-go.sh|fixture root, not the repo tree
+scripts/handover/console/test-console.sh|fixture root, not the repo tree
+scripts/handover/test-breadcrumb.sh|fixture root, not the repo tree
+scripts/handover/test-queue-lock.sh|fixture root, not the repo tree
+scripts/lanes/bench/scorecard/test-agg-burn.sh|fixture root, not the repo tree
+scripts/luna/test-graphmap-cadence.sh|fixture root, not the repo tree
+scripts/luna/test-qmd-cadence.sh|fixture root, not the repo tree
+scripts/release/test-tarball-vs-clone.sh|fixture root, not the repo tree
+scripts/test-tmp-reap.sh|fixture root, not the repo tree
+scripts/test-uninstall.sh|fixture root, not the repo tree'
+
 unmarked=""
 if ! suite_list=$(git -C "$SRC_ROOT" ls-files -- 'scripts/**/test-*.sh' 'scripts/test-*.sh' \
            'templates/**/test-*.sh' 'marketplace/**/test-*.sh') || [ -z "$suite_list" ]; then
   unmarked=" (git ls-files failed or listed no suites)"
   suite_list=""
 fi
-while IFS= read -r ts; do
-  [ -n "$ts" ] || continue
-  if [ ! -r "$SRC_ROOT/$ts" ]; then unmarked="$unmarked $ts(unreadable)"; continue; fi
-  grep -qx '# selector: tree-scan' "$SRC_ROOT/$ts" && continue
-  walks=$(grep -vE '^[[:space:]]*#' "$SRC_ROOT/$ts" \
-       | grep -E '(ls-files|ls-tree|find )' \
-       | grep -vE 'ls-files -s|--error-unmatch' \
-       | grep -E '\$\{?(REPO|REPO_ROOT|SRC_ROOT)\}?|, *repo\b' || true)
-  if [ -n "$walks" ]; then unmarked="$unmarked $ts"; fi
-done <<< "$suite_list"
+unmarked="$unmarked$(is15_scan "$SRC_ROOT" "$IS15_ALLOW" <<< "$suite_list")"
 if [ -z "$unmarked" ]; then
   pass "IS15: every suite that walks the real tree carries '# selector: tree-scan'"
 else fail "IS15: tree-walking suite(s) without the marker:$unmarked"; fi
+
+# Sandbox rows: the scan itself, on planted suites.
+S15="$(fixture_mktemp_dir)" || exit 1
+mkdir -p "$S15/scripts"
+# shellcheck disable=SC2016  # the planted lines must keep a literal $REPO / $root
+printf '%s\n' '#!/usr/bin/env bash' 'git -C "$REPO" ls-files' > "$S15/scripts/test-narrow.sh"
+# shellcheck disable=SC2016
+printf '%s\n' '#!/usr/bin/env bash' 'find "$root" -name x' > "$S15/scripts/test-wide.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'echo nothing' > "$S15/scripts/test-quiet.sh"
+
+o=$(is15_scan "$S15" 'scripts/test-narrow.sh|planted' <<< 'scripts/test-narrow.sh')
+case "$o" in
+  *scripts/test-narrow.sh*) pass "IS18: a narrow-regex walk in an allowlisted suite still fails" ;;
+  *) fail "IS18: allowlist hid a walk main's narrow regex catches: [$o]" ;;
+esac
+
+o=$(is15_scan "$S15" 'scripts/test-wide.sh|fixture root' <<< 'scripts/test-wide.sh')
+if [ -z "$o" ]; then pass "IS18: a wide-only walk in an allowlisted suite is exempt"
+else fail "IS18: wide-only allowlisted walk flagged: [$o]"; fi
+
+o=$(is15_scan "$S15" 'scripts/test-gone.sh|stale
+scripts/test-quiet.sh|no longer flagged
+scripts/test-wide.sh|' <<< 'scripts/test-wide.sh')
+case "$o" in
+  *scripts/test-gone.sh*scripts/test-quiet.sh*scripts/test-wide.sh*)
+    pass "IS19: a missing, unflagged or reasonless allowlist entry fails" ;;
+  *) fail "IS19: stale allowlist entries not all caught: [$o]" ;;
+esac
+rm -rf "$S15"
 
 rst_tally
