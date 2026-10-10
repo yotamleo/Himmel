@@ -93,8 +93,13 @@ while IFS= read -r line; do
       # an aggregate that failed only through cancelled shards can be told apart.
       scl="$concl"
       if [ "$scl" = "cancelled" ] && [ -n "$jid" ]; then
-        notes="$(gh api "repos/$REPO/check-runs/$jid/annotations" --jq '.[].message' 2>/dev/null)" || notes=""
-        if grep -q 'exceeded the maximum execution time' <<< "$notes"; then scl="timed_out"; fi
+        # An unreadable annotation cannot clear the shard: unknown stays red so a
+        # real timeout never drops the aggregate's failure.
+        if notes="$(gh api "repos/$REPO/check-runs/$jid/annotations" --jq '.[].message' 2>/dev/null)"; then
+          if grep -q 'exceeded the maximum execution time' <<< "$notes"; then scl="timed_out"; fi
+        else
+          scl="timed_out"
+        fi
       fi
       case "$scl" in
         failure|timed_out) shard_red=$((shard_red + 1)) ;;

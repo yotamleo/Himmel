@@ -40,12 +40,14 @@ BIN="$TMP/bin"; mkdir -p "$BIN"
 #   closed_list_fail  if present, only `issue list --state closed` exits 1
 #   edit_fail     if present, `issue edit` exits 1
 #   view_fail     if present, `issue view` exits 1
+#   ann_fail      if present, the check-run annotations read exits 1
 cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "gh $*" >> "$STUB/gh.log"
 case "$*" in
   "api "*"/jobs"*)          cat "$STUB/jobs.tsv" 2>/dev/null ;;
   "api "*"/check-runs/"*"/annotations"*)
+    [ -e "$STUB/ann_fail" ] && exit 1
     id="${2#*/check-runs/}"; id="${id%%/*}"; cat "$STUB/ann-$id" 2>/dev/null ;;
   "api "*"/compare/"*)      cat "$STUB/range.txt" 2>/dev/null ;;
   "api "*"/workflows/ci.yml/runs"*)
@@ -569,6 +571,15 @@ printf 'The job running on runner X has exceeded the maximum execution time of 3
 sweep
 has "gh issue create" "$log" "a timed-out shard keeps the aggregate failure red"
 has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when a shard timed out"
+
+# ... and a cancelled shard whose annotation cannot be read stays red (unknown
+# never clears it), so a real timeout cannot drop the aggregate failure.
+newcase unreadable-annotation-shard-aggregate-red
+awk -F'\t' -v OFS='\t' '$2=="shell-unit-shard (ubuntu-latest, 3)"{print $1,$2,"4343";next}{print}' "$PUSH_FIX" > "$STUB/jobs.tsv"
+: > "$STUB/ann_fail"
+sweep
+has "gh issue create" "$log" "an unreadable shard annotation keeps the aggregate failure red"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when a shard annotation was unreadable"
 
 # (a) a report recorded from the push aggregate closes on a green dispatch run.
 newcase push-aggregate-closes-on-dispatch
