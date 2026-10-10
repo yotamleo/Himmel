@@ -467,6 +467,32 @@ if [ "$h4" = "$p4" ] && [ "$h5" != "$p4" ]; then
 else
   fail "F16: localhost: [$h4] want [$p4]; localhostx [$h5] must differ"
 fi
+# HIMMEL-5161: a decoded trailing newline is part of the path, so
+# file:///srv/r%0A is a different directory from file:///srv/r (command
+# substitution would strip it); %00 stays escaped, so it is not /srv/r either;
+# the localhost host is case-insensitive; file://host/r.git is not /host/r.git.
+mk_url_repo "$sb/n1" "file:///srv/r%0A"
+mk_url_repo "$sb/n2" "file:///srv/r%0A%0A"
+mk_url_repo "$sb/n3" "file:///srv/r%00"
+mk_url_repo "$sb/n4" "file://LOCALHOST/srv/r.git"
+mk_url_repo "$sb/n5" "/host/r.git"
+n1=$(_flake_repo_id "$sb/n1" 2>&1); n2=$(_flake_repo_id "$sb/n2" 2>&1); n3=$(_flake_repo_id "$sb/n3" 2>&1)
+n4=$(_flake_repo_id "$sb/n4" 2>&1); n5=$(_flake_repo_id "$sb/n5" 2>&1)
+if [ -n "$n1" ] && [ "$n1" != "$f2" ] && [ "$n1" != "$n2" ] && [ "$n2" != "$f2" ]; then
+  pass "F16: file:///srv/r%0A and %0A%0A are distinct from file:///srv/r and each other"
+else
+  fail "F16: trailing newline: %0A [$n1] %0A%0A [$n2] vs file:///srv/r [$f2]"
+fi
+if [ -n "$n3" ] && [ "$n3" != "$f2" ]; then
+  pass "F16: file:///srv/r%00 stays escaped and is distinct from /srv/r"
+else
+  fail "F16: %00: [$n3] vs file:///srv/r [$f2]"
+fi
+if [ "$n4" = "$p4" ] && [ "$h1" != "$n5" ]; then
+  pass "F16: file://LOCALHOST/... is the local path; file://host/r.git is not /host/r.git"
+else
+  fail "F16: LOCALHOST [$n4] want [$p4]; host form [$h1] vs /host/r.git [$n5] must differ"
+fi
 mk_url_repo "$sb/ra/co" "../r.git"; mk_url_repo "$sb/rb/co" "../r.git"
 gq -C "$sb/ra/co" commit -q --allow-empty -m x
 # The worktree sits under a parent other than the checkout's, so a lib that

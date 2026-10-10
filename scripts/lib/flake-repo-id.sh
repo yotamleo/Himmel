@@ -56,13 +56,16 @@ _flake_norm_url() {
   local _u="$1" _b="${2:-}" _s="" _h _r _p _d="" _net=0 _host=0
   case "$_u" in
     [Ff][Ii][Ll][Ee]://*)
-      _u=$(_flake_urldecode "${_u#???????}")
+      # a sentinel x rides every substitution so a decoded trailing newline
+      # is part of the path (HIMMEL-5161)
+      _u=$(_flake_urldecode "${_u#???????}"; printf x); _u=${_u%x}
       case "$_u" in
         /*) ;;
         [Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]/*) _u=/${_u#*/} ;;
         *)
           _h=${_u%%/*}; _r=${_u#"$_h"}
-          _u="//$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]')$_r"; _host=1 ;;
+          _h=$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]'; printf x)
+          _u="//${_h%x}$_r"; _host=1 ;;
       esac ;;
     *://*) _s=$(printf '%s' "${_u%%://*}" | tr '[:upper:]' '[:lower:]'); _u=${_u#*://}; _net=1 ;;
     *) case "${_u%%/*}" in *:*) _u="${_u%%:*}/${_u#*:}"; _net=1 ;; esac ;;
@@ -70,8 +73,8 @@ _flake_norm_url() {
   if [ "$_net" = 0 ]; then
     if [ "$_host" = 0 ]; then
       case "$_u" in
-        /*) _u=$(_flake_join "$_u" "") ;;
-        *) [ -n "$_b" ] && _u=$(_flake_join "$_b" "$_u") ;;
+        /*) _u=$(_flake_join "$_u" ""; printf x); _u=${_u%x} ;;
+        *) [ -n "$_b" ] && { _u=$(_flake_join "$_b" "$_u"; printf x); _u=${_u%x}; } ;;
       esac
     fi
     printf '%s' "${_u%/}"
