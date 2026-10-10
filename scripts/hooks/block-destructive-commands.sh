@@ -166,6 +166,14 @@ contains() {
     [[ $cmd_lc =~ $re ]] || [[ $cmd_lc_join =~ $re ]]
 }
 
+# Bracket-class substitutions over ASCII-only classes, run in the C locale: in a
+# UTF-8 locale `${s//[class]/x}` is quadratic on multibyte text (HIMMEL-5154).
+# Multibyte UTF-8 sequences contain no ASCII byte, so byte semantics give the
+# same string. Result in REPLY.
+_c_strip_quotes() { local LC_ALL=C; REPLY=${1//[\"\'\\]/}; }
+_c_keep_char() { local LC_ALL=C; REPLY=${1//[^$2]/}; }
+_c_seps_to_nl() { local LC_ALL=C; REPLY=${1//[;|&]/$'\n'}; }
+
 deny() {
     echo "block-destructive-commands: destructive command refused ($1)" >&2
     exit 2
@@ -549,9 +557,9 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         # through to the ${CMDPOS} match below (fail-closed, same direction as
         # the unterminated-heredoc case above).
         _hd_line_prefix="${_hd_prefix##*$'\n'}"
-        _hd_sq="${_hd_line_prefix//[^\']/}"
-        _hd_dq="${_hd_line_prefix//[^\"]/}"
-        _hd_hash="${_hd_line_prefix//[^#]/}"
+        _c_keep_char "$_hd_line_prefix" "'"; _hd_sq=$REPLY
+        _c_keep_char "$_hd_line_prefix" '"'; _hd_dq=$REPLY
+        _c_keep_char "$_hd_line_prefix" '#'; _hd_hash=$REPLY
         if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )) || [[ -n $_hd_hash ]] ||
             { [ -n "$_hd_check_carried" ] && ! _hd_carried_clean "$_hd_prefix" && _hd_carried_hit=1; }; then
             rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw:${#_hd_prefix}+${#_hd_opener}}"
@@ -695,7 +703,7 @@ if [[ $_rm_src =~ $RM_ANSIC_ESC_PAT ]]; then
     deny "recursive rm (ANSI-C escape in rm argument)"
 fi
 rm_norm="${_rm_src//\$[\"\']/}"
-rm_norm="${rm_norm//[\"\'\\]/}"
+_c_strip_quotes "$rm_norm"; rm_norm=$REPLY
 rm_norm="${rm_norm//$'\t'/ }"
 while [[ $rm_norm == *'  '* ]]; do rm_norm="${rm_norm//  / }"; done
 # `command` plus any option run (`-p`, `--`, `-p --`) before rm: drop the wrapper.
@@ -1060,6 +1068,8 @@ if contains '(^|[^[:alnum:]_.-])git(\.exe)?[[:space:]]+push([^[:alnum:]_.-]|$)';
     # than trying to track which directory the push actually runs in.
     cd_chained=0
     contains '(^|[^[:alnum:]_.-])cd([^[:alnum:]_.-]|$)' && cd_chained=1
+    _c_seps_to_nl "$cmd_lc"; _push_lines_a=$REPLY
+    _c_seps_to_nl "$cmd_lc_join"; _push_lines_b=$REPLY
     while IFS= read -r seg; do
         [[ $seg =~ $push_line_re ]] || continue
         push_seg="${BASH_REMATCH[3]}"
@@ -1080,7 +1090,7 @@ if contains '(^|[^[:alnum:]_.-])git(\.exe)?[[:space:]]+push([^[:alnum:]_.-]|$)';
                 deny "force push"
             fi
         fi
-    done <<< "${cmd_lc//[;|&]/$'\n'}"$'\n'"${cmd_lc_join//[;|&]/$'\n'}"
+    done <<< "$_push_lines_a"$'\n'"$_push_lines_b"
 fi
 if contains '(^|[^[:alnum:]_.-])git(\.exe)?[[:space:]]+reset[[:space:]]+--hard([^[:alnum:]_-]|$)'; then
     deny "git reset --hard"

@@ -177,6 +177,51 @@ for m in $MEMBERS; do
     fi
 done
 
+# Pathological shapes (HIMMEL-5154). The prose heredoc above is the shape the
+# chain starved on, but each member has its own quadratic trap that prose never
+# reaches: a long multibyte word, quoted multibyte, a quote-dense line, a
+# `${...}` run, a `$"..."` run. One row per member, N and 4N repeats; a row
+# fails when its member is made quadratic again.
+rep() {  # rep <string> <count> -- doubling, so building the payload is linear
+    local s=$1 cnt=$2 out=$1 k=1
+    while [ $(( k * 2 )) -le "$cnt" ]; do out+=$out; k=$(( k * 2 )); done
+    while [ "$k" -lt "$cnt" ]; do out+=$s; k=$(( k + 1 )); done
+    printf '%s' "$out"
+}
+shape_row() {  # shape_row <member> <label> <unit> <small N> <big N> [<prefix> [<suffix> [<closer>]]]
+    local m=$1 label=$2 unit=$3 ns=$4 nb=$5 pre=${6:-echo } suf=${7:-} cl=${8:-} name small big
+    name=${m##*/}
+    if [ ! -f "$ROOT/$m" ]; then fail "$name $label: wired member missing"; return; fi
+    # a closer, when given, is repeated N times after the unit run (nesting)
+    payload "${pre}$(rep "$unit" "$ns")$([ -n "$cl" ] && rep "$cl" "$ns")${suf}" "$SANDBOX/s.json"
+    payload "${pre}$(rep "$unit" "$nb")$([ -n "$cl" ] && rep "$cl" "$nb")${suf}" "$SANDBOX/b.json"
+    BAD_RC=''
+    min_ms "$m" "$SANDBOX/s.json"; small=$MS
+    min_ms "$m" "$SANDBOX/b.json"; big=$MS
+    # A member that cannot source its library denies in about 2 ms at both
+    # sizes (rc 2 is a legal answer), which would pass the ratio vacuously: a
+    # shape row also requires that the member really scanned the payload.
+    # (10 ms: five times a lib-less exit, with headroom on fast hosts.)
+    if [ "$small" -lt 10 ]; then
+        fail "$name $label: ran ${small}ms at the small size (exited before scanning: vacuous row)"
+    elif [ $(( big * 10 )) -le $(( SCALE_MAX_X10 * small + 500 )) ]; then
+        pass "$name $label: 4x input ${small}ms -> ${big}ms (<= ${SCALE_MAX}x)"
+    else
+        fail "$name $label: 4x input ${small}ms -> ${big}ms (> ${SCALE_MAX}x: superlinear)"
+    fi
+    if [ -n "$BAD_RC" ]; then fail "$name $label: $BAD_RC (a member answers 0 or 2; anything else is broken)"; fi
+}
+# shellcheck disable=SC2016,SC2088  # shape units are command TEXT; nothing expands here
+{
+    shape_row scripts/hooks/block-write-into-main-checkout.sh 'one long U+3000 word' '　' 500 2000
+    shape_row scripts/hooks/block-destructive-commands.sh 'quoted multibyte' 'é"a b"; ' 1000 4000
+    shape_row scripts/hooks/require-quiet-run.sh 'quote-dense line' "'a b' " 2000 8000
+    shape_row scripts/hooks/block-chokepoint-env-prefix.sh '${...} run with multibyte' '${V}é' 500 2000 'echo é'
+    shape_row scripts/hooks/block-chokepoint-env-prefix.sh 'dense unmatched ${ openers' '${V:-' 2000 8000
+    shape_row scripts/hooks/block-chokepoint-env-prefix.sh 'deeply nested ${ with matching closers' '${V:-' 3000 12000 'echo ' '' '}'
+    shape_row scripts/hooks/block-edit-live-settings.sh '$"..." name words' '~/.cl$"a"ude/x ' 500 2000 'echo ' '> /tmp/out.txt'
+}
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"

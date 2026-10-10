@@ -258,75 +258,118 @@ strip_tabs() {
 #             same quote marks, same length, blank content - so detection
 #             gating still says "yes, a real heredoc operator is here" even
 #             though the delimiter text itself reads as blank in this copy.
+# _qr_until <from> <glob>: text of $s from <from> up to (excluding) the first
+# character matching <glob>, in _QR_PRE; _QR_HIT=1 when one matched, 0 when
+# the rest of the string had none (_QR_PRE is then the whole remainder).
+# Reads s/n and keeps the _wb/_ww/_we window of scan_quotes (dynamic scope):
+# every ${s:...} reference copies the whole of $s in bash 5.x, so the string
+# is touched once per window refill, not once per quote (HIMMEL-5154).
+_qr_until() {
+    local p=$1 pat=$2 w=256 chunk
+    while :; do
+        if [ "$p" -lt "$_wb" ] || [ "$p" -ge "$_we" ]; then
+            _wb=$p; _ww=${s:$p:$w}; _we=$((p + ${#_ww}))
+        fi
+        chunk=${_ww:$((p - _wb))}
+        # shellcheck disable=SC2295  # $pat is a glob on purpose, unquoted
+        _QR_PRE=${chunk%%$pat*}
+        if [ "$_QR_PRE" != "$chunk" ]; then _QR_HIT=1; return 0; fi
+        if [ "$_we" -ge "$n" ]; then _QR_HIT=0; return 0; fi
+        w=$(((_we - _wb) * 2))
+        _wb=$p; _ww=${s:$p:$w}; _we=$((p + ${#_ww}))
+    done
+}
+
+# _qr_at <from> <len>: up to <len> characters of $s at <from>, in _QR_TXT.
+_qr_at() {
+    local p=$1 l=$2
+    if [ "$p" -lt "$_wb" ] || [ "$((p + l))" -gt "$_we" ]; then
+        _wb=$p; _ww=${s:$p:256}; _we=$((p + ${#_ww}))
+    fi
+    _QR_TXT=${_ww:$((p - _wb)):$l}
+}
+
 scan_quotes() {
     # Every tested character is ASCII, so walk bytes: ${s:$i:1} re-decodes
     # the string from the start in a UTF-8 locale (quadratic, HIMMEL-4729).
     local LC_ALL=C
     local mode=$1 s=$2
-    local out="" i=0 n=${#s} c j closed cj span blank
+    local out="" acc="" i=0 n=${#s} j closed cj span blank _wb=0 _ww="" _we=0
+    local _QR_PRE _QR_HIT _QR_TXT
     while [ "$i" -lt "$n" ]; do
-        c=${s:$i:1}
-        case $c in
+        if [ "${#acc}" -gt 2048 ]; then out+=$acc; acc=""; fi
+        _qr_at "$i" 1
+        case $_QR_TXT in
             "'")
-                j=$((i + 1)); closed=0
-                while [ "$j" -lt "$n" ]; do
-                    [ "${s:$j:1}" = "'" ] && { closed=1; break; }
-                    j=$((j + 1))
-                done
+                _qr_until "$((i + 1))" "'"
+                closed=0
+                if [ "$_QR_HIT" = 1 ]; then
+                    closed=1
+                    span=$_QR_PRE
+                    j=$((i + 1 + ${#span}))
+                fi
                 if [ "$closed" = "1" ]; then
-                    span="${s:$((i + 1)):$((j - i - 1))}"
                     if [ "$mode" = "detect" ]; then
-                        blank=$(printf '%*s' "${#span}" '')
-                        out="${out}'${blank}'"
+                        printf -v blank '%*s' "${#span}" ''
+                        acc+="'${blank}'"
                     else
-                        out="${out}$(neutralize_chars "$span")"
+                        neutralize_chars "$span"
+                        acc+=$REPLY
                     fi
                     i=$((j + 1))
                 else
-                    out="${out}${s:$i}"
+                    acc+=${s:$i}
                     i=$n
                 fi
                 ;;
             '"')
-                j=$((i + 1)); closed=0
+                j=$((i + 1)); closed=0; span=""
                 while [ "$j" -lt "$n" ]; do
-                    cj=${s:$j:1}
+                    _qr_until "$j" '[\\"]'
+                    [ "$_QR_HIT" = 1 ] || break
+                    span+=$_QR_PRE
+                    j=$((j + ${#_QR_PRE}))
+                    _qr_at "$j" 1
+                    cj=$_QR_TXT
                     if [ "$cj" = "\\" ]; then
+                        _qr_at "$j" 2
+                        span+=$_QR_TXT
                         j=$((j + 2))
                         continue
                     fi
-                    [ "$cj" = '"' ] && { closed=1; break; }
-                    j=$((j + 1))
+                    closed=1; break
                 done
                 if [ "$closed" = "1" ]; then
-                    span="${s:$((i + 1)):$((j - i - 1))}"
                     if [ "$mode" = "detect" ]; then
-                        blank=$(printf '%*s' "${#span}" '')
-                        out="${out}\"${blank}\""
+                        printf -v blank '%*s' "${#span}" ''
+                        acc+="\"${blank}\""
                     else
                         # shellcheck disable=SC2016  # literal-substring case pattern, not meant to expand
                         case $span in
                             *'$('*|*'`'*)
-                                out="${out}\"${span}\""
+                                acc+="\"${span}\""
                                 ;;
                             *)
-                                out="${out}$(neutralize_chars "$span")"
+                                neutralize_chars "$span"
+                                acc+=$REPLY
                                 ;;
                         esac
                     fi
                     i=$((j + 1))
                 else
-                    out="${out}${s:$i}"
+                    acc+=${s:$i}
                     i=$n
                 fi
                 ;;
             *)
-                out="${out}${c}"
-                i=$((i + 1))
+                # a run of non-quote characters in one step
+                _qr_until "$i" "['\"]"
+                acc+=$_QR_PRE
+                i=$((i + ${#_QR_PRE}))
                 ;;
         esac
     done
-    printf '%s' "$out"
+    printf '%s' "$out$acc"
 }
 
 # HIMMEL-2322 stage 2 - unwrap quoted spans that don't need to stay quoted
@@ -350,16 +393,9 @@ scan_quotes() {
 neutralize_chars() {
     local LC_ALL=C
     local s=$1
-    local out="" i=0 n=${#s} c
-    while [ "$i" -lt "$n" ]; do
-        c=${s:$i:1}
-        case $c in
-            ';'|'&'|'|'|'('|')'|'{'|'}'|'`'|$'\n') out="${out} " ;;
-            *) out="${out}${c}" ;;
-        esac
-        i=$((i + 1))
-    done
-    printf '%s' "$out"
+    # one substitution pass instead of a per-character walk (HIMMEL-5154)
+    local seps=$';&|(){}`\n'
+    REPLY=${s//[$seps]/ }
 }
 
 neutralize_quoted_separators() {
