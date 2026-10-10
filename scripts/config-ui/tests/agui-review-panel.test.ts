@@ -112,14 +112,48 @@ describe("a /pr-check run", () => {
     expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
   });
 
-  test("a finding row applies unless the ledger refused something, or it was appended as an amend", () => {
-    const finding = (id: string, verdict: string) => `bash scripts/cr/ledger-append.sh finding --head ${HEAD} --id ${id} --verdict ${verdict} --reason r`;
+  // HIMMEL-5155: every finding row needs its own confirmation line; silence is no longer success.
+  const finding = (id: string, verdict: string) => `bash scripts/cr/ledger-append.sh finding --head ${HEAD} --id ${id} --verdict ${verdict} --reason r`;
+  const appended = (id: string) => `ledger-append.sh: appended finding ${id} at ${HEAD.slice(0, 8)}`;
+
+  test("a finding row applies only when its own confirmation line is in the result", () => {
     const deltas = withExtra([
       ...bash(1, `${finding("codex-1", "fixed")} || true`, "ledger-append.sh: finding codex-1 is ALREADY recorded at head 0123 with different content - NOTHING was written"),
-      ...bash(2, `${finding("codex-1", "fixed")}; ${finding("codex-2", "fixed")} || true`, "ledger-append.sh: appended verdict amend for codex-1 at 01234567\nledger-append.sh: --verdict must be agreed|disproved (got 'x') - NOTHING was written"),
+      ...bash(2, `${finding("codex-1", "fixed")}; ${finding("codex-2", "fixed")} || true`, `${appended("codex-1")}\nledger-append.sh: --verdict must be agreed|disproved (got 'x') - NOTHING was written`),
+      ...bash(3, `${finding("codex-2", "fixed")}`, ""),
     ]).filter((e) => e.type === "STATE_DELTA");
     expect(deltas).toHaveLength(3);
     expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("a silent success, a refused finding and an untaken conditional in one command show only the written row", () => {
+    const deltas = withExtra([
+      ...bash(
+        1,
+        `${finding("codex-1", "fixed")}; ${finding("codex-2", "agreed")} || true; if false; then ${finding("codex-3", "fixed")}; fi`,
+        `${appended("codex-1")}\nledger-append.sh: finding codex-2 is ALREADY recorded at head ${HEAD} with different content - NOTHING was written`,
+      ),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("a finding and an amend of one id are confirmed by their own lines", () => {
+    const amend = `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r`;
+    const deltas = withExtra([
+      ...bash(1, `${finding("codex-1", "agreed")}; ${amend} || true`, appended("codex-1")),
+      ...bash(2, `${finding("codex-2", "agreed")} || true; ${amend}`, amended("codex-1")),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(4);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "agreed" }] });
+    expect(deltas[3]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("a finding whose verdict went onto an existing row is confirmed by the verdict-amend line", () => {
+    const deltas = withExtra([
+      ...bash(1, finding("codex-1", "fixed"), `ledger-append.sh: appended verdict amend for codex-1 at ${HEAD.slice(0, 8)}`),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
   });
 
   // HIMMEL-4655 (codex-4): an Edit of a staged verdict file is followed, never shown stale.
