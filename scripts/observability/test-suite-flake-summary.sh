@@ -11,7 +11,6 @@
 #   R3  counts format is "<n><TAB><suite>", most-flaked first, inside --days
 #   R4  detail format carries suite, case, sha, run and the suite's repeat count
 #   R5  the id the reader derives equals the id the runner writes (drift guard)
-#   R11 the copied _flake_norm_url/_flake_repo_id equal run-shell-tests.sh's
 #   R6  only the last SUITE_FLAKE_TAIL_ROWS lines are read (bounded)
 #
 # Usage: bash scripts/observability/test-suite-flake-summary.sh
@@ -84,13 +83,6 @@ cp "$SUT" "$nr/scripts/observability/suite-flake-summary.sh"
    SUITE_LOCK_DIR="$SB/lock2" SUITE_ROTATE_STATE="$SB/rot2" bash scripts/ci/run-shell-tests.sh "$nr/suites" >/dev/null 2>&1)
 got=$(cd "$nr" && env -u SUITE_FLAKE_REPO_ID SUITE_FLAKE_LEDGER="$SB/noorigin.jsonl" bash scripts/observability/suite-flake-summary.sh --now "$(date +%s)" --days 1 --format tick 2>/dev/null)
 eq "R5b: no-origin checkout, reader sees the dir- id row the runner wrote" "$got" "1/1@test-flaky.sh*1"
-
-echo "== R11: the copied id functions are byte-equal to the runner's =="
-fn_block() { awk '/^_flake_norm_url\(\) \{/{p=1} p{print} p&&/^_flake_repo_id\(\) \{/{r=1} r&&/^\}/{exit}' "$1"; }
-RUNNER_FN="${FLAKE_RUNNER_SRC:-$REPO/scripts/ci/run-shell-tests.sh}"
-a=$(fn_block "$SUT"); b=$(fn_block "$RUNNER_FN")
-if [ -n "$a" ] && [ "$a" = "$b" ]; then pass "R11: _flake_norm_url and _flake_repo_id match run-shell-tests.sh byte for byte"
-else fail "R11: id functions drifted from run-shell-tests.sh (reader ${#a} bytes, runner ${#b} bytes)"; fi
 
 echo "== R6: bounded tail =="
 n=$(SUITE_FLAKE_TAIL_ROWS=2 SUITE_FLAKE_LEDGER="$L" SUITE_FLAKE_REPO_ID=repo-a bash "$SUT" --now "$NOW" --days 2 --format tick 2>/dev/null)

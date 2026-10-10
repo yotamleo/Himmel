@@ -3432,32 +3432,10 @@ fi
 # before this field existed has no "repo" key, so it matches no repo; rows written
 # under the earlier id schemes (raw URL, checkout path) stop matching too.
 
-# _flake_norm_url <url> — host/path with the scheme, user, trailing .git and
-# trailing slash dropped and the host lowercased, so the https, https+.git, ssh
-# and scp spellings of one origin agree.
-_flake_norm_url() {
-  local _u="$1" _h _r
-  case "$_u" in
-    *://*) _u=${_u#*://} ;;
-    *) case "${_u%%/*}" in *:*) _u="${_u%%:*}/${_u#*:}" ;; esac ;;
-  esac
-  case "${_u%%/*}" in *@*) _u=${_u#*@} ;; esac
-  _u=${_u%/}; _u=${_u%.git}; _u=${_u%/}
-  _h=${_u%%/*}; _r=${_u#"$_h"}
-  printf '%s%s' "$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]')" "$_r"
-}
-
-# _flake_repo_id <dir> — the default repo id for the checkout at <dir>.
-_flake_repo_id() {
-  local _url _common
-  _url=$(git -C "$1" config --get remote.origin.url 2>/dev/null)
-  if [ -n "$_url" ]; then
-    printf 'origin-%s' "$(_flake_norm_url "$_url" | cksum | cut -d' ' -f1)"
-  else
-    _common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-    printf 'dir-%s' "$(printf '%s' "${_common:-$1}" | cksum | cut -d' ' -f1)"
-  fi
-}
+# _flake_norm_url / _flake_repo_id live in scripts/lib/flake-repo-id.sh, which the
+# reader (scripts/observability/suite-flake-summary.sh) sources too (HIMMEL-5147).
+# shellcheck source=scripts/lib/flake-repo-id.sh
+. "$REPO_ROOT/scripts/lib/flake-repo-id.sh"
 if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
   SUITE_FLAKE_REPO_ID=$(_flake_repo_id "$REPO_ROOT")
 fi

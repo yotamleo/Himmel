@@ -27,6 +27,11 @@
 #   F14 a suite that fails both attempts keeps BOTH logs under FAIL_LOG_DIR
 #   F15 a repo id override with a backslash or quote is reduced to a safe
 #       charset and still matches its own rows
+#   F16 one repo is one id across URL spellings and worktrees; a relative or
+#       local-path origin stays case-exact and keeps its .git, a default port
+#       drops (HIMMEL-5144, HIMMEL-5145)
+#   F17 with no override, the row's repo is the shared lib's id for the
+#       runner's own checkout (HIMMEL-5147)
 #
 # Usage: bash scripts/ci/test-run-shell-tests-flake.sh
 set -uo pipefail
@@ -333,15 +338,16 @@ rm -rf "$sb"
 fi
 
 # --- F16 ------------------------------------------------------------------------
-# The default repo id is computed by _flake_repo_id; the runner cannot be pointed
-# at a fixture repo (it always means its own checkout), so the two functions are
-# lifted out of it and run against throwaway repos.
+# The default repo id is computed by _flake_repo_id (scripts/lib/flake-repo-id.sh,
+# shared with the reader); the runner cannot be pointed at a fixture repo (it
+# always means its own checkout), so the lib is sourced here and run against
+# throwaway repos.
 echo "== F16: one repo is one id across URL spellings and worktrees =="
 sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake16.XXXXXX") || { fail "F16: mktemp failed"; sb=""; }
 if [ -n "$sb" ]; then
-fns=$(sed -n '/^_flake_norm_url() {/,/^}/p;/^_flake_repo_id() {/,/^}/p' "$RUNNER")
-# shellcheck disable=SC1090
-eval "$fns"
+RUNNER_ROOT=$(cd "$(dirname "$RUNNER")/../.." && pwd)
+# shellcheck source=scripts/lib/flake-repo-id.sh
+. "$RUNNER_ROOT/scripts/lib/flake-repo-id.sh"
 # The runner drops these before any git call; a direct run of this suite (a hook
 # or wrapper that exported them) must not point the fixtures at another repo.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
@@ -366,6 +372,41 @@ else
   fail "F16: ids: [$i1] [$i2] [$i3] [$i4] [$i5] vs other [$i6]"
 fi
 case "$i1" in *github*|*tok*) fail "F16: the id leaks the URL: $i1" ;; esac
+# HIMMEL-5145: a plain relative or absolute path origin keeps its case and its
+# .git (two distinct dirs on a case-sensitive fs); a default port drops, others stay.
+mk_url_repo "$sb/p1" "Repo/project";  mk_url_repo "$sb/p2" "repo/project"
+mk_url_repo "$sb/p3" "/srv/r";        mk_url_repo "$sb/p4" "/srv/r.git"
+mk_url_repo "$sb/p5" "/srv/r/"
+mk_url_repo "$sb/q1" "ssh://git@github.com:22/o/r.git"
+mk_url_repo "$sb/q2" "https://GitHub.com:443/o/r"
+mk_url_repo "$sb/q3" "http://github.com:80/o/r.git"
+mk_url_repo "$sb/q4" "http://github.com/o/r"
+mk_url_repo "$sb/q5" "ssh://git@github.com:2222/o/r.git"
+mk_url_repo "$sb/q6" "https://github.com:22/o/r"
+p1=$(_flake_repo_id "$sb/p1" 2>&1); p2=$(_flake_repo_id "$sb/p2" 2>&1)
+p3=$(_flake_repo_id "$sb/p3" 2>&1); p4=$(_flake_repo_id "$sb/p4" 2>&1); p5=$(_flake_repo_id "$sb/p5" 2>&1)
+if [ -n "$p1" ] && [ "$p1" != "$p2" ]; then
+  pass "F16: Repo/project and repo/project are distinct ids"
+else
+  fail "F16: relative origins case-folded: [$p1] [$p2]"
+fi
+if [ -n "$p3" ] && [ "$p3" != "$p4" ] && [ "$p3" = "$p5" ]; then
+  pass "F16: /srv/r and /srv/r.git are distinct ids; a trailing slash does not matter"
+else
+  fail "F16: local path ids: /srv/r [$p3] /srv/r.git [$p4] /srv/r/ [$p5]"
+fi
+q1=$(_flake_repo_id "$sb/q1" 2>&1); q2=$(_flake_repo_id "$sb/q2" 2>&1); q3=$(_flake_repo_id "$sb/q3" 2>&1)
+q4=$(_flake_repo_id "$sb/q4" 2>&1); q5=$(_flake_repo_id "$sb/q5" 2>&1); q6=$(_flake_repo_id "$sb/q6" 2>&1)
+if [ "$q1" = "$i3" ] && [ "$q2" = "$i2" ] && [ "$q3" = "$q4" ]; then
+  pass "F16: ssh :22, https :443 and http :80 equal the portless spelling"
+else
+  fail "F16: default ports kept: q1 [$q1] vs scp [$i3]; q2 [$q2] vs https [$i2]; q3 [$q3] vs q4 [$q4]"
+fi
+if [ "$q5" != "$i3" ] && [ "$q6" != "$i2" ]; then
+  pass "F16: a non-default port, or another scheme's default, stays in the id"
+else
+  fail "F16: non-default port dropped: q5 [$q5] q6 [$q6]"
+fi
 mkdir -p "$sb/n1" "$sb/n2" && git -C "$sb/n1" init -q && git -C "$sb/n2" init -q
 gq -C "$sb/n1" commit -q --allow-empty -m x
 git -C "$sb/n1" worktree add -q "$sb/n1-wt" -b wt 2>/dev/null
@@ -374,6 +415,25 @@ if [ -n "$d1" ] && [ "$d1" = "$d2" ] && [ "$d1" != "$d3" ]; then
   pass "F16: a no-origin repo and its worktree share an id; another no-origin repo differs"
 else
   fail "F16: no-origin ids: main [$d1] worktree [$d2] other [$d3]"
+fi
+rm -rf "$sb"
+fi
+
+# --- F17 ------------------------------------------------------------------------
+# Runner level, no SUITE_FLAKE_REPO_ID override: the row's repo is the lib's id
+# for the runner's own checkout, so a runner that hard-codes an id (or stops
+# sourcing the lib) fails here.
+echo "== F17: the runner's default repo id is the lib's id for its own checkout =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake17.XXXXXX") || { fail "F17: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+want=$(_flake_repo_id "$RUNNER_ROOT")
+out=$(env -u SUITE_TIER_MODE -u SUITE_FLAKE_REPO_ID SUITE_FLAKE_LEDGER="$sb/ledger.jsonl" bash "$RUNNER" "$sb/scripts" 2>&1); rc=$?
+got=$(grep -o '"repo":"[^"]*"' "$sb/ledger.jsonl" 2>/dev/null | head -n 1)
+if [ "$rc" -eq 0 ] && [ -n "$want" ] && [ "$got" = "\"repo\":\"$want\"" ]; then
+  pass "F17: the ledger row carries the lib's id for the runner's checkout"
+else
+  fail "F17: rc=$rc want [$want] got [$got] out: $out"
 fi
 rm -rf "$sb"
 fi
