@@ -698,7 +698,8 @@ const pendingPath = (root: string) => join(root, "break-glass-pending.json");
 
 // The exact rule text the /allow-rule id resolves to, shown in the confirm prompt
 // (HIMMEL-5112) so the operator approves the text, not just an id. Same registry
-// and validity test as break-glass.sh (a string with no control characters), but
+// and validity test as break-glass.sh (a string with no control characters: the
+// Unicode Cc class plus U+2028/U+2029, an explicit set on both sides), but
 // read with JSON.parse: a registry it rejects (BOM, two documents) or an id with
 // no valid rule returns null and NO confirm code is issued, so the shell's more
 // lenient jq read never resolves a rule the operator did not see. A rule with a
@@ -713,7 +714,7 @@ function allowRuleText(id: string): string | null {
     rule = (JSON.parse(readFileSync(reg, "utf8")) as Record<string, unknown>)[id];
   } catch { rule = undefined; }
   // eslint-disable-next-line no-control-regex
-  if (typeof rule !== "string" || rule === "" || /[\u0000-\u001f\u007f-\u009f]/.test(rule) || !rule.isWellFormed() || rule.includes("\ufffd")) return null;
+  if (typeof rule !== "string" || rule === "" || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(rule) || !rule.isWellFormed() || rule.includes("\ufffd")) return null;
   return `${RULE_SHOWN_PREFIX}${rule}`;
 }
 

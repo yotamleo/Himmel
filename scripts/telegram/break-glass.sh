@@ -480,7 +480,7 @@ op_allow_rule() {
         echo "ERR break-glass: the allow-rule registry is not one clean JSON document" >&2
         return 26
     fi
-    rule="$(jq -r --arg id "$id" 'if type == "object" and (.[$id] | type) == "string" and (.[$id] | (test("\\p{Cc}") or contains("\ufffd")) | not) then .[$id] else empty end' "$reg" 2>/dev/null)" \
+    rule="$(jq -r --arg id "$id" 'if type == "object" and (.[$id] | type) == "string" and (.[$id] | (test("\\p{Cc}|\u2028|\u2029") or contains("\ufffd")) | not) then .[$id] else empty end' "$reg" 2>/dev/null)" \
         || { echo "ERR break-glass: cannot read the allow-rule registry" >&2; return 20; }
     if [ -z "$rule" ] || [[ "$rule" =~ [[:cntrl:]] ]]; then
         echo "ERR break-glass: no reviewed rule for id '$id'" >&2
