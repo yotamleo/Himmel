@@ -179,8 +179,10 @@ go_verdict_scope() (
     # shellcheck source=scripts/lib/user-slug.sh
     # shellcheck disable=SC1091
     . "$here/user-slug.sh" 2>/dev/null || exit 1
-    load_dotenv --root "$1" USER_SLUG >/dev/null 2>&1 || true
-    slug=$(user_slug 2>/dev/null) || exit 1
+    # HIMMEL-4622: the .env lives only in the primary checkout, so resolve it the
+    # way console.sh does; the forge/git fallback runs with the anchor as cwd.
+    load_dotenv --root "$(_load_dotenv_primary_for "$1" 2>/dev/null)" USER_SLUG >/dev/null 2>&1 || true
+    slug=$(cd "$1" 2>/dev/null && user_slug 2>/dev/null) || exit 1
     common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1
     reponame=$(basename "$(dirname "$common")")
     bucket=$(printf '%s' "$reponame" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')

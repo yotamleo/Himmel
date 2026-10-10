@@ -369,6 +369,29 @@ OTHERSHA=$(printf '%s' "$PINSHA" | tr '0-9a-f' '1-9a-f0')
 rc=0; fx_gate 92 "$OTHERSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "7j: a fix-GO for head $PINSHA passed for a moved head (rc=$rc)"
 
+# --- 8. go_verdict_scope user slug sources (HIMMEL-4622) --------------------
+# USER_SLUG absent from env: the slug comes from the PRIMARY's .env when the
+# anchor is a linked worktree (which has no .env), and the forge/git fallback
+# runs with the ANCHOR as cwd, never the caller's.
+SCHOME="$ROOT/scopehome"; mkdir -p "$SCHOME"
+sc_git() { HOME="$SCHOME" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"; }
+# shellcheck disable=SC2016  # $1/$2 expand in the inner bash, not here
+sc_scope() {  # <anchor> <caller-cwd> -> go_verdict_scope's stdout
+    ( cd "$2" && env -i HOME="$SCHOME" PATH="$PATH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        bash -c '. "$1"; go_verdict_scope "$2"' _ "$GO_GATE_SRC" "$1" 2>/dev/null )
+}
+SCP="$ROOT/scoperepo"; SCW="$ROOT/scopewt"; SCC="$ROOT/scopecaller"; SCN="$ROOT/scopenoenv"
+for d in "$SCP" "$SCC" "$SCN"; do mkdir -p "$d"; sc_git -C "$d" init -q; done
+sc_git -C "$SCC" config user.name "Caller Name"
+sc_git -C "$SCN" config user.name "Anchor Name"
+sc_git -C "$SCP" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+printf 'USER_SLUG=envuser\n' > "$SCP/.env"
+sc_git -C "$SCP" worktree add -q "$SCW" -b scopewt
+got=$(sc_scope "$SCW" "$SCC")
+[ "$got" = "envuser/scoperepo" ] || fail "8a: linked-worktree anchor did not take USER_SLUG from the primary's .env (got '$got')"
+got=$(sc_scope "$SCN" "$SCC")
+[ "$got" = "anchor-name/scopenoenv" ] || fail "8b: the user-slug fallback ran in the caller's cwd, not the anchor's (got '$got')"
+
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
     exit 0
