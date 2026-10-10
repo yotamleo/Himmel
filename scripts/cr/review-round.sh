@@ -241,7 +241,7 @@ EOF
 # candidate evidence is the explicit way out of a repeated-class stop.
 # shellcheck disable=SC2016  # JavaScript template fields are literal here
 judge_class_check() {
-    VERDICT_DIR="$dir" HISTORY="$verdict_state" CANDIDATE="$1" WANT="$2" SIGNED="$3" node -e '
+    VERDICT_DIR="$dir" HISTORY="$verdict_state" CANDIDATE="$1" WANT="$2" SIGNED="$3" ALT="${4:-}" node -e '
 const fs = require("fs"), path = require("path"), cp = require("child_process"), crypto = require("crypto"), e = process.env;
 // HIMMEL-4984: a layer-decision counts only from a record whose mac verified; the
 // bash side hands over qid/name:sha256 of the bytes it verified, and the record
@@ -273,12 +273,16 @@ const records = (qid) => {
       if (fields.length !== 1 || classes.some(c => !allowed.has(c))) throw Error("invalid history class " + file);
     }
     return { head: verdict[2], nogo: verdict[1] === "NO-GO", classes,
+      // HIMMEL-5109: a layer-decision line that lacks the layer keyword is not honoured; say so.
+      malformed: evidence.some(l => /^layer-decision:/.test(l) && !/^layer-decision: (text|os|classifier|accept)\s+\S.*$/.test(l)),
       decision: isSigned && evidence.some(l => /^layer-decision: (text|os|classifier|accept)\s+\S.*$/.test(l)) };
   });
 };
 try {
   const candidateRecords = candidates.flatMap(records);
-  const current = candidateRecords.filter(r => r.nogo && r.head === e.WANT);
+  // HIMMEL-5109: a NO-GO on a test- or comment-only descendant counts as bound to WANT.
+  const alt = new Set((e.ALT || "").split(" ").filter(Boolean));
+  const current = candidateRecords.filter(r => r.nogo && (r.head === e.WANT || alt.has(r.head)));
   if (current.some(r => r.decision)) process.exit(0);
   const classes = new Set(current.flatMap(r => r.classes));
   const prior = [];
@@ -290,7 +294,7 @@ try {
     if (head !== e.WANT) prior.push(...records(record.split("/")[0]).filter(r => r.nogo && r.head === head));
   }
   for (const r of candidateRecords) {
-    if (!r.nogo || r.head === e.WANT) continue;
+    if (!r.nogo || r.head === e.WANT || alt.has(r.head)) continue;
     // HIMMEL-4945: only a clean exit 1 means "not an ancestor"; a git error
     // (128: missing or shallow history), a spawn error or a signal keeps the
     // record, so an unreadable history never drops an earlier NO-GO.
@@ -301,7 +305,8 @@ try {
   }
   const repeated = [...new Set(prior.flatMap(r => r.classes).filter(c => classes.has(c)))];
   if (repeated.length) {
-    console.error(`review-round: repeated NO-GO class ${repeated.join(", ")} across heads of this PR - delta round refused (HIMMEL-4885); record layer-decision: text|os|classifier|accept <reason> in the candidate evidence`);
+    const lacks = current.some(r => r.malformed) ? " - a layer-decision line is present but lacks a layer keyword, so it is not honoured (HIMMEL-5109)" : "";
+    console.error(`review-round: repeated NO-GO class ${repeated.join(", ")} across heads of this PR - delta round refused (HIMMEL-4885); record layer-decision: text|os|classifier|accept <reason> in the candidate evidence${lacks}`);
     process.exit(8);
   }
 } catch (err) {
@@ -342,6 +347,60 @@ record_binds() {
     [ "${2#pr: }" = "$pr_want" ]
 }
 
+# test_path_p <path>: the test-path rule of the HIMMEL-4952 scope record.
+# Filename patterns match the basename only: * crosses / in case.
+test_path_p() {
+    case "$1" in
+        */tests/*|tests/*|*/test/*|test/*|*/__tests__/*) return 0 ;;
+    esac
+    case "${1##*/}" in
+        test-*.sh|*.test.[a-z]*) return 0 ;;
+    esac
+    return 1
+}
+
+# HIMMEL-5109: trivial_descendant <from> <to> succeeds when <to> is a strict
+# descendant of <from> and <from>..<to> changes only test paths (the
+# judge_scope_record rule) or only comment lines. A judge often reviews a head
+# after such a commit, which never got its own panel round.
+# ponytail: the comment test is a line-prefix heuristic, not per-language: a
+# line is a comment when it starts with "# " / "##" / a bare "#" or with "//"
+# and carries no directive word, so "#[cfg(test)]", CSS "#id" and "#Requires"
+# are refused; but a "# " or "//" line inside a multiline string or heredoc,
+# or a "//" line in a language where it is not a comment, still passes. It
+# only moves which head a signed NO-GO binds to, the delta round still reviews
+# from..to; upgrade path is a per-language comment parser.
+trivial_descendant() {
+    [ "$1" != "$2" ] || return 1
+    git merge-base --is-ancestor "$1" "$2" 2>/dev/null || return 1
+    _td_paths="$(git -c core.quotepath=off diff --no-renames --name-only "$1" "$2" 2>/dev/null)" || return 1
+    [ -n "$_td_paths" ] || return 1
+    _td_ok=1
+    while IFS= read -r _td_p; do
+        test_path_p "$_td_p" || { _td_ok=0; break; }
+    done <<EOF
+$_td_paths
+EOF
+    [ "$_td_ok" -eq 0 ] || return 0
+    # Binary edits and mode/create/delete changes carry no +/- text line, so a
+    # text-only scan would miss them: refuse any of them outright.
+    _td_bin="$(git diff --no-renames --numstat "$1" "$2" 2>/dev/null | grep -E '^-' || true)"
+    [ -z "$_td_bin" ] || return 1
+    _td_sum="$(git diff --no-renames --summary "$1" "$2" 2>/dev/null)" || return 1
+    [ -z "$_td_sum" ] || return 1
+    # Every added or removed line must be a comment or blank.
+    _td_lines="$(git diff --no-renames --no-color -U0 "$1" "$2" 2>/dev/null | sed -n -e '/^+++ /d' -e '/^--- /d' -e '/^[-+]/p')" || return 1
+    [ -n "$_td_lines" ] || return 1
+    _td_bad="$(printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#([[:space:]#]|$)|//)' || true)"
+    [ -z "$_td_bad" ] || return 1
+    # Directive words, encoding declarations (coding: / coding=) and C
+    # preprocessor lines change meaning although they start with #.
+    # Build constraints, type/format/lint pragmas and editor modelines too.
+    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*((#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=]|go:|\+build|@ts-|type:|fmt:|isort|pylint|mypy|pyright|yapf|-\*-|vim?:|<reference|sourceMappingURL)|#[[:space:]]*(define|include|undef|ifn?def|if|else|elif|endif|line|error|import)([^[:alnum:]_]|$))' || true)"
+    [ -z "$_td_dir" ] || return 1
+    return 0
+}
+
 # HIMMEL-4700: print space-separated "<qid>/<name>" records ruling NO-GO for
 # head $1 (one per qid), in console-kit/write-verdict.sh format, under this repo's
 # verdict scope; rc 1 when there is none. A qid counts only when every record
@@ -374,7 +433,7 @@ judge_nogo_record() (
     pr_want=""
     re_session='^writer-session: [A-Za-z0-9-]+$'
     re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
-    hits="" check_hits="" signed=""
+    hits="" check_hits="" signed="" alt=""
     for qdir in "$dir"/*/; do
         qdir="${qdir%/}"
         qid="${qdir##*/}"
@@ -433,7 +492,21 @@ EOF_SNAP
             # its NO-GO still feeds the class veto (a NO-GO only narrows).
             mac_ok=0
             if go_verdict_mac_ok_text "$snap" "$scope" "$qid" "$name"; then mac_ok=1; else macbad=1; fi
-            if [ "$word" = "NO-GO $want" ]; then
+            # HIMMEL-5109: a NO-GO on a test- or comment-only descendant of the
+            # reviewed head is bound to it; the judged head joins the class check.
+            judged=""
+            case "$word" in
+                "NO-GO "[0-9a-f]*)
+                    judged="${word#NO-GO }"
+                    # The delta's own new head never binds: a NO-GO there is
+                    # a finding on the head under review, not on the reviewed one.
+                    if [ "$judged" != "$want" ] && [ "$judged" != "${2:-}" ] && trivial_descendant "$want" "$judged"; then
+                        case " $alt " in *" $judged "*) ;; *) alt="${alt:+$alt }$judged" ;; esac
+                    else
+                        judged=""
+                    fi ;;
+            esac
+            if [ "$word" = "NO-GO $want" ] || { [ -n "$judged" ] && [ "$word" = "NO-GO $judged" ]; }; then
                 [ -n "$hit" ] || hit="$qid/$name"
                 # A layer-decision is honoured only from a signed record bound to
                 # this branch's PR; one written for another PR does not lift the stop.
@@ -452,7 +525,7 @@ EOF_SNAP
         fi
     done
     [ -n "$check_hits" ] || exit 1
-    judge_class_check "$check_hits" "$want" "$signed" || exit 8
+    judge_class_check "$check_hits" "$want" "$signed" "$alt" || exit 8
     [ "$pr_want" != "-" ] || exit 8
     [ -n "$hits" ] || exit 1
     printf '%s\n' "$hits"
@@ -610,14 +683,7 @@ EOF_SNAP
         if [ "${hit#* }" = "test-only" ]; then
             while IFS= read -r changed; do
                 # filename patterns match the basename only: * crosses / in case
-                scope_ok=0
-                case "$changed" in
-                    */tests/*|tests/*|*/test/*|test/*|*/__tests__/*) scope_ok=1 ;;
-                esac
-                case "${changed##*/}" in
-                    test-*.sh|*.test.[a-z]*) scope_ok=1 ;;
-                esac
-                if [ "$scope_ok" -ne 1 ]; then
+                if ! test_path_p "$changed"; then
                     echo "review-round: scope record ${hit%% *} is test-only but $from..$want changes non-test path $changed - delta round refused (HIMMEL-4952)" >&2
                     exit 8
                 fi
@@ -682,7 +748,7 @@ delta_check() {
     fi
     if ! delta_to="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" || [ -z "$delta_to" ]; then
         if [ -n "$delta_used" ]; then
-            delta_refuse ""
+            delta_refuse "review-round: --head $head_sha does not resolve to a commit"
             return 8
         fi
         echo "review-round: --head $head_sha does not resolve to a commit" >&2
@@ -695,8 +761,24 @@ delta_check() {
     if [ -n "$last_reviewed" ]; then
         delta_from="$(git rev-parse --verify --quiet "$last_reviewed^{commit}" 2>/dev/null)" || delta_from=""
     fi
+    # HIMMEL-5128: start persists .head before the panel runs, so a delta round
+    # whose panel left no critic rows (unavailable, claude-only) leaves .head on
+    # an unreviewed head. The used pair's <from> is then the latest
+    # critic-reviewed head, so scope from it: the judge record and the
+    # one-round-per-reviewed-head check stay keyed on a head a critic reviewed.
+    if [ -n "$delta_from" ] && [ "$(ledger_query avail "$delta_from")" != "ok" ] \
+        && [ "$delta_used" != "unreadable" ] && [ -n "$delta_used" ]; then
+        read -r used_from used_to _ <<EOF
+$delta_used
+EOF
+        if [ -n "$used_from" ] && [ "$used_to" = "$delta_from" ] \
+            && used_base="$(git rev-parse --verify --quiet "$used_from^{commit}" 2>/dev/null)" \
+            && [ "$(ledger_query avail "$used_base")" = "ok" ]; then
+            delta_from="$used_base"
+        fi
+    fi
     if [ -z "$delta_from" ] || [ "$(ledger_query avail "$delta_from")" != "ok" ]; then
-        delta_refuse "review-round: no critic-reviewed head of the last counted round on $branch to scope a delta round from - $full_note"
+        delta_refuse "review-round: no critic-reviewed head of the last counted round on $branch to scope a delta round from (${last_reviewed:-none} has no critic avail row) - $full_note"
         return 8
     fi
     if [ "$delta_from" = "$delta_to" ]; then
@@ -713,7 +795,7 @@ delta_check() {
     fi
     # A repeated-class veto also applies when a finding or merge-forward
     # could otherwise buy the delta: changing the trigger must not evade it.
-    delta_verdict="$(judge_nogo_record "$delta_from")"
+    delta_verdict="$(judge_nogo_record "$delta_from" "$delta_to")"
     judge_rc=$?
     [ "$judge_rc" -ne 8 ] || return 8
     # HIMMEL-4995: a clean merge-forward is admitted without spending the one
@@ -784,6 +866,8 @@ delta_check() {
 # Once the delta was used every refusal keeps naming it; otherwise print $1.
 delta_refuse() {
     if [ -n "$delta_used" ]; then
+        # HIMMEL-5128: name the check that fired; the used-delta note follows it.
+        [ -z "$1" ] || echo "$1" >&2
         echo "review-round: the one delta round was already used on $branch ($delta_used) - a second delta round is refused, and $full_note; only a judge NO-GO on the last reviewed head (console-kit/write-verdict.sh) buys another; ask the console" >&2
     else
         echo "$1" >&2
