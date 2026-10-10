@@ -137,7 +137,31 @@ test("the allow-rule confirm prompt shows the resolved rule text (HIMMEL-5112)",
     expect(h.replies[2]).not.toContain("\u001b");
     await issue(root, h, "/allow-rule not-listed");
     expect(h.replies[3]).toContain("no reviewed rule");
-    expect(h.replies[3]).toMatch(/\/confirm [0-9a-f]{8}/);
+    expect(h.replies[3]).not.toMatch(/\/confirm [0-9a-f]{8}/);
+  } finally {
+    if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
+  }
+});
+
+test("an allow-rule issues no confirm code when JSON.parse rejects the registry (HIMMEL-5112)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-ar-"));
+  const prev = process.env.BREAK_GLASS_ALLOW_REGISTRY;
+  try {
+    // jq reads both of these; JSON.parse throws, so the operator could not have seen the rule.
+    const shapes: Record<string, string> = {
+      bom: "\uFEFF" + JSON.stringify({ "fixture-one": "Bash(fixture:*)" }),
+      "two-documents": JSON.stringify({ "fixture-one": "Bash(a:*)" }) + JSON.stringify({ "fixture-one": "Bash(b:*)" }),
+    };
+    for (const [name, body] of Object.entries(shapes)) {
+      const reg = join(root, `${name}.json`);
+      await writeFile(reg, body);
+      process.env.BREAK_GLASS_ALLOW_REGISTRY = reg;
+      const h = harness();
+      await issue(root, h, "/allow-rule fixture-one");
+      expect(h.replies[0]).toContain("no reviewed rule");
+      expect(h.replies[0]).not.toMatch(/\/confirm [0-9a-f]{8}/);
+      expect(h.audits.map((a) => a.result)).toEqual(["confirm-refused"]);
+    }
   } finally {
     if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
   }
