@@ -81,7 +81,7 @@ done < <(decl_vars)
 if [ ! -f "$MARKER" ]; then
   echo "setup-script MISSING no stamp at $MARKER (setup script not run, or an older one)"
   bad=1
-elif [ "$(cat "$MARKER")" = "$(sha "$SETUP")" ]; then
+elif cur="$(sha "$SETUP")" && [ -n "$cur" ] && [ "$(cat "$MARKER")" = "$cur" ]; then
   echo "setup-script ok"
 else
   echo "setup-script STALE the cached snapshot ran an older setup-env.sh; bump '# rev:' in the dialog's setup script to rebuild"

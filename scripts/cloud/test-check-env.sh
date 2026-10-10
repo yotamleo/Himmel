@@ -67,6 +67,14 @@ run "${GOODENV[@]}" --
 case "$OUT" in *MISSING*) ok "absent marker is reported as MISSING" ;; *) bad "MISSING not reported: $OUT" ;; esac
 if [ "$RC" -eq 1 ]; then ok "absent marker exits 1"; else bad "missing rc=$RC"; fi
 
+# 5b. an empty marker beside an unhashable setup script must not read as ok.
+: > "$MARK"
+mv "$FAKE/scripts/cloud/setup-env.sh" "$FAKE/scripts/cloud/setup-env.sh.gone"
+run "${GOODENV[@]}" --
+case "$OUT" in *"setup-script ok"*) bad "empty digest read as ok: $OUT" ;; *) ok "empty digest is not reported ok" ;; esac
+mv "$FAKE/scripts/cloud/setup-env.sh.gone" "$FAKE/scripts/cloud/setup-env.sh"
+rm -f "$MARK"
+
 # 6. --print emits the paste block from the declaration and the fork's origin.
 run --  --print
 if [ "$RC" -eq 0 ]; then ok "--print exits 0"; else bad "--print rc=$RC: $OUT"; fi
