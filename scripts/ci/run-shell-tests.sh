@@ -3427,7 +3427,7 @@ fi
 
 # Repo id carried by every ledger row and matched by the repeat check
 # (HIMMEL-5121): SUITE_FLAKE_REPO_ID, else a cksum of the origin URL (never the
-# URL itself, which may embed a credential), else the checkout directory name.
+# URL itself, which may embed a credential), else a cksum of the checkout path.
 # A row written before this field existed has no "repo" key, so it matches no
 # repo: after upgrading, the first flake of a suite in each repo is unmatched.
 if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
@@ -3435,7 +3435,7 @@ if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
   if [ -n "$_repo_url" ]; then
     SUITE_FLAKE_REPO_ID="origin-$(printf '%s' "$_repo_url" | cksum | cut -d' ' -f1)"
   else
-    SUITE_FLAKE_REPO_ID="dir-$(basename "$REPO_ROOT")"
+    SUITE_FLAKE_REPO_ID="dir-$(printf '%s' "$REPO_ROOT" | cksum | cut -d' ' -f1)"
   fi
 fi
 
