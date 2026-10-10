@@ -319,6 +319,7 @@ mkdir -p "$JD/j9401" "$JD/j9402" "$JD/j9403" "$JD/j9404"
 for n in 9401 9402 9403 9404; do : > "$JD/j$n/f"; holder "$JD/j$n" "$$ $(pstart $$)"; done
 : > "$JD/j9401/.verdict-written"; : > "$ROOT/marker-target"; ln -s "$ROOT/marker-target" "$JD/j9403/.verdict-written"
 : > "$JD/j9404/.verdict-written"; ( cd "$JD/j9404" && exec sleep 300 ) & CWD_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ "$(readlink "/proc/$CWD_PID/cwd" 2>/dev/null)" = "$JD/j9404" ] && break; sleep 0.1; done
 out="$(reap --apply --judge 9401)"; check "15. scoped rc 0" "$?" 0
 absent "15. live holder + verdict marker: dir reaped (scoped)" "$JD/j9401"
 out="$(reap --apply --judge 9402)"
@@ -341,6 +342,8 @@ check "14. creates and prints the dir" "$d" "$JD/j9201"
 check "14. rc 0" "$rc" 0
 check "14. holder = ancestor session pid + start time" "$(cat "$JD/j9201/.holder")" "$$ $(pstart $$)"
 d="$(jd 9201 b)"; check "14. suffix dir" "$d" "$JD/j9201b"
+: > "$JD/j9201/.verdict-written"; d="$(jd 9201)"; [ -e "$JD/j9201/.verdict-written" ] && stale=kept || stale=cleared
+check "14. reuse clears a stale verdict marker (HIMMEL-5165)" "$stale" cleared
 d="$(jd 9a 2>/dev/null)"; rc=$?; check "14. non-numeric PR refused" "$rc" 2; check "14. ... and prints no dir" "$d" ""
 d="$(jd 9201 B 2>/dev/null)"; rc=$?; check "14. suffix outside [a-z] refused" "$rc" 2; check "14. ... and prints no dir" "$d" ""
 d="$(jd 9201 ab 2>/dev/null)"; rc=$?; check "14. multi-char suffix refused" "$rc" 2
