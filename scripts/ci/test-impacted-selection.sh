@@ -24,7 +24,10 @@
 #   IS14 a PR that only modifies an existing file does not select it
 #   IS15 lint: a suite that walks the real tree without the marker is flagged
 #   IS18 an allowlisted suite's narrow-regex walk still fails; wide-only is exempt
-#   IS19 a missing / unflagged / reasonless allowlist entry fails
+#   IS19 a missing / unflagged / marked / reasonless allowlist entry fails
+#   IS20 a lowercase or quote-split uninstall caller selects the callers suite
+#   IS21 a template root file edit selects test-vault-git.sh (HIMMEL-5132)
+#   IS15b a planted unmarked tree-walking suite is flagged by the real walk list
 #
 # Platform guard: bash-only, no .ps1 twin; git + tar, Linux CI is the caller.
 #
@@ -66,6 +69,9 @@ printf '# doc\n' > "$SB/docs/note.md"
 mkdir -p "$SB/templates/luna-second-brain/scripts"
 printf '# tpl\n' > "$SB/templates/luna-second-brain/scripts/setup.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/templates/luna-second-brain/scripts/test-vault-git.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/scripts/test-uninstall-real-home-callers.sh"
+printf '# ignore\n' > "$SB/templates/luna-second-brain/.gitignore"
+printf '# readme\n' > "$SB/templates/luna-second-brain/README.md"
 g add -A; g commit -q -m "chore: pre-selector"
 PRE=$(g rev-parse HEAD)
 
@@ -124,6 +130,27 @@ g checkout -q -B tpl "$BASE"
 printf '# edit\n' >> "$SB/templates/luna-second-brain/scripts/setup.sh"
 g commit -q -am "edit a template script"
 H_TPL=$(g rev-parse HEAD)
+# HIMMEL-5132: uninstall callers the case-sensitive, quote-blind rule missed,
+# and template root files test-vault-git.sh copies.
+g checkout -q -B lcps "$BASE"
+# The fence variable is assembled from parts so this file's own text never
+# matches test-uninstall-real-home-callers.sh's scan (the suite does the same).
+UN_A=HIMMEL; UN_B=_UNINSTALL_; UN_C=REAL_HOME
+UN_LOWER=$(printf '%s%s%s' "$UN_A" "$UN_B" "$UN_C" | tr '[:upper:]' '[:lower:]')
+# shellcheck disable=SC2016  # the planted text keeps a literal $env:
+printf '$env:%s = 1\n' "$UN_LOWER" > "$SB/scripts/tools/caller.ps1"
+g add -A; g commit -q -m "lowercase ps1 caller"
+H_LCPS=$(g rev-parse HEAD)
+g checkout -q -B qsplit "$BASE"
+printf 'export %s""%s%s=1\n' "$UN_A" "$UN_B" "$UN_C" > "$SB/scripts/tools/split.sh"
+g add -A; g commit -q -m "quote-split caller"
+H_QSPLIT=$(g rev-parse HEAD)
+g checkout -q -B contsplit "$BASE"
+printf 'export %s%s\\\n%s=1\n' "$UN_A" "$UN_B" "$UN_C" > "$SB/scripts/tools/cont.sh"
+g add -A; g commit -q -m "continuation-split caller"
+H_CONT=$(g rev-parse HEAD)
+H_TPLGI=$(branch tplgi templates/luna-second-brain/.gitignore '# edit')
+H_TPLRM=$(branch tplrm templates/luna-second-brain/README.md '# edit')
 g checkout -q "$BASE" 2>/dev/null
 
 sel() { (cd "$SB" && bash "$SEL" "$@" 2>&1); }
@@ -248,6 +275,20 @@ if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \
   pass "IS17: a template script edit selects test-vault-git.sh"
 else fail "IS17: rc=$rc out: $out"; fi
 
+# --- IS20 / IS21 ------------------------------------------------------------
+for pair in "lowercase .ps1 caller:$H_LCPS" "quote-split name:$H_QSPLIT" "continuation-split name:$H_CONT"; do
+  out=$(sel "$BASE" "${pair##*:}"); rc=$?
+  if [ "$rc" -eq 0 ] && grepq "$out" -x 'suite scripts/test-uninstall-real-home-callers.sh'; then
+    pass "IS20: a ${pair%%:*} selects the uninstall callers suite"
+  else fail "IS20: ${pair%%:*}: rc=$rc out: $out"; fi
+done
+for pair in ".gitignore:$H_TPLGI" "README.md:$H_TPLRM"; do
+  out=$(sel "$BASE" "${pair##*:}"); rc=$?
+  if [ "$rc" -eq 0 ] && grepq "$out" -x 'suite templates/luna-second-brain/scripts/test-vault-git.sh'; then
+    pass "IS21: a template ${pair%%:*} edit selects test-vault-git.sh"
+  else fail "IS21: ${pair%%:*}: rc=$rc out: $out"; fi
+done
+
 # --- IS15 / IS18 / IS19 -----------------------------------------------------
 # Lint: a suite that enumerates the REAL repo tree (git ls-files / ls-tree /
 # find rooted at a repo or root variable) must carry the marker, or an added
@@ -304,7 +345,7 @@ is15_scan() {
 IS15_ALLOW='scripts/test-adopt.sh|real tree, cost-excluded (HIMMEL-5123 follow-up if a selector-miss row names it)
 scripts/himmelctl/test/test-versioned-layout.sh|real tree, cost-excluded (HIMMEL-5123 follow-up if a selector-miss row names it)
 scripts/hooks/test-gitattributes-no-driver.sh|real tree, selected by the changed-suite name match, runs 0.01 s (not cost-excluded)
-scripts/test-uninstall-real-home-callers.sh|real tree, selected only by the case-sensitive content_rules ERE in impacted-suites.sh; lowercase .ps1 / quote-split callers are a known gap (follow-up ticket)
+scripts/test-uninstall-real-home-callers.sh|real tree, selected by the content_rules ERE in impacted-suites.sh (case- and quote/continuation-split tolerant, HIMMEL-5132)
 scripts/cr/test-pr-check-run.sh|real tree, selected by the scripts/*.sh scan_roots row
 scripts/test-check-plugin-drift.sh|real tree, selected by the *package.json scan_roots row
 scripts/cr/test-pr-check-rounds.sh|fixture root, not the repo tree
@@ -319,9 +360,14 @@ scripts/release/test-tarball-vs-clone.sh|fixture root, not the repo tree
 scripts/test-tmp-reap.sh|fixture root, not the repo tree
 scripts/test-uninstall.sh|fixture root, not the repo tree'
 
+# is15_suites <root>: the real walk list (every tracked suite under these trees).
+is15_suites() {
+  git -C "$1" ls-files -- 'scripts/**/test-*.sh' 'scripts/test-*.sh' \
+    'templates/**/test-*.sh' 'marketplace/**/test-*.sh'
+}
+
 unmarked=""
-if ! suite_list=$(git -C "$SRC_ROOT" ls-files -- 'scripts/**/test-*.sh' 'scripts/test-*.sh' \
-           'templates/**/test-*.sh' 'marketplace/**/test-*.sh') || [ -z "$suite_list" ]; then
+if ! suite_list=$(is15_suites "$SRC_ROOT") || [ -z "$suite_list" ]; then
   unmarked=" (git ls-files failed or listed no suites)"
   suite_list=""
 fi
@@ -357,6 +403,35 @@ case "$o" in
     pass "IS19: a missing, unflagged or reasonless allowlist entry fails" ;;
   *) fail "IS19: stale allowlist entries not all caught: [$o]" ;;
 esac
+# IS19: a MARKED entry is stale (M8 from j2279b: the stale:marked check dropped).
+# shellcheck disable=SC2016
+printf '%s\n' '#!/usr/bin/env bash' '# selector: tree-scan' 'find "$root" -name x' > "$S15/scripts/test-marked.sh"
+o=$(is15_scan "$S15" 'scripts/test-marked.sh|marked but allowlisted' <<< 'scripts/test-marked.sh')
+case "$o" in
+  *'scripts/test-marked.sh(stale:marked)'*) pass "IS19: a marked allowlist entry is stale" ;;
+  *) fail "IS19: marked allowlist entry not caught: [$o]" ;;
+esac
 rm -rf "$S15"
+
+# IS15b: the real walk list flags a planted unmarked suite end to end.
+P15="$(fixture_mktemp_dir)" || exit 1
+# shellcheck disable=SC2016  # the planted lines keep a literal $REPO
+(
+  cd "$P15" && git init -q && git config user.email t@e && git config user.name t \
+    && mkdir -p scripts \
+    && printf '%s\n' '#!/usr/bin/env bash' 'git -C "$REPO" ls-files' > scripts/test-planted.sh \
+    && printf '%s\n' '#!/usr/bin/env bash' '# selector: tree-scan' 'git -C "$REPO" ls-files' > scripts/test-planted-marked.sh \
+    && git add -A && git commit -q -m planted
+) || exit 1
+o=$(is15_scan "$P15" '' <<< "$(is15_suites "$P15")")
+case "$o" in
+  *scripts/test-planted.sh*) pass "IS15b: a planted unmarked tree-walking suite is flagged" ;;
+  *) fail "IS15b: planted suite not flagged: [$o]" ;;
+esac
+case "$o" in
+  *test-planted-marked.sh*) fail "IS15b: a marked planted suite was flagged: [$o]" ;;
+  *) pass "IS15b: a marked planted suite is not flagged" ;;
+esac
+rm -rf "$P15"
 
 rst_tally
