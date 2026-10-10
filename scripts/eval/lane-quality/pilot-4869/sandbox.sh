@@ -129,7 +129,9 @@ else
     # the rm -rf deny rule. The row's own test scripts get a jail-only PreToolUse hook
     # (lq-allow-hook.sh; a permissions.allow glob's `*` would cross `/` and `..`) and
     # own-file rewrites an autoMode.allow line. The deny list stays.
-    cp "$HERE/lq-allow-hook.sh" "$RUN/lq-allow-hook.sh" || die "cannot copy the allow hook"
+    if [ "$LANE" = claudex ]; then
+      cp "$HERE/lq-allow-hook.sh" "$RUN/lq-allow-hook.sh" || die "cannot copy the allow hook"
+    fi
     jq --arg lane "$LANE" --arg wt "$WT" --arg jwt "$JWT" --arg hook "$RUN/lq-allow-hook.sh" \
       'del(.enabledPlugins, .mcpServers, .enabledMcpjsonServers, .enableAllProjectMcpServers)
        | if $lane == "claudex" then
