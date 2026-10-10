@@ -78,6 +78,14 @@ mkf scripts/test-diff-plain.sh 'cd eval/guard-corpus && diff a b'
 mkf scripts/test-diff-prose.sh '# the source diff is shown below'
 mkf scripts/diff-helper.sh 'cd eval/guard-corpus && source diff'
 mkf scripts/test-diff-helper.sh 'bash "$d/diff-helper.sh"'
+mkf scripts/hooks/block-foo-guard.sh
+mkf scripts/test-stem-ext.sh 'guard_rc block-foo-guard "x"'
+mkf scripts/test-stem-longer.sh 'guard_rc block-foo-guard-extra "x"'
+mkf scripts/test-stem-dotted.sh 'x=block-foo-guard.bak'
+mkf scripts/lib/my_helper.sh
+mkf scripts/test-stem-underscore.sh 'use my_helper here'
+mkf scripts/hooks/gate.sh
+mkf scripts/test-stem-word.sh 'open the gate now'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -185,6 +193,23 @@ if grepq "$err" 'git grep failed'; then pass "the failed search is named on stde
 change package.json
 out="$(run_is "$range")"
 if [ "$out" = "scripts/test-pkg.sh" ]; then pass "root-level package.json -> suite naming package.json"; else fail "root-level generic file reached nothing: $out"; fi
+
+# --- 11a. an extensionless reference to a changed script (HIMMEL-5160) -------
+# A suite that names a hook by its stem (`guard_rc block-foo-guard`) exercises it
+# as surely as one naming `block-foo-guard.sh`. Only a stem holding `-` or `_`
+# counts (a one-word stem is a common word), and a longer name or a dotted
+# variant that merely starts with the stem is a different word.
+change scripts/hooks/block-foo-guard.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-stem-ext\.sh$'; then pass "changed hook -> suite naming it without .sh"; else fail "extensionless stem reference not listed: $out"; fi
+if ! grepq "$out" 'test-stem-longer\.sh'; then pass "stem needle does not match a longer name (block-foo-guard-extra)"; else fail "stem matched a longer name: $out"; fi
+if ! grepq "$out" 'test-stem-dotted\.sh'; then pass "stem needle does not match block-foo-guard.bak"; else fail "stem matched a dotted variant: $out"; fi
+change scripts/lib/my_helper.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-stem-underscore\.sh$'; then pass "underscore stem named without .sh is listed"; else fail "underscore stem not listed: $out"; fi
+change scripts/hooks/gate.sh
+out="$(run_is "$range")"
+if ! grepq "$out" 'test-stem-word\.sh'; then pass "one-word stem (gate) is not matched extensionless"; else fail "one-word stem over-listed: $out"; fi
 
 # --- 11b. an extensionless basename takes the path rule (HIMMEL-4606) ---------
 # `diff` is a common word: a suite that merely says `diff -u` must not be listed,
