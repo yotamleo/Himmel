@@ -696,6 +696,20 @@ export const CONFIRM_TTL_MS = 5 * 60_000;
 type PendingConfirm = { code: string; chat_id: number; user: number; op: string; arg: string; time: string; expires: number };
 const pendingPath = (root: string) => join(root, "break-glass-pending.json");
 
+// The exact rule text the /allow-rule id resolves to, shown in the confirm prompt
+// (HIMMEL-5112) so the operator approves the text, not just an id. Same registry
+// and same validity test as break-glass.sh: a string with no control characters.
+function allowRuleText(id: string): string {
+  let rule: unknown;
+  try {
+    const reg = process.env.BREAK_GLASS_ALLOW_REGISTRY || join(REPO_ROOT, "scripts", "telegram", "allow-rules.json");
+    rule = (JSON.parse(readFileSync(reg, "utf8")) as Record<string, unknown>)[id];
+  } catch { rule = undefined; }
+  // eslint-disable-next-line no-control-regex
+  if (typeof rule !== "string" || rule === "" || /[\u0000-\u001f\u007f-\u009f]/.test(rule)) return " → (no reviewed rule for this id: it will be refused)";
+  return ` → ${rule}`;
+}
+
 async function issueConfirm(root: string, msg: DeliveredMsg, route: { op: string; arg: string; time: string }, now: number): Promise<string> {
   const code = randomBytes(4).toString("hex");
   const p: PendingConfirm = { code, chat_id: msg.chat_id, user: msg.from, op: route.op, arg: route.arg, time: route.time, expires: now + CONFIRM_TTL_MS };
@@ -798,7 +812,7 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
   if (CONFIRM_OPS.has(route.op)) {
     const code = await issueConfirm(root, msg, route, nowMs());
     await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 0, result: "confirm-issued" });
-    await reply(`🔐 ${route.op}${route.arg !== "-" ? ` ${route.arg}` : ""}${route.time === "bypass" ? " --hook-bypass" : ""}: send /confirm ${code} within 5 minutes to run it. Any other /confirm cancels it.`);
+    await reply(`🔐 ${route.op}${route.arg !== "-" ? ` ${route.arg}` : ""}${route.op === "allow-rule" ? allowRuleText(route.arg) : ""}${route.time === "bypass" ? " --hook-bypass" : ""}: send /confirm ${code} within 5 minutes to run it. Any other /confirm cancels it.`);
     return;
   }
   if (route.op === "confirm") {

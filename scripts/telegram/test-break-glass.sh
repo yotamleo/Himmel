@@ -381,6 +381,21 @@ bg allow-rule reviewed-one - >/dev/null; assert_rc "A21 a false allow list is re
 printf '{"permissions":{"allow":[]}}\n{"x":1}\n' > "$AR_TARGET"
 bg allow-rule reviewed-one - >/dev/null; assert_rc "A24 a multi-document target is refused" 27 "$?"
 bg allow-rule trailing-nl - >/dev/null; assert_rc "A23 a trailing newline in a registry entry is refused" 26 "$?"
+# HIMMEL-5112: a symlinked target is refused (never replaced by a regular copy),
+# and the target's file mode survives the write.
+printf '{"permissions":{"allow":[]}}\n' > "$TMP/ar/real-target.json"
+ln -sf "$TMP/ar/real-target.json" "$TMP/ar/link-target.json"
+BREAK_GLASS_ALLOW_TARGET="$TMP/ar/link-target.json" bg allow-rule reviewed-one - >/dev/null; assert_rc "A25 a symlinked target is refused" 27 "$?"
+[ -L "$TMP/ar/link-target.json" ] && [ "$(jq -c '.permissions.allow' "$TMP/ar/real-target.json")" = "[]" ] \
+    && echo "PASS A26 and the link and its destination are untouched" || { echo "FAIL A26 symlink replaced or destination written"; FAILED=$((FAILED + 1)); }
+printf '{"permissions":{"allow":[]}}\n' > "$AR_TARGET"; chmod 0644 "$AR_TARGET"
+bg allow-rule reviewed-one - >/dev/null; assert_rc "A27 a 0644 target is rewritten" 0 "$?"
+[ "$(stat -c %a "$AR_TARGET")" = "644" ] && echo "PASS A28 and keeps mode 0644" || { echo "FAIL A28 mode is $(stat -c %a "$AR_TARGET")"; FAILED=$((FAILED + 1)); }
+# The backups and temp files written beside the real target are gitignored.
+REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
+for ig in .claude/settings.local.json.bak-1700000000-42 .claude/settings.local.json.aB3dEf; do
+    git -C "$REPO_ROOT" check-ignore -q "$ig" && echo "PASS A29 $ig is gitignored" || { echo "FAIL A29 $ig is not gitignored"; FAILED=$((FAILED + 1)); }
+done
 # Default target: the primary's untracked local file, never the tracked one.
 unset BREAK_GLASS_ALLOW_TARGET
 mkdir -p "$PRIMARY/.claude"

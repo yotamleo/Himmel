@@ -8,6 +8,8 @@ scripts/jira/dist/
 # marketplace/plugins/*/node_modules/ slip through and be sweepable (HIMMEL-371).
 node_modules/
 /.claude/settings.local.json
+# /allow-rule backups (.bak-<epoch>-<pid>) and mktemp orphans written beside it (HIMMEL-5112).
+/.claude/settings.local.json.*
 # tokensave MCP code-graph state (local SQLite DB, session-generated — never commit).
 /.tokensave/
 # graphify knowledge-graph artifacts (HIMMEL-621, REMOVED HIMMEL-2705 step 1

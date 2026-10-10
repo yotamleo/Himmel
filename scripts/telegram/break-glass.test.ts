@@ -3,7 +3,7 @@
 // <code>` from the same operator in the same chat runs it. Shell half:
 // test-break-glass.sh.
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,6 +118,29 @@ test("station-status is read-only: it runs at once, no confirm code", async () =
   expect(h.runs).toEqual([["station-status", "-", "-"]]);
   expect(h.replies[0]).toContain("load=0.1");
   expect(h.audits.map((a) => a.result)).toEqual(["break-glass-ok"]);
+});
+
+test("the allow-rule confirm prompt shows the resolved rule text (HIMMEL-5112)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-ar-"));
+  const h = harness();
+  await issue(root, h, "/allow-rule merge-forward-check");
+  expect(h.replies[0]).toContain("Bash(bash scripts/handover/merge-forward-check.sh:*)");
+  expect(h.replies[0]).toMatch(/\/confirm [0-9a-f]{8}/);
+  const reg = join(root, "rules.json");
+  await writeFile(reg, JSON.stringify({ "weird-one": "Bash(a)\u001b[31m", "fixture-one": "Bash(fixture:*)" }));
+  const prev = process.env.BREAK_GLASS_ALLOW_REGISTRY;
+  process.env.BREAK_GLASS_ALLOW_REGISTRY = reg;
+  try {
+    await issue(root, h, "/allow-rule fixture-one");
+    expect(h.replies[1]).toContain("Bash(fixture:*)");
+    await issue(root, h, "/allow-rule weird-one");
+    expect(h.replies[2]).not.toContain("\u001b");
+    await issue(root, h, "/allow-rule not-listed");
+    expect(h.replies[3]).toContain("no reviewed rule");
+    expect(h.replies[3]).toMatch(/\/confirm [0-9a-f]{8}/);
+  } finally {
+    if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
+  }
 });
 
 test("a mutating op issues a code and runs nothing; the matching /confirm runs it once", async () => {
