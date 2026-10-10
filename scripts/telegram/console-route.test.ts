@@ -90,7 +90,7 @@ test("judge: dangling lockdown symlink remains fail-closed", async () => {
 });
 
 test("judge: tagged and correctly bot-addressed operator lockdown narrows", async () => {
-  for (const text of ["model:opus /lockdown", "/lockdown@bridge_bot", "model:opus /lockdown@bridge_bot"]) {
+  for (const text of ["model:opus /lockdown", "/lockdown@bridge_bot", "model:opus /lockdown@bridge_bot", "/Lockdown", "/LOCKDOWN@Bridge_Bot"]) {
     const r = root(); heartbeat(r); const ran: string[] = []; const replies: string[] = [];
     await handleInbound(r, fresh(text), async s => { ran.push(s); }, undefined, undefined, from => from === 1, undefined, undefined, "bridge_bot", gate(replies));
     expect(existsSync(join(r, "lockdown"))).toBe(true);
@@ -490,7 +490,7 @@ test("reply CLI appends one line to the chat's outbox under a scratch BRIDGE_ROO
 });
 
 // HIMMEL-4947: every malformed reserved fleet shape is a terminal refusal.
-const malformed = ["/go foo..bar", "/go ../escape", "/push a..b", "/halt a/b", "/go a\\b", `/go ${"a".repeat(65)}`, "/push a\u0000b", "/halt a\nb", "/go", "/push", "/go a b", "/halt a b", "/fleet now", "/legs x", "/GO foo", "/go  foo", "/push foo‮"];
+const malformed = ["/go foo..bar", "/go ../escape", "/push a..b", "/halt a/b", "/go a\\b", `/go ${"a".repeat(65)}`, "/push a\u0000b", "/halt a\nb", "/go", "/push", "/go a b", "/halt a b", "/fleet now", "/legs x", "/go  foo", "/push foo‮"];
 
 test("malformed-fleet-shapes-classify-terminal", () => {
   for (const text of malformed) expect(classify(text).kind).toBe("fleet-malformed");

@@ -120,3 +120,40 @@ test("HIMMEL-5148: a mid-text, trailing, or other-bot /console stays chat", () =
   expect(classify("/console@otherbot foo bar", "mybot").kind).toBe("chat");
   expect(classify("/consoles@otherbot", "mybot").kind).toBe("chat");
 });
+
+// HIMMEL-5150: fleet verbs and /lockdown take the same case-insensitive verb and
+// `/cmd@<bot>` addressing as /console (HIMMEL-5148); the leg label stays exact.
+test("HIMMEL-5150: fleet verbs are case-insensitive and accept /cmd@<bot>", () => {
+  expect(classify("/Fleet")).toEqual({ kind: "fleet", verb: "status" });
+  expect(classify("/fleet@MyBot", "mybot")).toEqual({ kind: "fleet", verb: "status" });
+  // bot name unknown: an @ suffix is unverifiable, so only halt/lockdown accept it
+  expect(classify("/fleet@anybot").kind).toBe("chat");
+  expect(classify("/go@anybot N1").kind).toBe("chat");
+  expect(classify("/halt@anybot")).toEqual({ kind: "fleet", verb: "halt" });
+  expect(classify("/LEGS")).toEqual({ kind: "fleet", verb: "legs" });
+  expect(classify("/HALT")).toEqual({ kind: "fleet", verb: "halt" });
+  expect(classify("/halt@mybot", "mybot")).toEqual({ kind: "fleet", verb: "halt" });
+  expect(classify("/Go N1490")).toEqual({ kind: "fleet", verb: "go?", leg: "N1490" });
+  expect(classify("/GO@mybot N1490", "mybot")).toEqual({ kind: "fleet", verb: "go?", leg: "N1490" });
+  expect(classify("/Push@mybot Leg_A", "mybot")).toEqual({ kind: "fleet", verb: "push", leg: "Leg_A" });
+  expect(classify("/halt@mybot N1490", "mybot")).toEqual({ kind: "fleet", verb: "halt", leg: "N1490" });
+});
+
+test("HIMMEL-5150: malformed or other-bot fleet shapes keep their refusal/chat split", () => {
+  for (const t of ["/Go", "/go@mybot", "/fleet@mybot now", "/Go ../x", "/push@mybot a b"]) expect(classify(t, "mybot").kind).toBe("fleet-malformed");
+  for (const t of ["/fleet@otherbot", "/go@otherbot N1", "/lockdown@otherbot", "/gopher", "/legsx", "/fleet@", "/fleet@bad-bot"]) expect(classify(t, "mybot").kind).toBe("chat");
+});
+
+test("HIMMEL-5150: /lockdown is case-insensitive and accepts /lockdown@<bot>", () => {
+  expect(classify("/Lockdown")).toEqual({ kind: "lockdown" });
+  expect(classify("/LOCKDOWN@MyBot", "mybot")).toEqual({ kind: "lockdown" });
+  expect(classify("/lockdown now").kind).toBe("chat");
+});
+
+// Auto ops authorise bridge actions without the agent: they stay strict (HIMMEL-5150).
+test("HIMMEL-5150: /Arm and /arm@<bot> (and other auto ops) authorise nothing", () => {
+  for (const t of ["/Arm HIMMEL-389", "/ARM HIMMEL-389", "/arm@mybot HIMMEL-389", "/Arm@mybot HIMMEL-389 at 02:00",
+    "/Mergepub@mybot 12 0123456789ab", "/restart@mybot", "/Restart@mybot full", "/Station-Status", "/confirm@mybot 0123abcd", "/Cr-Reset 12", "/cr-grant-delta@mybot 12 " + "a".repeat(40)]) {
+    expect(classify(t, "mybot").kind).toBe("chat");
+  }
+});
