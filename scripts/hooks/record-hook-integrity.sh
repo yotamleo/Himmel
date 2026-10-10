@@ -118,9 +118,11 @@ trap mark_done EXIT
 # pin vouches for. Keep this list equal to PIN_DIRS in hook-integrity.js. One jq
 # pass over the listing (it used to be two jq per file, which at ~670 files
 # would have cost SessionStart seconds).
+# HIMMEL-4828: plus the himmel-bus delivery worker's lib (.mjs), which
+# scripts/hooks/bus-deliver-run.js checks against these pins before importing.
+# Comments stay OUT of the $( ) below: bash 3.2 (macOS /bin/bash) reads an
+# apostrophe in a comment there as an open quote and the recorder dies.
 pins_fresh="$(
-  # HIMMEL-4828: plus the himmel-bus delivery worker's lib (.mjs), which
-  # scripts/hooks/bus-deliver-run.js checks against these pins before importing.
   for dir in scripts/hooks scripts/guardrails scripts/lib scripts/handover marketplace/plugins/himmel-bus/lib; do
     [ -d "$CLAUDE_PROJECT_DIR/$dir" ] || continue
     git -C "$CLAUDE_PROJECT_DIR" ls-tree -r HEAD -- "$dir" 2>/dev/null
