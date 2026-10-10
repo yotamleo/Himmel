@@ -989,7 +989,7 @@ elif [ "$mr_conc" != success ]; then
                 fi
                 [ "$mr_log_rc" -eq 0 ] || main_red_refuse "main's latest completed CI run $mr_run is $mr_conc (covers $mr_range) and its failed log is unreadable, so the declared suite $mr_tok cannot be verified" "run=$mr_run conclusion=$mr_conc range=$mr_range phase=run-log"
                 if printf '%s\n' "$mr_log" | awk -F'\t' -v t="$mr_tok" '
-                        $1 == t || (index($1, t) == 1 && substr($1, length(t) + 1, 1) ~ /[ (]/) { f = 1 }
+                        $1 == t || (index($1, t) == 1 && substr($1, length(t) + 1, 2) == " (") { f = 1 }
                         t ~ /\.sh$/ && index($0, "##[error]") && (p = index($0, t)) > 0 &&
                             (p == 1 || substr($0, p - 1, 1) !~ /[A-Za-z0-9._-]/) &&
                             substr($0, p + length(t), 1) !~ /[A-Za-z0-9._-]/ { f = 1 }

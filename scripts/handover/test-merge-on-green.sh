@@ -3937,6 +3937,16 @@ STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG2" \
     run_mog 22 "5115-p: tail fragment of a .sh name → exit 22"
 rm -f "$MOG_RUN_LOG2"
 
+# 5115-q — a prefix is a matrix base name only when followed by ` (`: a job
+# `shell-unit-shard extra` is a different job, not a shard of `shell-unit-shard`.
+MOG_RUN_LOG3="$(mktemp "${TMPDIR:-/tmp}/mog-runlog3.XXXXXX")" || { echo "FAIL: 5115 setup: mktemp" >&2; exit 1; }
+printf '%s\t%s\t%s\n' \
+    'shell-unit-shard extra' 'UNKNOWN STEP' '2026-10-09T17:54:35.0819579Z ##[error]Process completed with exit code 1.' > "$MOG_RUN_LOG3"
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG3" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=shell-unit-shard')" \
+    run_mog 22 "5115-q: prefix followed by a non-matrix suffix → exit 22"
+rm -f "$MOG_RUN_LOG3"
+
 # 5115-i — DECIDED: no completed run in the window means no red was observed.
 # Allowed, and the audit says so.
 STUB_RUN_LIST_JSON='[]' run_mog 0 "5115-i: no completed run at all → merged, audited"
