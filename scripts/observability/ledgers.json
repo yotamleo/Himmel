@@ -221,7 +221,7 @@
       "rotation": "none",
       "retention": "unbounded",
       "schema_version": 1,
-      "envelope": ["v", "ts", "host", "source", "kind"],
+      "envelope": ["v", "ts", "host", "source", "kind", "repo"],
       "grandfathered": false
     }
   ]

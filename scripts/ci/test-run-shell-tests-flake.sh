@@ -22,6 +22,11 @@
 #   F10 a flake is a ::warning and a step-summary section on CI
 #   F11 a retry that only prints SKIP and exits 0 stays FAIL
 #   F12 an unwritable ledger WARNs, verdict unchanged
+#   F13 a prior flake of the same suite name from another repo, or an old row
+#       with no repo id, never raises the ticket line (HIMMEL-5121)
+#   F14 a suite that fails both attempts keeps BOTH logs under FAIL_LOG_DIR
+#   F15 a repo id override with a backslash or quote is reduced to a safe
+#       charset and still matches its own rows
 #
 # Usage: bash scripts/ci/test-run-shell-tests-flake.sh
 set -uo pipefail
@@ -52,7 +57,7 @@ mk_flake_sandbox() {
 # run_flake <dir> [env...]  -> sets out/rc; ledger is <dir>/ledger.jsonl
 run_flake() {
   local sb="$1"; shift
-  out=$(env -u SUITE_TIER_MODE SUITE_FLAKE_LEDGER="$sb/ledger.jsonl" "$@" bash "$RUNNER" "$sb/scripts" 2>&1); rc=$?
+  out=$(env -u SUITE_TIER_MODE SUITE_FLAKE_REPO_ID=repo-a SUITE_FLAKE_LEDGER="$sb/ledger.jsonl" "$@" bash "$RUNNER" "$sb/scripts" 2>&1); rc=$?
 }
 runs_of() { cat "$1/scripts/flaky.count" 2>/dev/null || echo 0; }
 ledger_rows() { [ -f "$1/ledger.jsonl" ] && grep -c . "$1/ledger.jsonl" || echo 0; }
@@ -125,7 +130,7 @@ sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake4.XXXXXX") || { fail "F4: mktemp failed
 if [ -n "$sb" ]; then
 mk_flake_sandbox "$sb" "" 1
 now=$(date +%s)
-printf '{"suite":"test-flaky.sh","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
+printf '{"suite":"test-flaky.sh","repo":"repo-a","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
 run_flake "$sb"
 if [ "$rc" -eq 0 ] && grepq "$out" -F 'file a ticket' && grepq "$out" -F 'test-flaky.sh' \
     && [ "$(ledger_rows "$sb")" = 2 ]; then
@@ -140,8 +145,8 @@ sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake5.XXXXXX") || { fail "F5: mktemp failed
 if [ -n "$sb" ]; then
 mk_flake_sandbox "$sb" "" 1
 now=$(date +%s)
-printf '{"suite":"test-flaky.sh","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 30 * 86400))" > "$sb/ledger.jsonl"
-printf '{"suite":"test-other.sh","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 60))" >> "$sb/ledger.jsonl"
+printf '{"suite":"test-flaky.sh","repo":"repo-a","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 30 * 86400))" > "$sb/ledger.jsonl"
+printf '{"suite":"test-other.sh","repo":"repo-a","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 60))" >> "$sb/ledger.jsonl"
 run_flake "$sb"
 if [ "$rc" -eq 0 ] && grepq "$out" -F '[FLAKE]' && ! grepq "$out" -F 'file a ticket'; then
   pass "F5: a 30-day-old row and another suite's row do not count"
@@ -157,7 +162,7 @@ sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake9.XXXXXX") || { fail "F9: mktemp failed
 if [ -n "$sb" ]; then
 mk_flake_sandbox "$sb" "" 1
 now=$(date +%s)
-printf '{"suite":"test-flaky.sh","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
+printf '{"suite":"test-flaky.sh","repo":"repo-a","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
 run_flake "$sb" SUITE_FLAKE_WINDOW_DAYS=08
 if [ "$rc" -eq 0 ] && grepq "$out" -F 'file a ticket' && ! grepq "$out" -iE 'value too great|syntax error' \
     && [ "$(ledger_rows "$sb")" = 2 ]; then
@@ -265,6 +270,64 @@ if [ "$rc" -eq 0 ] && grepq "$out" -F '[FLAKE]' && grepq "$out" -E '^ FLAKE: 1' 
   pass "F12: WARN printed, still a FLAKE, rc 0"
 else
   fail "F12: rc=$rc out: $out"
+fi
+rm -rf "$sb"
+fi
+
+# --- F13 ------------------------------------------------------------------------
+echo "== F13: another repo's (or a repo-less old) row never raises the ticket line =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake13.XXXXXX") || { fail "F13: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+now=$(date +%s)
+printf '{"suite":"test-flaky.sh","repo":"repo-b","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
+printf '{"suite":"test-flaky.sh","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" >> "$sb/ledger.jsonl"
+run_flake "$sb"
+if [ "$rc" -eq 0 ] && grepq "$out" -F '[FLAKE]' && ! grepq "$out" -F 'file a ticket' \
+    && grepq "$(tail -n 1 "$sb/ledger.jsonl")" -F '"repo":"repo-a"'; then
+  pass "F13: repo-b and repo-less rows do not count; the new row records its repo id"
+else
+  fail "F13: rc=$rc out: $out ledger: $(cat "$sb/ledger.jsonl" 2>&1)"
+fi
+rm -rf "$sb"
+fi
+
+# --- F14 ------------------------------------------------------------------------
+echo "== F14: a suite that fails twice keeps both attempt logs =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake14.XXXXXX") || { fail "F14: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mkdir -p "$sb/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb/scripts/test-pass.sh"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'cnt="$(dirname "$0")/twice.count"\n'
+  printf 'n=$(cat "$cnt" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$cnt"\n'
+  printf 'echo "not ok 1 - distinct failure of attempt $n"; exit 1\n'
+} > "$sb/scripts/test-twice.sh"
+chmod +x "$sb/scripts/test-pass.sh" "$sb/scripts/test-twice.sh"
+run_flake "$sb" FAIL_LOG_DIR="$sb/logs"
+logs=$(cat "$sb"/logs/*test-twice* 2>/dev/null)
+if [ "$rc" -eq 1 ] && grepq "$logs" -F 'distinct failure of attempt 1' \
+    && grepq "$logs" -F 'distinct failure of attempt 2'; then
+  pass "F14: both attempts' logs are preserved under FAIL_LOG_DIR"
+else
+  fail "F14: rc=$rc logs: $(ls "$sb/logs" 2>&1) :: $logs"
+fi
+rm -rf "$sb"
+fi
+
+# --- F15 ------------------------------------------------------------------------
+echo "== F15: a repo id override with a backslash or quote still matches its own rows =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake15.XXXXXX") || { fail "F15: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+now=$(date +%s)
+printf '{"suite":"test-flaky.sh","repo":"a_b_c","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
+run_flake "$sb" SUITE_FLAKE_REPO_ID='a\b"c'
+if [ "$rc" -eq 0 ] && grepq "$out" -F '[FLAKE]' && grepq "$out" -F 'file a ticket'; then
+  pass "F15: the override is reduced to a safe charset, so the repeat check matches"
+else
+  fail "F15: rc=$rc out: $out ledger: $(cat "$sb/ledger.jsonl" 2>&1)"
 fi
 rm -rf "$sb"
 fi
