@@ -67,6 +67,7 @@ fi
 # HIMMEL-5165: a reused dir is a new judge; the earlier verdict's release marker no longer applies.
 # Cleared BEFORE the new holder lands, so a reaper never sees a live holder beside a stale marker.
 [ -L "$DIR/.verdict-written" ] || rm -f "$DIR/.verdict-written" 2>/dev/null
+[ -L "$DIR/.verdict-written" ] || [ ! -e "$DIR/.verdict-written" ] || die "cannot clear stale $DIR/.verdict-written"
 printf '%s %s\n' "$holder" "$start" > "$DIR/.holder" 2>/dev/null || die "cannot write $DIR/.holder"
 [ -s "$DIR/.holder" ] || die "holder file empty: $DIR/.holder"
 printf '%s\n' "$DIR"
