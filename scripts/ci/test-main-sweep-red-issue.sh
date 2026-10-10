@@ -610,7 +610,7 @@ hasnt "dispatch verify" "$out" "the report never names the event-dependent aggre
 # every other shard was cancelled: pins the shard_ok=0 clause of the
 # cancelled-shard rule (without it this row is wrongly dropped as not red).
 newcase one-green-shard-aggregate-red
-sed 's/^cancelled\(\tshell-unit-shard (ubuntu-latest, 3)\)$/success\1/' "$PUSH_FIX" > "$STUB/jobs.tsv"
+awk -F'\t' -v OFS='\t' '$2=="shell-unit-shard (ubuntu-latest, 3)"{print "success",$2;next}{print}' "$PUSH_FIX" > "$STUB/jobs.tsv"
 sweep
 has "gh issue create" "$log" "one green shard + cancelled rest + failed aggregate stays red"
 has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when one shard finished green"
