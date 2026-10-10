@@ -34,12 +34,76 @@ usage() {
     echo "usage: review-round.sh start --branch <name> [--head <sha> [--base-sha <sha>]]" >&2
     echo "       review-round.sh defer --branch <name> --head <sha> [--defer-to <ticket>]" >&2
     echo "       review-round.sh promote --branch <name> --head <sha>" >&2
+    echo "       review-round.sh trivial-descendant <from-sha> <to-sha>   (exit 0 yes, 1 no)" >&2
     exit 2
+}
+
+# test_path_p <path>: the test-path rule of the HIMMEL-4952 scope record.
+# Filename patterns match the basename only: * crosses / in case.
+test_path_p() {
+    case "$1" in
+        */tests/*|tests/*|*/test/*|test/*|*/__tests__/*) return 0 ;;
+    esac
+    case "${1##*/}" in
+        test-*.sh|*.test.[a-z]*) return 0 ;;
+    esac
+    return 1
+}
+
+# HIMMEL-5109: trivial_descendant <from> <to> succeeds when <to> is a strict
+# descendant of <from> and <from>..<to> changes only test paths (the
+# judge_scope_record rule) or only comment lines. A judge often reviews a head
+# after such a commit, which never got its own panel round. Also the one
+# classifier console-kit/write-verdict.sh --bind-reviewed asks, through the
+# `trivial-descendant` verb below, so the writer and the gate cannot disagree.
+# ponytail: the comment test is a line-prefix heuristic, not per-language: a
+# line is a comment when it starts with "# " / "##" / a bare "#" or with "//"
+# and carries no directive word, so "#[cfg(test)]", CSS "#id" and "#Requires"
+# are refused; but a "# " or "//" line inside a multiline string or heredoc,
+# or a "//" line in a language where it is not a comment, still passes. It
+# only moves which head a signed NO-GO binds to, the delta round still reviews
+# from..to; upgrade path is a per-language comment parser.
+trivial_descendant() {
+    [ "$1" != "$2" ] || return 1
+    git merge-base --is-ancestor "$1" "$2" 2>/dev/null || return 1
+    _td_paths="$(git -c core.quotepath=off diff --no-renames --name-only "$1" "$2" 2>/dev/null)" || return 1
+    [ -n "$_td_paths" ] || return 1
+    _td_ok=1
+    while IFS= read -r _td_p; do
+        test_path_p "$_td_p" || { _td_ok=0; break; }
+    done <<EOF
+$_td_paths
+EOF
+    [ "$_td_ok" -eq 0 ] || return 0
+    # Binary edits and mode/create/delete changes carry no +/- text line, so a
+    # text-only scan would miss them: refuse any of them outright.
+    _td_bin="$(git diff --no-renames --numstat "$1" "$2" 2>/dev/null | grep -E '^-' || true)"
+    [ -z "$_td_bin" ] || return 1
+    _td_sum="$(git diff --no-renames --summary "$1" "$2" 2>/dev/null)" || return 1
+    [ -z "$_td_sum" ] || return 1
+    # Every added or removed line must be a comment or blank.
+    _td_lines="$(git diff --no-renames --no-color -U0 "$1" "$2" 2>/dev/null | sed -n -e '/^+++ /d' -e '/^--- /d' -e '/^[-+]/p')" || return 1
+    [ -n "$_td_lines" ] || return 1
+    _td_bad="$(printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#([[:space:]#]|$)|//)' || true)"
+    [ -z "$_td_bad" ] || return 1
+    # Directive words, encoding declarations (coding: / coding=) and C
+    # preprocessor lines change meaning although they start with #.
+    # Build constraints, type/format/lint pragmas and editor modelines too.
+    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*((#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=]|go:|\+build|@ts-|type:|fmt:|isort|pylint|mypy|pyright|yapf|-\*-|vim?:|<reference|sourceMappingURL)|#[[:space:]]*(define|include|undef|ifn?def|if|else|elif|endif|line|error|import)([^[:alnum:]_]|$))' || true)"
+    [ -z "$_td_dir" ] || return 1
+    return 0
 }
 
 verb="${1:-}"
 [ -n "$verb" ] || usage
 shift
+# HIMMEL-5109: read-only, writes no state, so it needs no --branch: the answer
+# is a pure function of the two commits in cwd's repository.
+if [ "$verb" = "trivial-descendant" ]; then
+    [ $# -eq 2 ] || usage
+    trivial_descendant "$1" "$2"
+    exit $?
+fi
 branch=""
 head_sha=""
 base_sha=""
@@ -345,60 +409,6 @@ record_binds() {
         esac
     fi
     [ "${2#pr: }" = "$pr_want" ]
-}
-
-# test_path_p <path>: the test-path rule of the HIMMEL-4952 scope record.
-# Filename patterns match the basename only: * crosses / in case.
-test_path_p() {
-    case "$1" in
-        */tests/*|tests/*|*/test/*|test/*|*/__tests__/*) return 0 ;;
-    esac
-    case "${1##*/}" in
-        test-*.sh|*.test.[a-z]*) return 0 ;;
-    esac
-    return 1
-}
-
-# HIMMEL-5109: trivial_descendant <from> <to> succeeds when <to> is a strict
-# descendant of <from> and <from>..<to> changes only test paths (the
-# judge_scope_record rule) or only comment lines. A judge often reviews a head
-# after such a commit, which never got its own panel round.
-# ponytail: the comment test is a line-prefix heuristic, not per-language: a
-# line is a comment when it starts with "# " / "##" / a bare "#" or with "//"
-# and carries no directive word, so "#[cfg(test)]", CSS "#id" and "#Requires"
-# are refused; but a "# " or "//" line inside a multiline string or heredoc,
-# or a "//" line in a language where it is not a comment, still passes. It
-# only moves which head a signed NO-GO binds to, the delta round still reviews
-# from..to; upgrade path is a per-language comment parser.
-trivial_descendant() {
-    [ "$1" != "$2" ] || return 1
-    git merge-base --is-ancestor "$1" "$2" 2>/dev/null || return 1
-    _td_paths="$(git -c core.quotepath=off diff --no-renames --name-only "$1" "$2" 2>/dev/null)" || return 1
-    [ -n "$_td_paths" ] || return 1
-    _td_ok=1
-    while IFS= read -r _td_p; do
-        test_path_p "$_td_p" || { _td_ok=0; break; }
-    done <<EOF
-$_td_paths
-EOF
-    [ "$_td_ok" -eq 0 ] || return 0
-    # Binary edits and mode/create/delete changes carry no +/- text line, so a
-    # text-only scan would miss them: refuse any of them outright.
-    _td_bin="$(git diff --no-renames --numstat "$1" "$2" 2>/dev/null | grep -E '^-' || true)"
-    [ -z "$_td_bin" ] || return 1
-    _td_sum="$(git diff --no-renames --summary "$1" "$2" 2>/dev/null)" || return 1
-    [ -z "$_td_sum" ] || return 1
-    # Every added or removed line must be a comment or blank.
-    _td_lines="$(git diff --no-renames --no-color -U0 "$1" "$2" 2>/dev/null | sed -n -e '/^+++ /d' -e '/^--- /d' -e '/^[-+]/p')" || return 1
-    [ -n "$_td_lines" ] || return 1
-    _td_bad="$(printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#([[:space:]#]|$)|//)' || true)"
-    [ -z "$_td_bad" ] || return 1
-    # Directive words, encoding declarations (coding: / coding=) and C
-    # preprocessor lines change meaning although they start with #.
-    # Build constraints, type/format/lint pragmas and editor modelines too.
-    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*((#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=]|go:|\+build|@ts-|type:|fmt:|isort|pylint|mypy|pyright|yapf|-\*-|vim?:|<reference|sourceMappingURL)|#[[:space:]]*(define|include|undef|ifn?def|if|else|elif|endif|line|error|import)([^[:alnum:]_]|$))' || true)"
-    [ -z "$_td_dir" ] || return 1
-    return 0
 }
 
 # HIMMEL-4700: print space-separated "<qid>/<name>" records ruling NO-GO for
