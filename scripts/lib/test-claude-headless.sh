@@ -787,6 +787,21 @@ check "39 row inside its own longer TTL: slot kept" "1" "$RC39"
 check "39 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb39.json" 2>/dev/null)"
 rm -f "$LIVE_DIR"/*.json
 kill "$LIVE39" "$WORKER39" 2>/dev/null; wait "$LIVE39" "$WORKER39" 2>/dev/null
+# 41 (HIMMEL-5119, codex-1 round 3): the worker root dies on SIGTERM but a
+# descendant ignores it; a live descendant keeps the slot just like a live root.
+sleep 60 & LIVE41=$!
+( bash -c 'trap "" TERM; exec sleep 60' & wait ) & WORKER41=$!
+sleep 0.5
+KID41="$(pgrep -P "$WORKER41" | head -n1)"
+jq -n --arg p "$LIVE41" --arg s "$(proc_start "$LIVE41")" --arg w "$WORKER41" --arg ws "$(proc_start "$WORKER41")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb41", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb}' > "$LIVE_DIR/hb41.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact41.txt"; RC41=$?
+check "41 expired row, root dies but a descendant ignores SIGTERM: slot kept" "1" "$RC41"
+check "41 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb41.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill -KILL "$LIVE41" "$WORKER41" "$KID41" 2>/dev/null; wait "$LIVE41" "$WORKER41" 2>/dev/null
+
 HIMMEL_DISPATCH_ROW_TTL_SECS=3600 run_sut "$FAKE_OK" "$W/artifact40.txt" >/dev/null 2>&1
 check "40 dispatch row records its TTL" "3600" "$(jq -r '.ttl_secs' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
 rm -f "$LIVE_DIR"/*.json

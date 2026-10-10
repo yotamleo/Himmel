@@ -198,6 +198,27 @@ row_heartbeat_stale() {
   [ $(( $(date +%s) - hb )) -gt "$ttl" ]
 }
 
+# Descendant pids of <pid> from one ps snapshot (breadth-first, bounded depth).
+tree_descendants() {
+  local snap found="" frontier="$1" next c pp pass=0
+  snap="$(ps -eo pid=,ppid= 2>/dev/null)" || return 0
+  while [ -n "$frontier" ] && [ "$pass" -lt 16 ]; do
+    next=""
+    while read -r c pp; do
+      case " $frontier " in
+        *" $pp "*)
+          case " $found $1 " in
+            *" $c "*) ;;
+            *) next="$next $c"; found="$found $c" ;;
+          esac ;;
+      esac
+    done <<< "$snap"
+    frontier="${next# }"
+    pass=$((pass + 1))
+  done
+  printf '%s\n' "${found# }"
+}
+
 # Kill the row's worker tree, only while its recorded start time still matches
 # (a reused pid is never touched). A wedged worker must not outlive its slot:
 # returns 1 when that worker is still alive after the kill (SIGTERM ignored), so
@@ -206,7 +227,7 @@ row_heartbeat_stale() {
 # confirmed dead and is released on TTL alone; upgrade path is a wrapper-side
 # process-group record (HIMMEL-5119).
 kill_expired_worker() {
-  local wpid wstart i
+  local wpid wstart i kids k alive
   wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
   wstart="$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
   case "$wpid" in ''|*[!0-9]*) return 0 ;; esac
@@ -214,10 +235,18 @@ kill_expired_worker() {
   # match against: its identity cannot be confirmed, so the slot stays held.
   pid_gone "$wpid" "$wstart" && return 0
   [ -n "$wstart" ] && [ -n "$(proc_start "$wpid")" ] || return 1
+  # Snapshot the descendants first: once the root dies they are reparented and
+  # no longer reachable from it.
+  kids="$(tree_descendants "$wpid")"
   kill_tree "$wpid" 2>/dev/null || true
   i=0
   while [ "$i" -lt 10 ]; do
-    pid_gone "$wpid" "$wstart" && return 0
+    alive=0
+    pid_gone "$wpid" "$wstart" || alive=1
+    for k in $kids; do
+      if kill -0 "$k" 2>/dev/null; then alive=1; fi
+    done
+    [ "$alive" = 0 ] && return 0
     sleep 0.2
     i=$((i + 1))
   done
