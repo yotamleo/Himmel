@@ -493,6 +493,14 @@ row "4545 backtick cd abs then cp to symlink"        deny  "\`printf c%s d\` $T/
 row "4545 source <( ) cd then cp to symlink"         deny  ". <(printf 'cd %s' $T/cwl) && cp $T/src/other.txt plainlink" "$T"
 row "4545 var holds cd after \$( ), then cp to link" deny  "n=\$(date +%H); x=cd; \$x $T/cwl && cp $T/src/other.txt plainlink" "$T"
 row "4545 command \$(printf cd) abs then cp to link" deny  "command \$(printf c%s d) $T/cwl && cp $T/src/other.txt plainlink" "$T"
+# codex-1 (delta round): a backtick that is escaped or single-quoted is a
+# literal, so peeling "pairs" of them swallows a cd spelled $'\x63\x64'.
+row "4545 escaped backticks hide ANSI-C cd"          deny  "echo \\\`; \$'\\x63\\x64' cwl; echo \\\`; cp $T/src/other.txt plainlink" "$T"
+row "4545 quoted backticks hide ANSI-C cd"           deny  "echo '\`'; \$'\\x63\\x64' cwl; echo '\`'; cp $T/src/other.txt plainlink" "$T"
+row "4545 quoted \$( ) hides ANSI-C cd"              deny  "echo '\$('; \$'\\x63\\x64' cwl; echo ')'; cp $T/src/other.txt plainlink" "$T"
+row "4545 var cd hidden in escaped backtick span"     deny  "x=cd; echo \\\`; \$x cwl; echo \\\`; cp $T/src/other.txt plainlink" "$T"
+row "4545 var cd hidden in single-quoted backticks"  deny  "x=cd; echo '\`'; \$x cwl; echo '\`'; cp $T/src/other.txt plainlink" "$T"
+row "4545 var cd hidden in quoted \$( )"             deny  "x=cd; echo '\$('; \$x cwl; echo ')'; cp $T/src/other.txt plainlink" "$T"
 row "4545 \$( ) then cp to plain name, no link"      allow "echo \$(printf x); cp $T/src/other.txt nolink" "$T/cwl"
 row "4545 rsync --log-file= link after \$( )"        deny  "n=\$(date +%H); rsync -a --log-file=plainlink $T/src/other.txt out.txt" "$T/cwl"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or
