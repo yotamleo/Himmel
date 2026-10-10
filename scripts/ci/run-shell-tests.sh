@@ -3400,7 +3400,10 @@ failed_suites=""
 # Actions a flake is also a ::warning and a step-summary section. No tick or
 # board reader consumes the ledger yet. A second flake of one
 # suite inside SUITE_FLAKE_WINDOW_DAYS prints a loud "file a ticket" line (no
-# Jira call from CI). A suite whose header carries `# no-retry` is never
+# Jira call from CI). The repeat check matches the suite AND a repo id (HIMMEL-5121):
+# the default ledger is shared by every repo on the machine, so a row from
+# another repo, or an old row with no repo field, never counts. A suite that
+# fails BOTH attempts keeps both logs under FAIL_LOG_DIR. A suite whose header carries `# no-retry` is never
 # retried (a guard whose flake would mask a real race). A suite the watchdog
 # killed at its cap is never retried either: it has no observed exit status and
 # a second cap would double its cost.
@@ -3422,6 +3425,20 @@ if [ -z "${SUITE_FLAKE_LEDGER:-}" ]; then
   fi
 fi
 
+# Repo id carried by every ledger row and matched by the repeat check
+# (HIMMEL-5121): SUITE_FLAKE_REPO_ID, else a cksum of the origin URL (never the
+# URL itself, which may embed a credential), else the checkout directory name.
+# A row written before this field existed has no "repo" key, so it matches no
+# repo: after upgrading, the first flake of a suite in each repo is unmatched.
+if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
+  _repo_url=$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null)
+  if [ -n "$_repo_url" ]; then
+    SUITE_FLAKE_REPO_ID="origin-$(printf '%s' "$_repo_url" | cksum | cut -d' ' -f1)"
+  else
+    SUITE_FLAKE_REPO_ID="dir-$(basename "$REPO_ROOT")"
+  fi
+fi
+
 # _suite_no_retry <suite> — 0 when the first 20 lines carry a `# no-retry` mark.
 _suite_no_retry() {
   local _hdr
@@ -3438,8 +3455,9 @@ _flake_json_str() {
 # and prints the repeat-flake line when the suite already flaked inside the
 # window. Never changes the run's verdict: a ledger that cannot be written WARNs.
 _flake_record() {
-  local _s _cases _now _cut _prior _row _host
+  local _s _repo _cases _now _cut _prior _row _host
   _s=$(printf '%s' "$1" | _flake_json_str)
+  _repo=$(printf '%s' "$SUITE_FLAKE_REPO_ID" | _flake_json_str)
   _cases=$(grep -E '^[[:space:]]*(not ok|FAIL|\[FAIL\])' "$3" 2>/dev/null | head -n 3 | tr '\n' '|' | cut -c1-300 | _flake_json_str)
   _now=$(date +%s 2>/dev/null || echo 0)
   if [ -z "$SUITE_FLAKE_LEDGER" ]; then
@@ -3453,14 +3471,14 @@ _flake_record() {
   _cut=$(( _now - SUITE_FLAKE_WINDOW_DAYS * 86400 ))
   _prior=0
   if [ -f "$SUITE_FLAKE_LEDGER" ]; then
-    _prior=$(awk -v s="\"suite\":\"$_s\"" -v min="$_cut" \
-      'index($0, s) && match($0, /"ts":[0-9]+/) { if (substr($0, RSTART + 5, RLENGTH - 5) + 0 >= min) n++ } END { print n + 0 }' \
+    _prior=$(awk -v s="\"suite\":\"$_s\"" -v r="\"repo\":\"$_repo\"" -v min="$_cut" \
+      'index($0, s) && index($0, r) && match($0, /"ts":[0-9]+/) { if (substr($0, RSTART + 5, RLENGTH - 5) + 0 >= min) n++ } END { print n + 0 }' \
       "$SUITE_FLAKE_LEDGER" 2>/dev/null) || _prior=0
   fi
   _host=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo unknown)
   # v/ts/host/source/kind is the scripts/observability/ledgers.json envelope.
-  _row=$(printf '{"v":1,"ts":%s,"host":"%s","source":"run-shell-tests","kind":"flake","suite":"%s","case":"%s","rc":%s,"sha":"%s","run":"%s"}' \
-    "$_now" "$(printf '%s' "${_host:-unknown}" | _flake_json_str)" "$_s" "$_cases" "$2" "$REPORT_HEAD" \
+  _row=$(printf '{"v":1,"ts":%s,"host":"%s","source":"run-shell-tests","kind":"flake","suite":"%s","repo":"%s","case":"%s","rc":%s,"sha":"%s","run":"%s"}' \
+    "$_now" "$(printf '%s' "${_host:-unknown}" | _flake_json_str)" "$_s" "$_repo" "$_cases" "$2" "$REPORT_HEAD" \
     "$(printf '%s' "${GITHUB_RUN_ID:-}" | _flake_json_str)")
   mkdir -p "$(dirname "$SUITE_FLAKE_LEDGER")" 2>/dev/null
   if ! printf '%s\n' "$_row" >> "$SUITE_FLAKE_LEDGER" 2>/dev/null; then
@@ -4248,6 +4266,10 @@ while IFS= read -r suite <&3; do
       mkdir -p "$FAIL_LOG_DIR"
       safe_relpath=$(printf '%s' "$relpath" | sed 's/_/_u/g; s#/#_s#g')
       cp "$log" "$FAIL_LOG_DIR/$safe_relpath.log"
+      # Failed both attempts: the first attempt's log is the other half of the
+      # evidence and is deleted below (HIMMEL-5121).
+      [ "$_attempt" -eq 2 ] && [ -n "$first_log" ] && \
+        cp "$first_log" "$FAIL_LOG_DIR/$safe_relpath.first.log" 2>/dev/null
     fi
   fi
   rm -f "$log"
