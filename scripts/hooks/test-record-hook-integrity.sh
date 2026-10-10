@@ -1030,5 +1030,32 @@ else
   bad "row25: pins=$(jq -c '.pins' "$REC25" 2>/dev/null || echo '<no record>')"
 fi
 
+# ---------------------------------------------------------------------------
+# Row 26: the recorder runs under bash 3.2. An apostrophe in a comment inside a
+# multi-line $( ) reads there as an open quote; `bash -n` can miss it when a
+# later quote balances it, so the static half checks the source on every host
+# and the live half runs the recorder under /bin/bash when that is bash 3.
+# ---------------------------------------------------------------------------
+apos26="$(awk '/\$\($/ {inside=1; next} inside && /^[[:space:]]*\)/ {inside=0} inside && /^[[:space:]]*#/ && index($0, "\047") {print FILENAME ":" FNR ": " $0}' "$RECORDER")"
+if [ -z "$apos26" ]; then
+  ok "row26a: no apostrophe in a comment inside a multi-line \$( ) in the recorder"
+else
+  bad "row26a: bash 3.2 misparses these lines: $apos26"
+fi
+if /bin/bash -c '[ "${BASH_VERSINFO[0]}" -lt 4 ]' 2>/dev/null; then
+  OUT26="$T/row26/out"
+  printf '{"session_id":"sess-26"}' \
+    | CLAUDE_PROJECT_DIR="$P25" HIMMEL_HOOK_INTEGRITY_DIR="$OUT26" /bin/bash "$RECORDER" 2>"$T/row26.err"
+  rc26=$?
+  if [ "$rc26" -eq 0 ] \
+    && [ -n "$(jq -r '.pins["marketplace/plugins/himmel-bus/lib/deliver.mjs"] // empty' "$OUT26/sess-26.json" 2>/dev/null)" ]; then
+    ok "row26b: recorder under /bin/bash $(/bin/bash -c 'echo $BASH_VERSION') writes the pins"
+  else
+    bad "row26b: rc=$rc26 err=$(head -3 "$T/row26.err") record=$(cat "$OUT26/sess-26.json" 2>/dev/null || echo '<no record>')"
+  fi
+else
+  printf 'SKIP %s\n' "row26b: /bin/bash is not bash 3 on this host (row26a still guards the source)"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
