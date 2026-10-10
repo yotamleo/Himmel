@@ -428,7 +428,9 @@ by design.
   job must appear among the base run's failing cases, and any extra failing case
   is your own red. Run
   `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --pr-cases <f> --base-cases <f> --base-sha <merge-base> --main-base-sha <the base run's headSha> --latest-sha <the latest run's headSha> --pr-sha <the PR run's headSha, must be your HEAD>`
-  (every flag is required; the job files carry no sha, so the script refuses a
+  (every flag is required; when no run exists at the merge-base pass the
+  merge-base itself as `--main-base-sha`, with `--main-base` the empty file;
+  the job files carry no sha, so the script refuses a
   base run that is not your merge-base and a latest run that is not on
   origin/main, or that predates the base verdict run (the covering run, else the
   merge-base), after its own fetch). Exit 0
