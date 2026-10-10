@@ -26,7 +26,7 @@ TIP="$(git -C "$tmp/work" rev-parse HEAD)"
 runraw() {
   local d="$1" want="$2" re="$3" out rc
   shift 3
-  out=$(cd "$tmp/work" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" "$@" 2>&1); rc=$?
+  out=$(cd "$tmp/work" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --main-base-conclusion failure "$@" 2>&1); rc=$?
   if [ "$rc" -eq "$want" ] && grep -Eq -- "$re" <<< "$out"; then ok "$d"; else bad "$d (rc=$rc, want $want)" "$out"; fi
 }
 # run = runraw with valid sha flags; later flags in "$@" override these
@@ -85,17 +85,25 @@ run "--pr-sha is not HEAD: REFUSE (an older PR run)" 1 'REFUSE.*--pr run is for 
 runraw "--pr-sha omitted: usage, never ALLOW" 2 'usage' --base-sha abc123 --main-base-sha abc123 --latest-sha "$TIP"
 runraw "--pr-sha empty: usage, never ALLOW" 2 'usage' --base-sha abc123 --main-base-sha abc123 --latest-sha "$TIP" --pr-sha ''
 
-# F3: the latest run must be origin/main's tip
+# F3 (HIMMEL-5124): the latest run must be ON origin/main and at or after the verdict run;
+# main CI is a cron, so it is usually behind the tip
 runraw "--latest-sha omitted: usage, never ALLOW" 2 'usage' --base-sha abc123 --main-base-sha abc123
 runraw "--latest-sha empty: usage, never ALLOW" 2 'usage' --base-sha abc123 --main-base-sha abc123 --latest-sha ''
-run "--latest-sha is not origin/main: REFUSE (an older run posing as latest)" 1 'REFUSE.*not latest main' --latest-sha deadbeef
+run "--latest-sha is a full sha that is not a commit here: REFUSE (a foreign run posing as latest)" 1 'REFUSE.*not on origin/main' --latest-sha dddddddddddddddddddddddddddddddddddddddd
+run "--latest-sha is a ref, not a 40-hex sha: usage (origin/main would always pass)" 2 'usage' --latest-sha origin/main
 git -C "$tmp/work" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
 git -C "$tmp/work" push -q origin main 2>/dev/null
-run "origin/main moved on after the latest run: REFUSE" 1 'REFUSE.*not latest main'
+run "latest run predates the merge-base: REFUSE (it proves nothing about the base being fixed)" 1 'REFUSE.*does not descend'
 TIP="$(git -C "$tmp/work" rev-parse HEAD)"
 run "--latest-sha equals the fetched origin/main: ALLOW" 0 'ALLOW'
 run "ALLOW names the validated tip to merge, not a fresh origin/main" 0 "git merge $TIP"
-out=$(cd "$tmp" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha a --main-base-sha a --latest-sha "$TIP" --pr-sha p 2>&1); rc=$?
+# the cron world: origin/main moved on after the latest completed run, which still descends from the base
+git clone -q "$tmp/origin.git" "$tmp/other"
+git -C "$tmp/other" -c user.name=t -c user.email=t@t commit -q --allow-empty -m three
+git -C "$tmp/other" push -q origin main 2>/dev/null
+TIP3="$(git -C "$tmp/other" rev-parse HEAD)"
+run "latest run is behind origin/main but descends from the merge-base: ALLOW, names the tip" 0 "ALLOW.*git merge $TIP3"
+out=$(cd "$tmp" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha a --main-base-sha a --latest-sha "$TIP" --pr-sha p --main-base-conclusion failure 2>&1); rc=$?
 if [ "$rc" -eq 2 ] && grep -q 'cannot fetch origin main' <<< "$out"; then ok "outside a repo with origin/main: repo check fails, usage, never ALLOW"; else bad "outside a repo exits 2 on the fetch check (rc=$rc)" "$out"; fi
 
 # F2: a shard that fails the base's case AND one of its own is the PR's own red
@@ -157,64 +165,161 @@ CH="$(cc leg)"
 runcov() {
   local d="$1" want="$2" re="$3" out rc
   shift 3
-  out=$(cd "$tmp/cov" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha "$CS" --main-base-sha "$CS" --latest-sha "$CT" --pr-sha "$CH" "$@" 2>&1); rc=$?
+  out=$(cd "$tmp/cov" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha "$CS" --main-base-sha "$CS" --latest-sha "$CT" --pr-sha "$CH" --main-base-conclusion failure "$@" 2>&1); rc=$?
   if [ "$rc" -eq "$want" ] && grep -Eq -- "$re" <<< "$out"; then ok "$d"; else bad "$d (rc=$rc, want $want)" "$out"; fi
 }
 # the cancelled exact run has 0 jobs; the covering sweep's jobs go in $tmp/cover
 set3 'a\tfailure\n' '' 'a\tsuccess\n'
 printf 'a\tfailure\n' > "$tmp/cover"; printf 'a\tc1\n' > "$tmp/base-cases"
-runcov "cancelled merge-base run + red covering sweep (same case) + green latest: ALLOW, says so" 0 "ALLOW.*a.*covering sweep at $CC.*cancelled" \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "cancelled merge-base run + red covering sweep (same case) + green latest: ALLOW, says so" 0 "ALLOW.*a.*covering main run at $CC.*no completed run" \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 printf 'a\tcancelled\n' > "$tmp/base"
-runcov "merge-base run cancelled mid-flight (jobs cancelled) + red covering sweep: ALLOW" 0 "ALLOW.*covering sweep" \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "merge-base run cancelled mid-flight (jobs cancelled) + red covering sweep: ALLOW" 0 "ALLOW.*covering main run" \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 : > "$tmp/base"
 printf 'a\tsuccess\n' > "$tmp/cover"; : > "$tmp/base-cases"
 runcov "cancelled merge-base run + GREEN covering sweep: REFUSE (the PR's own red)" 1 'REFUSE.*a.*not inherited' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 printf 'a\tfailure\n' > "$tmp/cover"; printf 'a\tc1\n' > "$tmp/base-cases"; printf 'a\tfailure\n' > "$tmp/latest"
 runcov "cancelled merge-base run + red covering sweep + red latest: REFUSE" 1 'REFUSE.*a.*not proven fixed' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 printf 'a\tsuccess\n' > "$tmp/latest"
-runcov "cancelled merge-base run, no covering sweep given: REFUSE" 1 'REFUSE.*cancelled.*no completed sweep covering'
-runcov "covering sweep range starts AT the merge-base (does not cover it): REFUSE" 1 'REFUSE.*does not cover' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CS"
-runcov "covering sweep sha is before the merge-base: REFUSE" 1 'REFUSE.*does not cover' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CP" --base-cover-from "$CP"
-runcov "covering sweep sha not on origin/main: REFUSE" 1 'REFUSE.*not on origin/main' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CH" --base-cover-from "$CP"
+runcov "cancelled merge-base run, no covering sweep given: REFUSE" 1 'REFUSE.*no completed main run.*no completed run covering.*next cron or dispatch'
+# HIMMEL-5124: main CI is a cron, so the latest completed run is behind the tip and the covering run may be it
+runcov "latest run is the covering run, behind the tip: ALLOW" 0 "ALLOW.*covering main run at $CC" \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP" --latest-sha "$CC"
+runcov "latest run resolves and descends from the base but is OFF origin/main (the leg's own commit): REFUSE" 1 'REFUSE.*not on origin/main' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP" --latest-sha "$CH"
+runcov "latest run predates the covering run: REFUSE" 1 'REFUSE.*does not descend.*'"$CC" \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP" --latest-sha "$CS"
+runcov "latest run predates the merge-base: REFUSE" 1 'REFUSE.*does not descend' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP" --latest-sha "$CP"
+runcov "covering run range starts AT the merge-base (does not cover it): REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CS"
+runcov "covering run sha is before the merge-base: REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CP" --base-cover-from "$CP"
+runcov "covering run sha not on origin/main: REFUSE" 1 'REFUSE.*not on origin/main' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CH" --base-cover-from "$CP"
 : > "$tmp/cover"
-runcov "covering sweep was itself cancelled: REFUSE" 1 'REFUSE.*covering sweep.*cancelled' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "covering run was itself cancelled: REFUSE" 1 'REFUSE.*covering run.*cancelled' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 printf 'a\tfailure\n' > "$tmp/cover"
-runcov "--base-cover without its shas: usage" 2 'usage' --base-cover "$tmp/cover"
+runcov "--base-cover without its shas: usage" 2 'usage' --base-cover "$tmp/cover" --base-cover-conclusion failure
+runcov "--base-cover without --base-cover-conclusion: usage (a cancelled run's rows read as a red)" 2 'usage' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "--main-base-conclusion omitted: usage, never ALLOW" 2 'usage' --main-base-conclusion ''
+runcov "unknown run conclusion: usage" 2 'usage.*conclusion' --main-base-conclusion failed
 # the range start is the merge-base under another spelling: (S, C] does not contain S
 runcov "cover-from is a short sha of the merge-base: REFUSE" 1 'REFUSE.*does not cover' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "${CS:0:8}"
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "${CS:0:8}"
 runcov "cover-from is S^0: REFUSE" 1 'REFUSE.*does not cover' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CS^0"
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CS^0"
 runcov "cover-from is HEAD~1 (resolves to the merge-base): REFUSE" 1 'REFUSE.*does not cover' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "HEAD~1"
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "HEAD~1"
 runcov "cover-from does not resolve: REFUSE" 1 'REFUSE.*cannot resolve' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from nosuchref
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from nosuchref
 runcov "cover-sha does not resolve: REFUSE" 1 'REFUSE.*cannot resolve' \
-  --base-cover "$tmp/cover" --base-cover-sha nosuchref --base-cover-from "$CP"
-runcov "cover-sha given as origin/main: ALLOW names the resolved sha, not the ref" 0 "ALLOW.*covering sweep at $CT.*range $CP\.\.$CT" \
-  --base-cover "$tmp/cover" --base-cover-sha origin/main --base-cover-from "$CP"
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha nosuchref --base-cover-from "$CP"
+runcov "cover-sha given as origin/main: ALLOW names the resolved sha, not the ref" 0 "ALLOW.*covering main run at $CT.*range $CP\.\.$CT" \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha origin/main --base-cover-from "$CP"
 # a non-regular file reads as empty, i.e. cancelled: it must never open the cover path
 runcov "--main-base /dev/null with a cover: usage, not ALLOW" 2 'usage' \
-  --main-base /dev/null --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+  --main-base /dev/null --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 runcov "--main-base a directory with a cover: usage, not ALLOW" 2 'usage' \
-  --main-base "$tmp" --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+  --main-base "$tmp" --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 runcov "--main-base a green run via process substitution: usage, not ALLOW" 2 'usage' \
-  --main-base <(printf 'a\tsuccess\n') --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+  --main-base <(printf 'a\tsuccess\n') --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 runcov "--main-latest /dev/null: usage" 2 'usage' --main-latest /dev/null
 runcov "--base-cover /dev/null: usage" 2 'usage' \
-  --base-cover /dev/null --base-cover-sha "$CC" --base-cover-from "$CP"
+  --base-cover /dev/null --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 printf 'a\tfailure\n' > "$tmp/base"
 runcov "merge-base run completed: its own verdict stands, a cover is a usage error" 2 'usage.*not cancelled' \
-  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 runcov "merge-base run completed red, no cover: ALLOW as before" 0 'ALLOW.*a'
+
+# HIMMEL-5124 real-environment rows. The merge-base de9b2a8e8 (main after PR 2277) has NO CI run:
+#   gh run list --commit de9b2a8e82ecdc393fa7b5619525ff80107f5b61 --json databaseId,event,conclusion  ->  []
+# so --main-base is an empty file. Cover = job rows of run 38014176513 (main push 34d7d3d31, CI,
+# real `gh run view --json jobs --jq '.jobs[]|[.name,.conclusion]|@tsv'` output) with a real
+# `failure` row; latest = rows of run 38002387566 (main push 3b31ceaa5, all green).
+cat > "$tmp/real-cover" <<'ROWS'
+bun-suites (ubuntu-latest)	cancelled
+bwk-awk-mktemp-gate	success
+claude-startup	success
+commit-lint	success
+doc-invariants	success
+git-env-scrub	cancelled
+guard-corpus-full	skipped
+guardrail-matrices	cancelled
+jira-cli-smoke	success
+lanes-and-trust-suites	cancelled
+leak-classes	cancelled
+lint	cancelled
+node-suites (bitbucket)	cancelled
+node-suites (ci-orchestrator)	cancelled
+node-suites (himmel-bus, marketplace/plugins/himmel-bus, 24)	cancelled
+node-suites (himmel-gh, plugins/himmel-gh)	success
+node-suites (himmel-jira, plugins/himmel-jira)	cancelled
+node-suites (himmel-run)	success
+node-suites (jira)	cancelled
+plugin-version-bump	skipped
+secret-scan	success
+security-scan	success
+shell-unit-shard (ubuntu-latest, 1)	cancelled
+shell-unit-shard (ubuntu-latest, 2)	cancelled
+shell-unit-shard (ubuntu-latest, 3)	cancelled
+shell-unit-shard (ubuntu-latest, 4)	cancelled
+shell-unit-shard (ubuntu-latest, 5)	cancelled
+shell-unit-shard (ubuntu-latest, 6)	cancelled
+shell-unit-shard (ubuntu-latest, 7)	cancelled
+shell-unit-shard (ubuntu-latest, 8)	cancelled
+shell-unit (ubuntu-latest)	failure
+unchecked-mktemp-range	skipped
+ROWS
+cat > "$tmp/real-latest" <<'ROWS'
+lint	success
+bwk-awk-mktemp-gate	success
+guardrail-matrices	success
+leak-classes	success
+commit-lint	success
+git-env-scrub	success
+lanes-and-trust-suites	success
+doc-invariants	success
+bun-suites (ubuntu-latest)	success
+claude-startup	success
+security-scan	success
+secret-scan	success
+jira-cli-smoke	success
+plugin-version-bump	skipped
+unchecked-mktemp-range	skipped
+guard-corpus-full	skipped
+shell-unit (ubuntu-latest)	success
+ROWS
+printf 'shell-unit (ubuntu-latest)\tfailure\n' > "$tmp/pr"; printf 'shell-unit (ubuntu-latest)\tc1\n' > "$tmp/pr-cases"; printf 'shell-unit (ubuntu-latest)\tc1\n' > "$tmp/base-cases"
+: > "$tmp/base"; cp "$tmp/real-cover" "$tmp/cover"; cp "$tmp/real-latest" "$tmp/latest"
+# run 38014176513 has conclusion=cancelled: its only failure row is the aggregator failing because
+# every shard was cancelled, so the rows alone read as a real red. The run conclusion is what refuses it.
+runcov "real rows: the covering run's conclusion is cancelled though its rows show a failure: REFUSE" 1 'REFUSE.*covering run.*cancelled' \
+  --base-cover "$tmp/cover" --base-cover-conclusion cancelled --base-cover-sha "$CC" --base-cover-from "$CP" --latest-sha "$CC"
+runcov "real rows: the merge-base run's conclusion is cancelled though its rows show a failure, no cover: REFUSE" 1 'REFUSE.*cancelled' \
+  --main-base "$tmp/cover" --main-base-conclusion cancelled
+# a genuinely completed red main run: 37964772913 (conclusion failure)
+cat > "$tmp/real-red" <<'ROWS'
+lint	success
+shell-unit-shard (ubuntu-latest, 6)	success
+shell-unit-shard (ubuntu-latest, 7)	success
+shell-unit-shard (ubuntu-latest, 8)	failure
+unchecked-mktemp-range	skipped
+guard-corpus-full	skipped
+plugin-version-bump	skipped
+shell-unit (ubuntu-latest)	failure
+ROWS
+cp "$tmp/real-red" "$tmp/cover"
+runcov "real rows: no run at the merge-base, COMPLETED red covering run, green latest behind the tip: ALLOW" 0 'ALLOW.*shell-unit \(ubuntu-latest\).*covering main run' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP" --latest-sha "$CC"
+printf 'lint\tfailure\n' > "$tmp/pr"; printf 'lint\tc1\n' > "$tmp/pr-cases"
+runcov "real rows: PR red job was cancelled/green on the covering run: REFUSE (the PR's own red)" 1 'REFUSE.*lint.*not inherited' \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP" --latest-sha "$CC"
 
 # input errors
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'

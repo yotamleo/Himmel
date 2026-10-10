@@ -416,18 +416,25 @@ by design.
   (the "A red CI job on your PR is yours to triage" default above). Prove it
   with three job files, each `<job><TAB><conclusion>` (from
   `gh run view <id> --json jobs`): `--pr` your PR's run; `--main-base` main's
-  push run AT YOUR MERGE-BASE (`git merge-base origin/main HEAD`, then
-  `gh run list --commit <sha>`); `--main-latest` main's latest push run. Two
+  CI run (cron or dispatch; main no longer runs per merge, HIMMEL-5113) AT YOUR
+  MERGE-BASE (`git merge-base origin/main HEAD`, then
+  `gh run list --commit <sha>`; no run there, the usual case, means an EMPTY
+  regular file plus the cover trio below); `--main-latest` main's latest
+  completed CI run, which is usually behind the tip. Two
   more files list the FAILING CASES, one `<job><TAB><case>` per line, read from
   the failed-job logs: `--pr-cases` (your PR run) and `--base-cases` (the base
   run). Your PR's shards run only the impacted suites while main's run the full
   sweep, so a matching job name proves nothing: EVERY failing case of your PR's
   job must appear among the base run's failing cases, and any extra failing case
   is your own red. Run
-  `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --pr-cases <f> --base-cases <f> --base-sha <merge-base> --main-base-sha <the base run's headSha> --latest-sha <the latest run's headSha> --pr-sha <the PR run's headSha, must be your HEAD>`
-  (every flag is required; the job files carry no sha, so the script refuses a
-  base run that is not your merge-base and a latest run that is not
-  `git rev-parse origin/main` after its own fetch). Exit 0
+  `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --pr-cases <f> --base-cases <f> --base-sha <merge-base> --main-base-sha <the base run's headSha> --latest-sha <the latest run's headSha> --pr-sha <the PR run's headSha, must be your HEAD> --main-base-conclusion <c>`
+  (every flag is required; `<c>` is that run's `gh run view <id> --json conclusion`
+  value, or `none` when no run exists at the merge-base, in which case pass the
+  merge-base itself as `--main-base-sha`, with `--main-base` the empty file;
+  the job files carry no sha, so the script refuses a
+  base run that is not your merge-base and a latest run that is not on
+  origin/main, or that predates the base verdict run (the covering run, else the
+  merge-base), after its own fetch). Exit 0
   `ALLOW` (every red job was red at the base with the same failing cases AND is
   green on latest) lets you,
   once, `git merge <the tip sha the ALLOW line prints>` (not `origin/main`, which
@@ -435,20 +442,26 @@ by design.
   never rebase, never force-push — citing both main run ids in a Results
   bullet. Exit 1 `REFUSE` (a job green or absent at the base, or a failing case
   the base did not fail, is your own red; a job red or absent on latest main,
-  or a latest run that is not origin/main's tip, is unproven) = do NOT merge forward; fix it, or
-  report `BLOCKED` / `MAIN-RED` per the rule above. If your merge-base's main
-  run was cancelled (0 jobs, or only cancelled/skipped rows — a pending sweep
-  superseded by a newer push), a bare check REFUSEs; add the all-or-none trio
-  `--base-cover <f> --base-cover-sha <sha> --base-cover-from <sha>`. The cover is
-  the next COMPLETED push run on origin/main whose range (from, cover] contains
-  your merge-base (`gh run list -b main`): `--base-cover` its job file,
-  `--base-cover-sha` its headSha, `--base-cover-from` the previous completed
-  sweep's headSha (a strict ancestor of the merge-base). `--base-cases` are then
+  or a latest run that is off origin/main or older than the base verdict, is unproven) = do NOT merge forward; fix it, or
+  report `BLOCKED` / `MAIN-RED` per the rule above. If your merge-base has no
+  completed main run — none at that commit (the usual case), or its run was
+  cancelled (conclusion `cancelled`, whatever finished rows it kept: its aggregator
+  row reads red only because the shards were cancelled, so the script takes the
+  conclusion, never the rows, as the verdict) —
+  a bare check REFUSEs; add the all-or-none group
+  `--base-cover <f> --base-cover-sha <sha> --base-cover-from <sha> --base-cover-conclusion <c>`. The cover is
+  the next COMPLETED main run (cron or dispatch) on origin/main whose range
+  (from, cover] contains your merge-base (`gh run list -w CI -b main`):
+  `--base-cover` its job file, `--base-cover-sha` its headSha, `--base-cover-conclusion`
+  its conclusion (a cancelled cover REFUSEs), `--base-cover-from`
+  the previous completed run's headSha (a strict ancestor of the merge-base). No
+  such run yet means wait for the next cron or dispatch run, never merge forward.
+  `--base-cases` are then
   the cover's failing cases, and every file arg must be a regular file. Polarity
   is unchanged: the job red on the cover with the same failing cases AND green on
   latest = `ALLOW`; green on the cover = `REFUSE`. Two accepted ceilings: the
-  script takes "next" from you and cannot see another completed sweep inside
-  (from, cover], and a red cover proves the failure existed somewhere in that
+  script takes "next" and "latest" from you and cannot see another completed run
+  inside (from, cover] or newer than the latest you pass, and a red cover proves the failure existed somewhere in that
   range, not at the merge-base itself (green on latest bounds it). Exit 3 = nothing red. Once
   per PR: a second merge-forward goes to the console. After it, `/pr-check` and
   CI run again at the new head.
