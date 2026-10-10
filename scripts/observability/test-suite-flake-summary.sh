@@ -78,5 +78,11 @@ echo "== R6: bounded tail =="
 n=$(SUITE_FLAKE_TAIL_ROWS=2 SUITE_FLAKE_LEDGER="$L" SUITE_FLAKE_REPO_ID=repo-a bash "$SUT" --now "$NOW" --days 2 --format tick 2>/dev/null)
 eq "R6: only the last 2 lines are read (the old row and a malformed line)" "$n" "1/1@test-old.sh*1"
 
+echo "== R7: a flag with no value terminates =="
+for fl in --days --since --now --format; do
+  r=$(SUITE_FLAKE_LEDGER="$L" SUITE_FLAKE_REPO_ID=repo-a timeout 5 bash "$SUT" "$fl" 2>/dev/null; echo "rc=$?")
+  case "$r" in *rc=0) pass "R7: trailing $fl exits 0" ;; *) fail "R7: trailing $fl got [$r]" ;; esac
+done
+
 [ "$failures" -eq 0 ] && { echo "ALL PASS"; exit 0; }
 echo "FAILURES: $failures"; exit 1

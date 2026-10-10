@@ -26,10 +26,10 @@ set -uo pipefail
 format=tick since="" days=7 now=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --format) format="${2:-tick}"; shift 2 ;;
-    --since) since="${2:-}"; shift 2 ;;
-    --days) days="${2:-7}"; shift 2 ;;
-    --now) now="${2:-}"; shift 2 ;;
+    --format) format="${2:-tick}"; shift $(( $# > 1 ? 2 : 1 )) ;;
+    --since) since="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
+    --days) days="${2:-7}"; shift $(( $# > 1 ? 2 : 1 )) ;;
+    --now) now="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
     *) shift ;;
   esac
 done
