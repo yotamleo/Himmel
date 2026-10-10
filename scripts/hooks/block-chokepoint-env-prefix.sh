@@ -1908,6 +1908,25 @@ raw_strip() {
     t=${t//\\$'\r\n'/}
     t=${t//\\$'\n'/}
     t=${t//[\'\"\\]/}
+    # HIMMEL-5153: a Unicode space is a separator for the class regexes only in
+    # a UTF-8 locale, so with the ambient locale C/POSIX (no UTF-8 locale
+    # installed) U+3000 and friends would pass. Map their UTF-8 byte sequences
+    # to an ASCII space here, under C, so the match is the same in every
+    # locale. U+00A0, U+0085, U+200B and U+FEFF are included: they are not
+    # iswspace but are valid IFS separators (HIMMEL-5152). Pure-ASCII text
+    # (the common case) skips the passes.
+    case $t in
+        *[!$'\001'-$'\177']*)
+            local sp
+            for sp in $'\302\205' $'\302\240' $'\341\232\200' \
+                $'\342\200\200' $'\342\200\201' $'\342\200\202' $'\342\200\203' \
+                $'\342\200\204' $'\342\200\205' $'\342\200\206' $'\342\200\207' \
+                $'\342\200\210' $'\342\200\211' $'\342\200\212' $'\342\200\213' \
+                $'\342\200\250' $'\342\200\251' $'\342\200\257' $'\342\201\237' \
+                $'\343\200\200' $'\357\273\277'; do
+                t=${t//"$sp"/ }
+            done ;;
+    esac
     u=$t
     while [[ $u =~ $re ]]; do u="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
     RAW_T=$t
@@ -1938,6 +1957,14 @@ raw_mention() {
         for v in $vars_list; do
             [[ $t =~ (^|[^[:alnum:]_])${v}[+]?= ]] && deny_raw_mention "$script_path"
         done
+        # HIMMEL-5152, beside a chokepoint word: ANY assignment to IFS. Bash
+        # splits words on whatever characters IFS holds (U+00A0, U+0085,
+        # U+200B, U+FEFF, an ANSI-C tab), so a later `$c` can spell
+        # `export -n NAME` or `declare +x NAME` with a separator this text layer
+        # does not treat as a space. Denying the assignment closes the class
+        # without enumerating separators. A read-only IFS expansion stays out.
+        [[ $t =~ (^|[^[:alnum:]_])IFS[+]?= ]] \
+            && deny_text_layer "assigns IFS (a word-splitting character the text layer cannot enumerate) beside a sanctioned chokepoint"
         # HIMMEL-3921, beside a chokepoint word: bash startup state that runs
         # before the chokepoint's own first line (BASH_ENV, BASH_FUNC_*,
         # SHELLOPTS, BASHOPTS, extdebug) is refused on sight, and so is CLEARING
