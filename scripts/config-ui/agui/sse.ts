@@ -5,6 +5,7 @@
 // the realpath of ~/.claude/projects (a symlinked file or project directory
 // that leaves it does not count). The path is only ever joined from readdir
 // names and the validated UUID.
+// journalStream re-checks the opened fd against that realpath, so a swap after the check is not served.
 //
 // journalStream(path, ...): reads the file from the start through the journal
 // mapper, then polls for appends every pollMs. It also follows the session's
@@ -16,6 +17,7 @@
 // @ag-ui/encoder's EventEncoder (`data: <json>\n\n`); config-ui takes no
 // dependency for it.
 
+import { constants, existsSync } from "node:fs";
 import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { createJournalMapper } from "./journal-mapper.ts";
@@ -81,6 +83,19 @@ export function redactPayload(e: AguiEvent, redact: (value: unknown) => unknown)
 // and the line order are journal-merge.ts's, shared with the leg digest (HIMMEL-4670).
 type Source = { path: string; fh?: FileHandle; offset: number; size: number; tail: string; utf8: TextDecoder; last: { ts: number } };
 
+// Opens a validated realpath, then checks that the fd is still that file (HIMMEL-4657): the containment check in
+// resolveJournal/subagentFiles and this open are separate steps, so a swap in between must not be served.
+// O_NOFOLLOW refuses a final-component symlink everywhere; procfs also catches a swapped parent directory.
+// ponytail: no procfs (macOS) leaves only O_NOFOLLOW, so a parent-directory swap there is unchecked; upgrade to an fstat dev/ino match against the validated stat if config-ui ever serves off Linux/WSL.
+const PROC_FD = existsSync("/proc/self/fd");
+async function openVerified(path: string): Promise<FileHandle> {
+  const h = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (PROC_FD && (await realpath(`/proc/self/fd/${h.fd}`)) !== path) throw new Error("journal moved outside its validated path");
+  } catch (e) { await h.close(); throw e; }
+  return h;
+}
+
 export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8Array> {
   const mapper = createJournalMapper({ threadId: o.threadId, lane: laneOfJournal(path) === "native" ? undefined : laneOfJournal(path) }); // HIMMEL-4817: a non-native stream carries its lane (native is the unmarked default)
   const enc = new TextEncoder();
@@ -117,7 +132,7 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
   // Returns null when the file shrank (truncated or replaced).
   const read = async (s: Source): Promise<Line[] | null> => {
     if (!s.fh) {
-      const h = await open(s.path, "r");
+      const h = await openVerified(s.path);
       if (closed) { await h.close(); return []; } // cancelled while opening: cleanup ran before fh existed
       s.fh = h;
     }
