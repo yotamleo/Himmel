@@ -1056,7 +1056,9 @@ readers_only() { # true when every command the command line runs is a reader
         PR_TOKFAIL=1
         # The command word itself may be unparseable (`g\it`, `g''it`): match
         # the git word on the text with quotes and backslashes removed.
-        pr_unq=${cmd//[\\\'\"]/}
+        # HIMMEL-4729: _c_unquote strips under LC_ALL=C (linear on a big heredoc).
+        _c_unquote "$cmd"
+        pr_unq=$REPLY
         [[ $cmd =~ $PR_GITWORD_RE || $pr_unq =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
         return 1
     }
