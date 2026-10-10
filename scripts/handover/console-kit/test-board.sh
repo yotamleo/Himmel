@@ -732,7 +732,7 @@ printf '%s\n' '#!/bin/sh' "printf '%s\n' 'aaaa	refs/heads/main'" > "$W/bin/cloud
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$W/bin/cloud-gh-down"
 chmod +x "$W/bin/cloud-gh" "$W/bin/cloud-git" "$W/bin/cloud-gh-down"
 cloud_html() {
-    TZ=UTC CLOUD_LIVENESS_NOW='2026-10-10T16:30:00Z' CLOUD_LIVENESS_GH_CMD="$W/bin/$1" CLOUD_LIVENESS_GIT_CMD="$W/bin/cloud-git" mrun >/dev/null
+    TZ=Europe/Berlin CLOUD_LIVENESS_NOW='2026-10-10T16:30:00Z' CLOUD_LIVENESS_GH_CMD="$W/bin/$1" CLOUD_LIVENESS_GIT_CMD="$W/bin/cloud-git" mrun >/dev/null
     cat "$M/board.html"
 }
 html="$(cloud_html cloud-gh)"

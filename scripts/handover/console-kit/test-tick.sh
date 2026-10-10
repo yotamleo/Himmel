@@ -2067,7 +2067,7 @@ printf '%s\n' '#!/bin/sh' "printf '%s\n' 'aaaa	refs/heads/main' 'bbbb	refs/heads
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$c5163/gh-down"
 chmod +x "$c5163/gh" "$c5163/git" "$c5163/gh-down"
 t5163() {
-    TZ=UTC TOKEN='' CLOUD_LIVENESS_NOW='2026-10-10T16:30:00Z' CLOUD_LIVENESS_GH_CMD="$c5163/${GHSTUB5163:-gh}" \
+    TZ=Europe/Berlin TOKEN='' CLOUD_LIVENESS_NOW='2026-10-10T16:30:00Z' CLOUD_LIVENESS_GH_CMD="$c5163/${GHSTUB5163:-gh}" \
         CLOUD_LIVENESS_GIT_CMD="$c5163/git" bash "$SUT" --doc "$c5163/console.md" "$@" 2>/dev/null
 }
 cloud_of() { sed -nE 's/.* cloud=([^ ]*).*/\1/p'; }
@@ -2100,6 +2100,18 @@ printf '%s\t%s\t%s\t%s\n' '2026-10-10T15:56:20' HIMMEL-5077 session_012yMgxSaSsk
 GHSTUB5163=gh-silent
 contains 'an open PR with no CLOUD-DONE and no commit for an hour reads STALL (HIMMEL-5163)' "$(t5163 | cloud_of)" 'STALL:HIMMEL-5077'
 contains 'the same PR under a raised quiet threshold is working, not a stall (HIMMEL-5163)' "$(CLOUD_LIVENESS_PR_MIN=9999 t5163 | cloud_of)" 'ok'
+# Review round 1: a relaunch supersedes the earlier launch, so a PR made before it no longer
+# speaks for the ticket; a full gh page that may have cut a live session's PR off is unknown.
+printf '%s\t%s\t%s\t%s\n' '2026-10-10T18:20:00' HIMMEL-5077 session_relaunch 'claude --teleport session_relaunch' > "$c5163/cloud-sessions.tsv"
+contains 'a PR from before the relaunch does not stall the new session (HIMMEL-5163)' "$(t5163 | cloud_of)" 'ok'
+printf '%s\n' \
+    "const a = [];" \
+    "for (let i = 0; i < 100; i++) a.push({ number: i + 1, title: 'x', body: '', state: 'MERGED', headRefName: 'z', createdAt: '2026-10-10T16:00:00Z', mergedAt: '2026-10-10T16:01:00Z', comments: [], commits: [] });" \
+    "process.stdout.write(JSON.stringify(a));" > "$c5163/full.js"
+printf '%s\n' '#!/bin/sh' "node '$c5163/full.js'" > "$c5163/gh-full"
+chmod +x "$c5163/gh-full"
+printf '%s\t%s\t%s\t%s\n' '2026-10-10T15:56:20' HIMMEL-5077 session_012yMgxSaSskpLb4qrfXBhk1 'claude --teleport session_012yMgxSaSskpLb4qrfXBhk1' > "$c5163/cloud-sessions.tsv"
+contains 'a full gh page newer than the session launch reads cloud=skip (HIMMEL-5163)' "$(GHSTUB5163=gh-full t5163 | cloud_of)" 'skip'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

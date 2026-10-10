@@ -52,6 +52,7 @@ export function parseSessions(text) {
   return [...byTicket.values()];
 }
 
+const LIMIT = 100;
 const keyRe = (key) => new RegExp(`(?<![\\w-])${key}(?!\\d)`);
 const slugOf = (key) => key.toLowerCase();
 const DONE = /^\s*CLOUD-(DONE|BLOCKED)\b/;
@@ -59,6 +60,9 @@ const DONE = /^\s*CLOUD-(DONE|BLOCKED)\b/;
 // Which PRs are this session's: the brief's `cloud-pilot: <KEY>` body line, a CLOUD-DONE /
 // CLOUD-BLOCKED comment carrying the session id, or a claude/ branch named for the ticket.
 function attributed(pr, s) {
+  // A PR created before this session launched belongs to an earlier launch of the ticket.
+  const made = Date.parse(pr.createdAt ?? '');
+  if (!Number.isNaN(made) && made < s.launched) return false;
   const body = pr.body ?? '';
   if (new RegExp(`cloud-pilot:\\s*${s.ticket}(?!\\d)`).test(body)) return true;
   if ((pr.comments ?? []).some((c) => DONE.test(c.body ?? '') && s.session && (c.body ?? '').includes(s.session))) return true;
@@ -131,12 +135,19 @@ export function collect({ bucket, repo, env = process.env, now = Date.now() }) {
   const tsv = join(bucket, 'cloud-sessions.tsv');
   if (!existsSync(tsv)) return { skip: true };
   const cfg = defaults(env);
-  const sessions = parseSessions(readFileSync(tsv, 'utf8')).filter((s) => now - s.launched <= cfg.windowH * 3600e3);
+  let sessions;
+  try { sessions = parseSessions(readFileSync(tsv, 'utf8')).filter((s) => now - s.launched <= cfg.windowH * 3600e3); } catch { return { skip: true }; }
   if (!sessions.length) return { states: [], cfg };
   let prs;
   try {
-    prs = JSON.parse(execFileSync(env.CLOUD_LIVENESS_GH_CMD || 'gh', ['pr', 'list', '--state', 'all', '--limit', '100', '--json', 'number,title,body,state,headRefName,createdAt,mergedAt,closedAt,comments,commits'], { cwd: repo, encoding: 'utf8', timeout: 40000, stdio: ['ignore', 'pipe', 'ignore'] }));
+    prs = JSON.parse(execFileSync(env.CLOUD_LIVENESS_GH_CMD || 'gh', ['pr', 'list', '--state', 'all', '--limit', String(LIMIT), '--json', 'number,title,body,state,headRefName,createdAt,mergedAt,closedAt,comments,commits'], { cwd: repo, encoding: 'utf8', timeout: 40000, stdio: ['ignore', 'pipe', 'ignore'] }));
     if (!Array.isArray(prs)) return { skip: true };
+    // A full page whose oldest PR is newer than the oldest live session may have cut that
+    // session's PR off: unknown, not clean.
+    if (prs.length >= LIMIT) {
+      const oldest = Math.min(...prs.map((p) => Date.parse(p.createdAt)).filter((x) => !Number.isNaN(x)));
+      if (oldest > Math.min(...sessions.map((s) => s.launched))) return { skip: true };
+    }
   } catch { return { skip: true }; }
   let heads = null;
   try {
