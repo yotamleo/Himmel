@@ -27,6 +27,8 @@
 #   IS19 a missing / unflagged / marked / reasonless allowlist entry fails
 #   IS20 a lowercase or quote-split uninstall caller selects the callers suite
 #   IS21 a template root file edit selects test-vault-git.sh (HIMMEL-5132)
+#   IS22 a suite naming a changed script by its stem, without .sh, is selected
+#        (HIMMEL-5160)
 #   IS15b a planted unmarked tree-walking suite is flagged by the real walk list
 #
 # Platform guard: bash-only, no .ps1 twin; git + tar, Linux CI is the caller.
@@ -70,6 +72,8 @@ mkdir -p "$SB/templates/luna-second-brain/scripts"
 printf '# tpl\n' > "$SB/templates/luna-second-brain/scripts/setup.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/templates/luna-second-brain/scripts/test-vault-git.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/scripts/test-uninstall-real-home-callers.sh"
+printf '# hook\n' > "$SB/scripts/tools/guard-thing.sh"
+printf '#!/usr/bin/env bash\nguard_rc guard-thing "x"\nexit 0\n' > "$SB/scripts/test-guard-stem.sh"
 printf '# ignore\n' > "$SB/templates/luna-second-brain/.gitignore"
 printf '# readme\n' > "$SB/templates/luna-second-brain/README.md"
 g add -A; g commit -q -m "chore: pre-selector"
@@ -149,6 +153,7 @@ g checkout -q -B contsplit "$BASE"
 printf 'export %s%s\\\n%s=1\n' "$UN_A" "$UN_B" "$UN_C" > "$SB/scripts/tools/cont.sh"
 g add -A; g commit -q -m "continuation-split caller"
 H_CONT=$(g rev-parse HEAD)
+H_STEM=$(branch stem scripts/tools/guard-thing.sh '# edit')
 H_TPLGI=$(branch tplgi templates/luna-second-brain/.gitignore '# edit')
 H_TPLRM=$(branch tplrm templates/luna-second-brain/README.md '# edit')
 g checkout -q "$BASE" 2>/dev/null
@@ -288,6 +293,13 @@ for pair in ".gitignore:$H_TPLGI" "README.md:$H_TPLRM"; do
     pass "IS21: a template ${pair%%:*} edit selects test-vault-git.sh"
   else fail "IS21: ${pair%%:*}: rc=$rc out: $out"; fi
 done
+
+# --- IS22 (HIMMEL-5160) -----------------------------------------------------
+# A suite that names a changed script by its stem, without .sh, is selected.
+out=$(sel "$BASE" "$H_STEM"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'suite scripts/test-guard-stem.sh'; then
+  pass "IS22: a suite naming a changed script without .sh is selected"
+else fail "IS22: rc=$rc out: $out"; fi
 
 # --- IS15 / IS18 / IS19 -----------------------------------------------------
 # Lint: a suite that enumerates the REAL repo tree (git ls-files / ls-tree /

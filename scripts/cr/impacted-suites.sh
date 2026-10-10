@@ -18,7 +18,9 @@
 #       file changed between merge-base(<base>,<head>) and <head> (deletions
 #       included, renames counted as delete+add), list each suite at <head>
 #       whose text references the file's basename — or, for a slash command or
-#       skill, `/<name>`. A changed suite lists itself. --shell keeps only
+#       skill, `/<name>`. A changed *.sh whose stem holds a `-` or `_` is also
+#       matched by its bare stem (HIMMEL-5160: `guard_rc block-foo`, no .sh).
+#       A changed suite lists itself. --shell keeps only
 #       test-*.sh (what run-shell-tests.sh can run); the *.test.mjs / .js / .ts
 #       suites are listed without it and are run by their own runner — see
 #       --runner below for which one.
@@ -538,6 +540,22 @@ needle_tail_ere() {
 add_needle() {
     { needle_ere "$1"; printf '\n'; } >> "$pats" || io_fail "writing a needle"
 }
+# add_stem_needle <path> — HIMMEL-5160: a suite often names a script without its
+# extension (`guard_rc block-chokepoint-env-prefix`), so a changed *.sh whose
+# stem holds a `-` or `_` also gets its bare stem as a needle. A one-word stem
+# (`gate`, `run`) is a common word and is skipped. The leading boundary is
+# needle_ere's, so `test-<stem>` and `x-<stem>` are other words; the trailing one
+# also refuses `.`, so `<stem>.bak` and a longer `<stem>-extra` are not matched
+# (the basename needle already matches `<stem>.sh`).
+# ponytail: a sentence-final `<stem>.` is missed, and a stem shared by two
+# directories over-approximates; upgrade path is a --selector-miss row naming one.
+add_stem_needle() {
+    local st="${1##*/}" esc
+    case "$st" in *.sh) st="${st%.sh}" ;; *) return 0 ;; esac
+    case "$st" in *[-_]*) ;; *) return 0 ;; esac
+    esc=$(printf '%s' "$st" | sed 's/[.[\*^$+?(){}|]/\\&/g') || io_fail "escaping a stem needle"
+    printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_.-])\n' "$esc" >> "$pats" || io_fail "writing a stem needle"
+}
 
 # file_literal <path> [src] — the text a suite would use to name the file: its
 # basename, or "<parent>/<name>" for a generic one. A single-word extensionless
@@ -603,6 +621,7 @@ while IFS= read -r f; do
     fi
     name="${f##*/}"
     add_needle "$(file_literal "$f")"
+    add_stem_needle "$f"
     bare_source_ere "$f" >> "$pats" || io_fail "writing a bare source needle"
     printf '%s\n' "$f" >> "$seen" || io_fail "seeding the source closure"
     printf '%s\n' "$f" >> "$front" || io_fail "seeding the source closure"
