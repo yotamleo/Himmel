@@ -20,8 +20,8 @@
 #
 # ponytail: _flake_norm_url / _flake_repo_id are a verbatim copy of
 # run-shell-tests.sh's (a shared lib would touch scripts/ci, a trust path);
-# test-suite-flake-summary.sh R5 fails if the two drift. Upgrade: a follow-up
-# ticket for one lib both source (v1.1.2).
+# test-suite-flake-summary.sh R11 fails if the two drift. Upgrade: HIMMEL-5147
+# (v1.1.2), one lib both source.
 set -uo pipefail
 
 format=tick since="" days=7 now=""
