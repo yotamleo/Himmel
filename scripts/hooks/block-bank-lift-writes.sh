@@ -62,7 +62,10 @@
 # (`tar -C "$B"` with B set in the command), ~14 glob / JSON-argument mention
 # over-matches, 16 harness artifacts, 1 tar --wildcards. HIMMEL-4545 trims the
 # copy class that is provably harmless (a plain literal name copied to a
-# plain literal name, `_plain_name_copy`). The remainder stays denied because
+# plain literal name, `_plain_name_copy`, which still refuses a name that
+# exists under the payload's cwd as a symlink to the lift or its directory; a
+# proven cwd resolves such a link too, only a link that exists solely in the
+# cwd a `cd` moved to goes unseen). The remainder stays denied because
 # the member names or the resolved cwd are unknowable to a text layer: an
 # extraction under an unproven cwd, `ln` with a computed or relative source,
 # a computed extraction destination, and a glob that can match the lift's
@@ -945,15 +948,24 @@ _lit_name() {
 # spelling first), or as the contents of a directory landing on state, .himmel
 # or HOME. So every source and the destination must be a plain literal name that
 # is none of those; `-T` / `--parents` / `-R` and a trailing-slash or `.`
-# source (which spill a directory's contents) never qualify. Accepted ceiling,
-# the same as under a proven cwd: an existing symlink or a HOME whose own name
-# is the destination is not resolved.
+# source (which spill a directory's contents) never qualify. A destination that
+# already exists, under the payload's cwd, as a symlink (chain) to the lift or
+# to its state / .himmel / HOME directory is refused: the name is plain but
+# the write is not. Accepted ceiling: after a `cd` the real cwd is not the
+# payload's, so a link that exists only there is not seen.
 _plain_name_copy() {
     local dest="$1" flags="$2" s
     shift 2
     [ "$flags" = 00 ] || return 1
     _lit_name "$dest" || return 1
     for s in "$@"; do _lit_name "$s" || return 1; done
+    case "$CWD" in
+        /*)
+            case "$(lift_ref "${CWD%/}/$dest")" in
+                LIFT|STATE|HIMMEL|HOME) return 1 ;;
+            esac
+            ;;
+    esac
     return 0
 }
 

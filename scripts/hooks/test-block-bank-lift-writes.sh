@@ -452,6 +452,24 @@ row "4545 glob src, cp -t computed dest"    deny  "d=$ST; cp -t \"\$d\" $T/gsrc/
 row "4545 glob src, rsync computed dest"    deny  "d=$ST; rsync -a $T/gsrc/* \"\$d\""
 row "4545 glob src name-miss, computed dest (ctrl)" allow "d=$T/out; cp $T/gsrc/*.txt \"\$d\""
 row "4545 literal src, computed dest (ctrl)" allow "d=$T/out; cp $T/src/other.txt \"\$d\""
+# A relative plain-name destination that is an EXISTING symlink to the lift
+# (or to a chain ending at it) writes the lift through that name. Resolution
+# has to hold under a proven cwd and an unproven one; the cwd is the fixture
+# dir that holds the link, so the relative name is the link itself.
+mkdir -p "$T/cwl"
+ln -s "$LIFT" "$T/cwl/plainlink"
+ln -s "$T/cwl/plainlink" "$T/cwl/plainlink2"
+ln -s "$ST" "$T/cwl/statelink"
+row "4545 cp to plain symlink (proven cwd)"         deny  "cp $T/src/other.txt plainlink" "$T/cwl"
+row "4545 mv to plain symlink (proven cwd)"         deny  "mv $T/src/other.txt plainlink" "$T/cwl"
+row "4545 ln -sf over plain symlink (proven cwd)"   deny  "ln -sf $T/src/other.txt plainlink" "$T/cwl"
+row "4545 cp to plain symlink chain (proven cwd)"   deny  "cp $T/src/other.txt plainlink2" "$T/cwl"
+row "4545 cp to plain symlink (unproven cwd)"       deny  "n=\$(date +%H); cp $T/src/other.txt plainlink" "$T/cwl"
+row "4545 mv to plain symlink (unproven cwd)"       deny  "n=\$(date +%H); mv $T/src/other.txt plainlink" "$T/cwl"
+row "4545 ln -sf over plain symlink (unproven cwd)" deny  "n=\$(date +%H); ln -sf $T/src/other.txt plainlink" "$T/cwl"
+row "4545 cp to plain symlink chain (unproven cwd)" deny  "n=\$(date +%H); cp $T/src/other.txt plainlink2" "$T/cwl"
+row "4545 cp to state-dir symlink (unproven cwd)"   deny  "n=\$(date +%H); cp $T/src/other.txt statelink" "$T/cwl"
+row "4545 cp to plain name, no link (unproven ctrl)" allow "n=\$(date +%H); cp $T/src/other.txt nolink" "$T/cwl"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or
 # relocate the lift's whole tree; a plain-name test alone would pass it.
 row "4545 ln -s abs HOME src still denies"  deny  "cd /tmp && ln -s $HOME link"
