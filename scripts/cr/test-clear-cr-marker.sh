@@ -2716,6 +2716,8 @@ rm -rf "$tmp"
 # so a record naming a site HEAD lacks is refused and one HEAD has is accepted.
 sweep_fixture
 (cd "$tmp" && git checkout -q --detach && git branch -q -D feat/x) >/dev/null 2>&1
+if git -C "$tmp" show-ref --verify --quiet refs/heads/feat/x; then
+    fail "8z-head setup: refs/heads/feat/x still exists, the HEAD fallback is not exercised"; else pass; fi
 printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, nope.sh:2\n' "$_r1" > "$tmp/cand.txt"
 run_clear "$tmp" 14 "8z-head --check-sweeps with no branch ref judges against HEAD: absent site refused" --check-sweeps "$tmp/cand.txt" feat/x
 printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, b.sh:4\n' "$_r1" > "$tmp/cand.txt"
