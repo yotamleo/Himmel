@@ -166,6 +166,23 @@ describe("ledger confirmations and Edits, review follow-ups", () => {
     expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
   });
 
+  test("a confirmation that echoes a verdict backs only the row with that verdict", () => {
+    const deltas = withExtra([
+      ...bash(1, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=agreed --reason r; bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r`, amended("codex-1")),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("an Edit that adds the first VERDICT line to a Write without any is followed", () => {
+    const deltas = withExtra([
+      ...tool(1, "Write", { file_path: "/tmp/scratch/v5.txt", content: "notes only\n" }),
+      ...tool(2, "Edit", { file_path: "/tmp/scratch/v5.txt", old_string: "notes only", new_string: "VERDICT [codex-1] = agreed" }),
+      ...bash(3, "bash scripts/cr/write-verdicts.sh aggregate --from-file /tmp/scratch/v5.txt"),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "agreed" }] });
+  });
+
   test("an Edit that removes every VERDICT line is still followed by a later Edit", () => {
     const deltas = withExtra([
       ...tool(1, "Write", { file_path: "/tmp/scratch/v4.txt", content: "VERDICT [codex-1] = agreed\n" }),

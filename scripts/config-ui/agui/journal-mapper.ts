@@ -66,7 +66,7 @@
 
 import { readFileSync } from "node:fs";
 import type { AgentInfo, AgentRole, AguiEvent, Failure, JsonPatchOp } from "./events.ts";
-import { commandVerdicts, extractHead, extractLedgerVerdicts, extractVerdicts, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
+import { commandVerdicts, extractHead, extractLedgerVerdicts, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
 
 export type MapperStats = {
   lines: number; // non-blank lines seen
@@ -111,7 +111,7 @@ const busDeliveries = (text: string) => [...text.matchAll(BUS_HEADER)].map((m) =
 // HIMMEL-4655: ledger-append.sh says so when it has written a verdict (an amend, or a finding's verdict appended as
 // one); a fresh finding row prints nothing, so for it only a refusal line in the result says it was not written.
 // ponytail: a fresh finding row in a branch that never ran still shows, have ledger-append.sh confirm every finding append if a real journal shows one
-const LEDGER_CONFIRMED = /^ledger-append\.sh: (?:amended|appended verdict amend for) (\S+) at ([0-9a-f]+)/gm;
+const LEDGER_CONFIRMED = /^ledger-append\.sh: (?:amended|appended verdict amend for) (\S+) at ([0-9a-f]+)(?: -> (\{.*\}))?/gm;
 const LEDGER_REFUSED = /^ledger-append\.sh: (?!amended |appended verdict amend for )/m;
 
 const roleOfName = (name: string): AgentRole =>
@@ -128,7 +128,7 @@ type PendingCall = {
   verdicts: VerdictUpdate[]; // recorded by a Bash command's write-verdicts.sh run
   ledger: LedgerRow[]; // ledger-append.sh rows, applied once the result confirms them
   head?: string; // the --head a Bash command names
-  write?: { path: string; text?: string }; // a Write call: its file, and the text when it holds VERDICT lines
+  write?: { path: string; text: string }; // a Write call: its file and text, so a later Edit can add the first VERDICT line
   edit?: { path: string; old: string; next: string; all: boolean }; // an Edit call's replacement
 };
 
@@ -156,6 +156,17 @@ function resultText(content: unknown): string {
     .join("\n");
 }
 
+// An amend's confirmation line echoes the fields it set; when that names a verdict it must be this row's.
+function sameVerdict(set: string | undefined, row: LedgerRow): boolean {
+  if (!set) return true;
+  try {
+    const said = (JSON.parse(set) as Rec).verdict;
+    return typeof said !== "string" || said === row.verdict;
+  } catch {
+    return true;
+  }
+}
+
 // The ledger rows a tool result confirms: one its output names (id, and head when the row has one), or a finding
 // row when the output carries no refusal. An amend always prints its confirmation, so none means not written. Each
 // confirmation line backs one row, so a repeated amend of one id counts only as many times as the ledger said so.
@@ -165,7 +176,7 @@ function confirmedRows(rows: LedgerRow[], text: string): VerdictUpdate[] {
   const refused = LEDGER_REFUSED.test(text);
   return rows
     .filter((r) => {
-      const at = said.findIndex(([, id, sha]) => id === r.id && (!r.head || r.head.startsWith(sha) || sha.startsWith(r.head)));
+      const at = said.findIndex(([, id, sha, set]) => id === r.id && (!r.head || r.head.startsWith(sha) || sha.startsWith(r.head)) && sameVerdict(set, r));
       if (at >= 0) said.splice(at, 1);
       return at >= 0 || (!r.amend && !refused);
     })
@@ -330,10 +341,7 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     });
     pending.delete(toolCallId);
     if (isError) return;
-    if (call?.write) {
-      if (call.write.text !== undefined) verdictFiles.set(call.write.path, call.write.text);
-      else verdictFiles.delete(call.write.path);
-    }
+    if (call?.write) verdictFiles.set(call.write.path, call.write.text);
     if (call?.edit) followEdit(call.edit);
     const panel = parsePanelReport(resultText(block.content));
     if (panel) {
@@ -393,7 +401,7 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     const path = str(args.file_path);
     const content = str(args.content);
     if (name === "Write" && path && content !== undefined) {
-      return { ...call, write: { path, ...(extractVerdicts(content).length ? { text: content } : {}) } };
+      return { ...call, write: { path, text: content } };
     }
     const old = str(args.old_string);
     const next = str(args.new_string);
