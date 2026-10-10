@@ -465,6 +465,8 @@ export GH_STUB_BODY_FILE="$FIXD/pr-777-outside-diff-blockquote.body.txt"
 rm -f "$OD_LEDGER"
 GH_STUB_MODE=body-file t od-undispositioned-blocks 2
 grep -qi "outside-diff-range finding" "$TMP/out-od-undispositioned-blocks" || { echo "FAIL od-undispositioned block reason missing"; fail=$((fail+1)); }
+# HIMMEL-4641: the recipe hint names --branch so a ledger-append run from a leg resolves the PR branch
+grep -q "ledger-append.sh finding --branch <pr-branch>" "$TMP/out-od-undispositioned-blocks" || { echo "FAIL od-undispositioned hint missing --branch <pr-branch>"; fail=$((fail+1)); }
 grep -q "cr-od-39c3193c8945" "$TMP/out-od-undispositioned-blocks" || { echo "FAIL od-undispositioned block does not list the finding id"; fail=$((fail+1)); }
 grep -q ".pre-commit-config.yaml:459" "$TMP/out-od-undispositioned-blocks" || { echo "FAIL od-undispositioned block does not list file:line"; fail=$((fail+1)); }
 

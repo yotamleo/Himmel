@@ -242,6 +242,26 @@ if [ -L "$target" ]; then
   exit 2
 fi
 
+# HIMMEL-4641: a sweep record is judged here by the gate's own check
+# (clear-cr-marker.sh --check-sweeps), so one the gate would refuse is refused
+# now, not rounds later. Only the gate's refusal (rc 14) refuses; any other
+# result (no node, an adopter checkout, an older gate that lacks the flag) leaves
+# the shape check above as the write-time floor - gate 4d still decides at clear.
+case "${BASH_SOURCE[0]}" in */*) _sw_dir="${BASH_SOURCE[0]%/*}" ;; *) _sw_dir=. ;; esac
+_sw_dir=$(cd "$_sw_dir" 2>/dev/null && pwd) || _sw_dir=""
+if [ "$mode" = sweep ] && [ -n "$lines" ] && [ -n "$_sw_dir" ] && [ -f "$_sw_dir/clear-cr-marker.sh" ]; then
+  _sw_tmp=$(mktemp "${TMPDIR:-/tmp}/write-verdicts-sweep.XXXXXX") || _sw_tmp=""
+  if [ -n "$_sw_tmp" ]; then
+    printf '%s' "$lines" > "$_sw_tmp"
+    _sw_out=$(bash "$_sw_dir/clear-cr-marker.sh" --check-sweeps "$_sw_tmp" "$branch" 2>&1); _sw_rc=$?
+    rm -f "$_sw_tmp"
+    if [ "$_sw_rc" -eq 14 ]; then
+      echo "write-verdicts.sh: the gate would refuse a sweep record — refusing the whole write: ${_sw_out#*the gate would refuse: }" >&2
+      exit 2
+    fi
+  fi
+fi
+
 mkdir -p "$(dirname "$target")"
 if [ "$mode" = sweep ]; then
   printf '%s' "$lines" >> "$target"

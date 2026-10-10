@@ -2591,9 +2591,16 @@ if grepq "$LAST_CLEAR_OUT" -F 'search-scope-single-file'; then pass; else
 rm -rf "$tmp"
 # 8q. A search option that runs a program is refused, and never runs.
 sweep_fixture
-write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=git grep --open-files-in-pager=touch -e echo -- a.sh" "${_r2_ok/\$_tip/$_tip}"
+# HIMMEL-4641: the pager is a script that drops a canary, so a run is observable
+# (a bare touch pager only bumped a.sh's mtime). The control runs git directly
+# in the worktree and must trip the canary, or the absence below proves nothing.
+printf '#!/bin/sh\ntouch "%s/pager.ran"\n' "$tmp" > "$tmp/pager.sh"; chmod +x "$tmp/pager.sh"
+(cd "$tmp" && git grep -q --open-files-in-pager=./pager.sh -e echo -- a.sh) >/dev/null 2>&1
+if [ -e "$tmp/pager.ran" ]; then pass; else fail "8q control: the pager canary must fire when git runs the option directly"; fi
+rm -f "$tmp/pager.ran"
+write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=git grep --open-files-in-pager=./pager.sh -e echo -- a.sh" "${_r2_ok/\$_tip/$_tip}"
 run_clear "$tmp" 14 "8q a search carrying a program-running option is not a record -> exit 14"
-if [ -e "$tmp/a.sh.ran" ] || [ -e "$tmp/echo" ]; then fail "8q the refused search must never run"; else pass; fi
+if [ -e "$tmp/pager.ran" ] || [ -e "$tmp/a.sh.ran" ] || [ -e "$tmp/echo" ]; then fail "8q the refused search must never run"; else pass; fi
 rm -rf "$tmp"
 # 8r. HIMMEL-4604 (gate side): a raw verdict spelled Agreed is still agreed.
 sweep_fixture
@@ -2617,6 +2624,49 @@ sweep_fixture
 printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1","severity":"imp","file":"a.sh","line":1,"verdict":"disproved"}\n' "$sha" >> "$tmp/.git/cr-critic-scores.jsonl"
 write_sweeps "$tmp" "${_r2_ok/\$_tip/$_tip}"
 run_clear "$tmp" 0 "8t a later full-head row supersedes the abbreviated-head agreed row -> exit 0"
+rm -rf "$tmp"
+# 8u. HIMMEL-4637: a hit path git would quote (core.quotePath) is compared as its
+# real name. The finding file is u-umlaut.sh and the search's only hit IS that
+# file, so the record must clear (it was refused as search-hits-other-site).
+sweep_fixture
+_uf=$(printf '\303\274.sh')
+(cd "$tmp" && printf 'echo u\n' > "$_uf" && git add "$_uf" && git commit -qm "round 3" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_marker "$tmp" "$_tip"
+write_ledger "$tmp" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1","severity":"sug","file":"%s","line":1,"verdict":"fixed"}' "${_tip:0:8}" "$_uf")" \
+    "$(avail_ok "${_tip:0:8}")"
+write_sweeps "$tmp" "SWEEP [r1@${_tip:0:8}] class=quoted path :: single-site search=git grep -n -F 'echo u' -- $_uf b.sh c.sh"
+run_clear "$tmp" 0 "8u a search whose only hit is a non-ASCII finding file clears -> exit 0"
+if grepq "$LAST_CLEAR_OUT" -F 'search-hits-other-site'; then fail "8u must not report the quoted finding path as another site: $LAST_CLEAR_OUT"; else pass; fi
+rm -rf "$tmp"
+# 8v. HIMMEL-4637: a sites= entry must be a file. scripts/cr is a tree at the
+# tip, which cat-file -e accepts, so the record was a record.
+sweep_fixture
+write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: sites=a.sh:1, scripts/cr" "${_r2_ok/\$_tip/$_tip}"
+run_clear "$tmp" 14 "8v a sweep naming a directory as a site is not a record -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F 'site-not-a-file:scripts/cr'; then pass; else
+    fail "8v must name site-not-a-file:scripts/cr: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+# 8w. HIMMEL-4641: a later disproved row at a fabricated head that merely extends
+# r1's abbreviated head does not resolve to r1's commit, so it must not erase
+# r1's sweep requirement.
+sweep_fixture
+printf '{"kind":"finding","head":"%sffffff","branch":"feat/x","model":"codex","finding_id":"r1","severity":"imp","file":"a.sh","line":1,"verdict":"disproved"}\n' "$_r1" >> "$tmp/.git/cr-critic-scores.jsonl"
+write_sweeps "$tmp" "${_r2_ok/\$_tip/$_tip}"
+run_clear "$tmp" 14 "8w a disproved row at a fabricated extension of the head does not supersede r1 -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F "r1@$_r1"; then pass; else fail "8w must name r1: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+# 8x. HIMMEL-4641: --check-sweeps judges candidate records with the gate's own
+# checks and touches nothing: a bad record exits 14, a good one exits 0, and
+# neither needs a marker.
+sweep_fixture
+printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, nope.sh:2\n' "$_r1" > "$tmp/cand.txt"
+run_clear "$tmp" 14 "8x --check-sweeps refuses a record the gate would refuse" --check-sweeps "$tmp/cand.txt"
+if grepq "$LAST_CLEAR_OUT" -F 'site-not-at-tip:nope.sh'; then pass; else fail "8x must name the fault: $LAST_CLEAR_OUT"; fi
+printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, b.sh:4\n' "$_r1" > "$tmp/cand.txt"
+run_clear "$tmp" 0 "8x --check-sweeps accepts a record the gate would accept" --check-sweeps "$tmp/cand.txt"
+if marker_exists "$tmp"; then pass; else fail "8x --check-sweeps must leave the marker alone"; fi
 rm -rf "$tmp"
 
 # 5a-5e. HIMMEL-2128 — CR_FLOOR_FALLBACK=claude-only gate-3b escape. All five
