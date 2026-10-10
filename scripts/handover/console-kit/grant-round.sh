@@ -259,6 +259,18 @@ undo() {
     rm -f "$tmp_round"
     printf '%s ROLLED-BACK %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$audit_tail" >> "$audit_f" 2>/dev/null || true
 }
+# Both locks carry a 60 s TTL and the gh read above can stall past it, so a waiter
+# may have reclaimed one; shared-branch-lock.sh requires a holder to re-verify it
+# still owns the lock immediately before its decisive action. Nothing is renamed
+# yet, so a lost lock refuses with the state untouched (release-if-owner leaves
+# the new holder's lock alone).
+now_owner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$branch" 2>/dev/null)"
+now_gowner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$glock" 2>/dev/null)"
+if [ "$now_owner" != "$owner" ] || [ "$now_gowner" != "$gowner" ]; then
+    rm -f "$tmp_verd" "$tmp_round" "$pre_verd" "$round_f.bak-$ts"
+    printf '%s ROLLED-BACK lock-lost %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$audit_tail" >> "$audit_f" 2>/dev/null || true
+    fail 5 "lost the review-counter or qid lock before the renames; nothing was granted"
+fi
 trap 'undo; release; exit 5' INT TERM HUP
 if ! mv "$tmp_verd" "$verd_f"; then
     rm -f "$tmp_verd"

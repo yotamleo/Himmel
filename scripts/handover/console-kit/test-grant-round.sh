@@ -56,6 +56,8 @@ cat > "$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 n=0
 if [ -n "${GH_COUNT:-}" ]; then n="$(cat "$GH_COUNT" 2>/dev/null || echo 0)"; n=$((n+1)); echo "$n" > "$GH_COUNT"; fi
+# A waiter reclaiming a lock while this (in-lock) read stalls: swap the holder record.
+if [ -n "${GH_STEAL_OWNER:-}" ] && [ "$n" -ge 2 ]; then printf '{"pid":1,"lane":"thief"}\n' > "$GH_STEAL_OWNER"; fi
 if [ -n "${GH_JSON2:-}" ] && [ "$n" -ge 2 ]; then cat "$GH_JSON2"; else cat "$GH_JSON"; fi
 EOF
 chmod +x "$tmp/gh"
@@ -204,6 +206,25 @@ for which in _grant-round-qid-scan "$BRANCH"; do
     check "owner-less $which refusal changes nothing" "$(snap_state)" "$b3"
 done
 rm -f "$tmp/ownerless.flag"
+# A lock reclaimed by a waiter while the in-lock gh read stalled: the grant must
+# notice before its renames, refuse 5 and change nothing (HIMMEL-5126).
+for which in feat-x-grant _grant-round-qid-scan; do
+    reset_state 3
+    rm -f "$tmp/ghc"
+    ldir="$common/himmel-cr-review-round/$(printf '%s' "$which" | sed 's/[^a-zA-Z0-9-]/-/g').lock"
+    rc=0; out=$(run GH_COUNT="$tmp/ghc" GH_STEAL_OWNER="$ldir/owner.json" 2>&1) || rc=$?
+    check "lost $which lock before the renames refuses" "$rc" 5
+    contains "lost $which lock refusal says so" "$out" "lock"
+    check "lost $which lock changes nothing" "$(snap_state)" "$b3"
+    check "lost $which lock leaves the counter at 3" "$(cat "$state/$BRANCH.round")" 3
+    check "lost $which lock consumes no qid" "$([ -e "$state/$BRANCH.verdicts" ] && echo present || echo absent)" absent
+    # the thief's lock is not ours to release; clear it so the next row starts free
+    rm -f "$ldir/owner.json"; rmdir "$ldir" 2>/dev/null
+    for l in "$common"/himmel-cr-review-round/*.lock; do
+        [ -d "$l" ] || continue
+        rm -f "$l/owner.json"; rmdir "$l" 2>/dev/null
+    done
+done
 reset_state 3
 
 # --- 5. a valid record grants exactly one round ------------------------------
