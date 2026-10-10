@@ -34,6 +34,7 @@ _hsleep() {
     wait "$SLEEP_PID" 2>/dev/null
     SLEEP_PID=""
 }
+# shellcheck disable=SC2034  # read by the sourced gh-ci-cache.sh (_cic_budget_wait)
 CIC_SLEEP_CMD=_hsleep
 _heartbeat() {
     [ -n "$HB_FILE" ] || return 0
@@ -58,6 +59,7 @@ if [ "${1:-}" = --run ]; then
         echo "check-ci: cannot bound run reads without timeout/gtimeout" >&2; exit 2
     fi
     CIC_DEADLINE=0
+    # shellcheck disable=SC2034  # CIC_DEADLINE is read by the sourced gh-ci-cache.sh
     [ "$MAX_WAIT" -eq 0 ] || CIC_DEADLINE=$((SECONDS + MAX_WAIT))
     START=$(cic_now)
     if ! cic_init_run "$2"; then echo "check-ci: cannot bind workflow run/cache" >&2; exit 2; fi
