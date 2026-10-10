@@ -937,7 +937,8 @@ esac
 #     Verified against the run, never trusted: an unrelated name is refused.
 #   - red and undeclared, or the run list / commits / log unreadable → exit 22.
 #   - no completed non-cancelled run in the window at all → DECIDED: nothing
-#     red was observed, so proceed and audit `main-red=no-completed-run`.
+#     red was observed, so proceed and audit `main-red=no-completed-run` —
+#     unless the list hit its --limit 50 cap, which proves nothing → exit 22.
 # A console-written fix-GO is not implemented here (it needs go.sh, owned by a
 # different leg); the commit declaration is the one way through.
 # Placed after the trust-path gate and before the marker clear / DRY_RUN, so a
@@ -952,14 +953,18 @@ mr_rows=$("$GH" run list --repo "$nwo" --branch "$default_branch" --workflow CI 
     --json databaseId,conclusion,status,event,headSha,createdAt \
     --jq '.[] | "\(.databaseId)|\(.status)|\(.conclusion)|\(.event)|\(.headSha)"' 2>/dev/null) || mr_rc=$?
 [ "$mr_rc" -eq 0 ] || main_red_refuse "cannot read $nwo's $default_branch CI runs (gh run list exit $mr_rc), so main's state is unverified" "phase=run-list rc=$mr_rc"
-mr_run="" mr_conc="" mr_head="" mr_base=""
+mr_run="" mr_conc="" mr_head="" mr_base="" mr_seen=0 mr_limit=50
 while IFS='|' read -r mr_id mr_status mr_c _ mr_sha; do
     [ -n "$mr_id" ] || continue
+    mr_seen=$((mr_seen + 1))
     [ "$mr_status" = completed ] || continue
     case "$mr_c" in cancelled | skipped | null | "") continue ;; esac
     if [ -n "$mr_run" ]; then mr_base=$mr_sha; break; fi
     mr_run=$mr_id mr_conc=$mr_c mr_head=$mr_sha
 done <<< "$mr_rows"
+if [ -z "$mr_run" ] && [ "$mr_seen" -ge "$mr_limit" ]; then
+    main_red_refuse "the last $mr_seen $default_branch CI runs hold no completed non-cancelled run, so main's state is unverified" "phase=run-list seen=$mr_seen"
+fi
 if [ -z "$mr_run" ]; then
     audit "MAIN-RED main-red=no-completed-run repo=$nwo pr=#$pr_num sha=$sha branch=$default_branch"
 elif [ "$mr_conc" != success ]; then

@@ -3952,6 +3952,16 @@ rm -f "$MOG_RUN_LOG3"
 STUB_RUN_LIST_JSON='[]' run_mog 0 "5115-i: no completed run at all → merged, audited"
 assert_audit_has "5115-i: audited as a decided no-completed-run" "main-red=no-completed-run"
 
+# 5115-r — a run list that hit the --limit 50 cap with no completed
+# non-cancelled run says nothing about main: refuse, never "no red observed".
+mog5115_cap='['
+for mog5115_i in $(seq 1 50); do
+    mog5115_cap="${mog5115_cap}{\"conclusion\":\"cancelled\",\"createdAt\":\"2026-10-09T17:00:00Z\",\"databaseId\":$((38000000000 + mog5115_i)),\"event\":\"push\",\"headSha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":\"completed\"},"
+done
+mog5115_cap="${mog5115_cap%,}]"
+STUB_RUN_LIST_JSON="$mog5115_cap" run_mog 22 "5115-r: 50 cancelled runs, none completed → exit 22"
+assert_audit_has "5115-r: audited as a run-list refusal" "phase=run-list seen=50"
+
 # 5115-j — an unreadable run list is unverified: refuse (fail closed).
 STUB_RUN_LIST_FAIL=1 run_mog 22 "5115-j: run list read fails → exit 22"
 assert_audit_has "5115-j: audited" "REFUSED reason=main-red"
