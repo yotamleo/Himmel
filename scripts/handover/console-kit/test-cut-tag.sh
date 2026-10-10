@@ -186,6 +186,7 @@ reset_calls
 rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_RUNS_JSON='{"total_count":0,"check_runs":[]}' run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
 check "no-runs: rc 4" "$rc" "4"
 contains "no-runs: names the reason" "$out" "no check-runs"
+contains "no-runs: names how to dispatch a run" "$out" "gh workflow run ci.yml --ref main"
 
 # --- 7. a red check-run (RED control) ---------------------------------------
 reset_calls

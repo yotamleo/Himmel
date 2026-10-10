@@ -74,6 +74,7 @@ fi
 
 : > "$TMP/failed"; : > "$TMP/passed"
 n_jobs=0
+is_nightly=0
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   concl="${line%%"$tab"*}"; name="${line#*"$tab"}"; jid=""
@@ -85,7 +86,11 @@ while IFS= read -r line; do
     # HIMMEL-5113: the nightly is swept too (event `schedule`). Its windows
     # legs are continue-on-error by design and guard-corpus-full is
     # schedule-only with its own nightly signal; neither is main's health.
-    *"(windows-latest"*|"guard-corpus-full"*) continue ;;
+    # Their presence is also how the nightly is recognised (see is_nightly).
+    *"(windows-latest"*) is_nightly=1; continue ;;
+    "guard-corpus-full"*)
+      [ "$concl" = "skipped" ] || is_nightly=1
+      continue ;;
   esac
   n_jobs=$((n_jobs + 1))
   # A job killed by timeout-minutes concludes `cancelled`; its check-run
@@ -99,6 +104,15 @@ while IFS= read -r line; do
     success)           printf '%s\n' "$name" >> "$TMP/passed" ;;
   esac
 done < "$TMP/jobs"
+
+# The nightly runs the tier=all shell-unit, so an extended-tier-only red would
+# open main-red and the next fast sweep (same job name, no tier) would falsely
+# close it. Extended reds already go to shell-extended-nightly-issue.sh; a
+# nightly never opens, refreshes or closes the main-red issue.
+if [ "$is_nightly" -eq 1 ]; then
+  echo "main-sweep-red-issue: run $RUN_ID is the nightly (windows legs / guard-corpus-full ran) -- its tier=all jobs are not the fast-sweep verdict; nothing to report."
+  exit 0
+fi
 
 if [ "$n_jobs" -eq 0 ]; then
   echo "main-sweep-red-issue: run $RUN_ID has no jobs (conclusion=$RUN_CONCLUSION) -- a superseded pending sweep; nothing to report."
@@ -125,6 +139,15 @@ if [ -n "$num" ]; then
     exit 1
   fi
   printf '%s\n' "$body" | sed -n 's/^<!-- main-red-failed: \(.*\) -->[[:space:]]*$/\1/p' > "$TMP/recorded"
+  # Ordering guard: sweeps complete out of order (a long run can finish after a
+  # later one). The issue records the newest run that wrote it; an older run
+  # must not close or overwrite a newer verdict. A body with no marker (opened
+  # by hand, or by a pre-marker version) is treated as run 0.
+  seen_run="$(printf '%s\n' "$body" | sed -n 's/^<!-- main-red-run: \([0-9][0-9]*\) -->[[:space:]]*$/\1/p' | head -n 1)"
+  if [ -n "$seen_run" ] && [ "$seen_run" -gt "$RUN_ID" ]; then
+    echo "main-sweep-red-issue: #$num was last written by run $seen_run, newer than $RUN_ID -- ignoring this older run."
+    exit 0
+  fi
 fi
 
 # new set = (recorded minus passed-now) plus failed-now, one name per line.
@@ -176,6 +199,7 @@ if [ -s "$TMP/failed" ]; then
     echo "Failed jobs (still unresolved):"
     while IFS= read -r n; do echo "- failed: $n"; done < "$TMP/newset"
     echo ""
+    echo "<!-- main-red-run: $RUN_ID -->"
     while IFS= read -r n; do echo "<!-- main-red-failed: $n -->"; done < "$TMP/newset"
   } > "$body_file"
   # Echo what is filed so the run log (and the test) carries it.

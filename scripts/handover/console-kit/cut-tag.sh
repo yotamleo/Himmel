@@ -326,6 +326,7 @@ bad=$(printf '%s' "$runs_json" | jq -s -r '
 ' 2>/dev/null)
 if [ -z "$total" ] || [ "$total" -eq 0 ]; then
     echo "cut-tag: refusing - no check-runs reported at $SHA (CI may not have registered yet)" >&2
+    echo "cut-tag: main has no per-merge CI run; dispatch one on the tip, wait for green, retry: gh workflow run ci.yml --ref main" >&2
     exit 4
 fi
 if [ -n "$bad" ]; then

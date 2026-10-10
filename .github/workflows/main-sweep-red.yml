@@ -36,8 +36,9 @@ concurrency:
 jobs:
   main-sweep-red:
     # HIMMEL-5113: main has no per-merge push run; its health is the cron sweep
-    # (event `schedule`: the main-sweep cron and the nightly, whose windows legs
-    # and guard-corpus-full the script drops) and a manual dispatch on main
+    # (event `schedule`: the main-sweep cron, and the nightly, which the script
+    # recognises by its windows legs / guard-corpus-full and skips entirely) and a
+    # manual dispatch on main
     # (branches: [main] above). PR runs are never main's health.
     if: github.event.workflow_run.event == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch'
     runs-on: ubuntu-latest

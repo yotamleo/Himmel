@@ -33,11 +33,13 @@ on:
     # event and must stay ubuntu-only / fast-tier.
     - cron: '17 7 * * *'
     # Main sweep (HIMMEL-5113), UTC, ubuntu-only fast tier, the shape the
-    # per-merge push run had. Real cadence: 01:43, 08:43, 15:43 and 22:43, i.e.
-    # gaps of 7 h, 7 h, 7 h and 3 h -- cron cannot express an exact 7 h period
-    # because 24 is not a multiple of 7 (`*/7` fires at 00, 07, 14, 21 and then
-    # resets to 00). Tune the hours here; test-ci-main-cron.sh holds the max gap
-    # at 7 h.
+    # per-merge push run had. Nominal cadence: 01:43, 08:43, 15:43 and 22:43,
+    # i.e. gaps of 7 h, 7 h, 7 h and 3 h -- cron cannot express an exact 7 h
+    # period because 24 is not a multiple of 7 (`*/7` fires at 00, 07, 14, 21 and
+    # then resets to 00). That is the cron STRING gap only: GitHub fires schedules
+    # late on this repo (the 17 7 nightly was created 4-9 h late over 40 days),
+    # so the real gap can reach ~11-12 h. Tune the hours here;
+    # test-ci-main-cron.sh holds the nominal max gap at 7 h.
     - cron: '43 1,8,15,22 * * *'
 
 permissions:
@@ -52,8 +54,11 @@ permissions:
 #                   the run, so a sweep / the nightly / a dispatch is never
 #                   cancelled nor queued behind anything. The shared
 #                   push-to-main group (HIMMEL-3841 slice E, HIMMEL-5036) went
-#                   with the push trigger: the crons are hours apart and a
-#                   ~1h45m sweep cannot meet the next one.
+#                   with the push trigger: sweeps are hours apart and a
+#                   ~1h45m sweep cannot normally meet the next one. A delayed
+#                   schedule or a manual dispatch can overlap one, and then the
+#                   runs complete out of order (main-sweep-red-issue.sh keeps
+#                   the newest run's verdict by run id).
 # cancel-in-progress is scoped to pull_request alone, so it stays inert for the
 # run_id groups. A cancelled run only ever belongs to a superseded head: the
 # required checks (incl. the `shell-unit` aggregator) are evaluated on the PR's
