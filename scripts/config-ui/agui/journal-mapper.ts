@@ -30,7 +30,8 @@
 //     form both appear as mcp__himmel-bus__send
 //   a verdict-recording Bash   → STATE_DELTA, once its result comes back without error:
 //     write-verdicts.sh (its --from-file is the text an earlier successful
-//     Write left at that path) or ledger-append.sh finding/amend rows
+//     Write left at that path, as later successful Edits changed it) or
+//     ledger-append.sh finding/amend rows its output confirms (HIMMEL-4655)
 // A tool call's parentMessageId is the first text its API message streamed;
 // a call whose message streamed no text has none.
 // Agents (HIMMEL-4669): every TEXT_MESSAGE_START and TOOL_CALL_START carries
@@ -65,7 +66,7 @@
 
 import { readFileSync } from "node:fs";
 import type { AgentInfo, AgentRole, AguiEvent, Failure, JsonPatchOp } from "./events.ts";
-import { commandVerdicts, extractHead, extractVerdicts, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
+import { commandVerdicts, extractHead, extractLedgerVerdicts, extractVerdicts, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
 
 export type MapperStats = {
   lines: number; // non-blank lines seen
@@ -107,6 +108,12 @@ const BUS_HEADER = /^bus #(\d+) (?:data )?from /gm;
 const BUS_SEND = /^mcp__(?:plugin_himmel-bus_)?himmel-bus__send$/;
 const busDeliveries = (text: string) => [...text.matchAll(BUS_HEADER)].map((m) => Number(m[1]));
 
+// HIMMEL-4655: ledger-append.sh says so when it has written a verdict (an amend, or a finding's verdict appended as
+// one); a fresh finding row prints nothing, so for it only a refusal line in the result says it was not written.
+// ponytail: a fresh finding row in a branch that never ran still shows, have ledger-append.sh confirm every finding append if a real journal shows one
+const LEDGER_CONFIRMED = /^ledger-append\.sh: (?:amended|appended verdict amend for) (\S+) at ([0-9a-f]+)/gm;
+const LEDGER_REFUSED = /^ledger-append\.sh: (?!amended |appended verdict amend for )/m;
+
 const roleOfName = (name: string): AgentRole =>
   /-console$/.test(name) ? "console" : /judge/i.test(name) ? "judge" : /(^|-)N\d+(-|$)/.test(name) ? "leg" : "agent";
 const roleOfKind = (kind: string): AgentRole => (/critic|review/i.test(kind) ? "critic" : /judge/i.test(kind) ? "judge" : "subagent");
@@ -114,12 +121,15 @@ const roleOfKind = (kind: string): AgentRole => (/critic|review/i.test(kind) ? "
 type Rec = Record<string, unknown>;
 type Block = Rec & { type?: unknown };
 // What a tool call does to review state once it succeeds.
+type LedgerRow = VerdictUpdate & { amend: boolean };
 type PendingCall = {
   name?: string;
   input?: Rec;
-  verdicts: VerdictUpdate[]; // recorded by a Bash command
+  verdicts: VerdictUpdate[]; // recorded by a Bash command's write-verdicts.sh run
+  ledger: LedgerRow[]; // ledger-append.sh rows, applied once the result confirms them
   head?: string; // the --head a Bash command names
   write?: { path: string; text?: string }; // a Write call: its file, and the text when it holds VERDICT lines
+  edit?: { path: string; old: string; next: string; all: boolean }; // an Edit call's replacement
 };
 
 const isObject = (v: unknown): v is Rec => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -144,6 +154,17 @@ function resultText(content: unknown): string {
   return content
     .map((part) => (isObject(part) && part.type === "text" ? (str(part.text) ?? "") : `[${isObject(part) ? String(part.type) : "part"}]`))
     .join("\n");
+}
+
+// The ledger rows a tool result confirms: one its output names (id, and head when the row has one), or a finding
+// row when the output carries no refusal. An amend always prints its confirmation, so none means not written.
+function confirmedRows(rows: LedgerRow[], text: string): VerdictUpdate[] {
+  if (!rows.length) return [];
+  const said = [...text.matchAll(LEDGER_CONFIRMED)];
+  const refused = LEDGER_REFUSED.test(text);
+  return rows
+    .filter((r) => said.some(([, id, sha]) => id === r.id && (!r.head || r.head.startsWith(sha) || sha.startsWith(r.head))) || (!r.amend && !refused))
+    .map(({ amend: _, ...v }) => v);
 }
 
 export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
@@ -308,12 +329,24 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
       if (call.write.text !== undefined) verdictFiles.set(call.write.path, call.write.text);
       else verdictFiles.delete(call.write.path);
     }
+    if (call?.edit) followEdit(call.edit);
     const panel = parsePanelReport(resultText(block.content));
     if (panel) {
       review = { ...(call?.head ? { head: call.head } : {}), ...panel };
       out.push({ type: "STATE_SNAPSHOT", snapshot: { review: structuredClone(review) }, ...epochMs(rec) });
     }
-    if (call?.verdicts.length && review) applyVerdicts(rec, call.verdicts, out);
+    const verdicts = call ? [...call.verdicts, ...confirmedRows(call.ledger, content)] : [];
+    if (verdicts.length && review) applyVerdicts(rec, verdicts, out);
+  }
+
+  // A successful Edit of a staged verdict file: apply its replacement to the cached text, or drop the entry when
+  // the replacement cannot be followed, so a later --from-file shows nothing rather than something stale.
+  function followEdit({ path, old, next, all }: NonNullable<PendingCall["edit"]>) {
+    const cached = verdictFiles.get(path);
+    if (cached === undefined) return;
+    const text = old && cached.includes(old) ? (all ? cached.split(old).join(next) : cached.replace(old, () => next)) : undefined;
+    if (text !== undefined && extractVerdicts(text).length) verdictFiles.set(path, text);
+    else verdictFiles.delete(path);
   }
 
   function applyVerdicts(rec: Rec, verdicts: VerdictUpdate[], out: AguiEvent[]) {
@@ -335,20 +368,33 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
   }
 
   // Only a Bash command records verdicts or names a panel head; a Write only
-  // stages the VERDICT lines a later write-verdicts.sh --from-file reads.
+  // stages the VERDICT lines a later write-verdicts.sh --from-file reads, and an
+  // Edit changes what it staged. A ledger row's kind decides how it is confirmed:
+  // the amend rows are what the parser finds with every finding verb masked.
   function reviewEffect(name: string, input: unknown): PendingCall {
     const args = isObject(input) ? input : {};
     const command = str(args.command);
-    const call = { name, input: args };
+    const call: PendingCall = { name, input: args, verdicts: [], ledger: [] };
     if (name === "Bash" && command) {
-      return { ...call, verdicts: commandVerdicts(command, (path) => verdictFiles.get(path)), head: extractHead(command) };
+      const rows = extractLedgerVerdicts(command);
+      const all = commandVerdicts(command, (path) => verdictFiles.get(path));
+      const amends = new Set(extractLedgerVerdicts(command.replace(/(ledger-append\.sh["']?\s+)finding\b/g, "$1-")).map((v) => v.id));
+      return {
+        ...call, verdicts: all.slice(0, all.length - rows.length),
+        ledger: rows.map((v) => ({ ...v, amend: amends.has(v.id) })), head: extractHead(command),
+      };
     }
     const path = str(args.file_path);
     const content = str(args.content);
     if (name === "Write" && path && content !== undefined) {
-      return { ...call, verdicts: [], write: { path, ...(extractVerdicts(content).length ? { text: content } : {}) } };
+      return { ...call, write: { path, ...(extractVerdicts(content).length ? { text: content } : {}) } };
     }
-    return { ...call, verdicts: [] };
+    const old = str(args.old_string);
+    const next = str(args.new_string);
+    if (name === "Edit" && path && old !== undefined && next !== undefined) {
+      return { ...call, edit: { path, old, next, all: args.replace_all === true } };
+    }
+    return call;
   }
 
   function mapAssistant(rec: Rec, out: AguiEvent[]): boolean {
