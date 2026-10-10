@@ -364,7 +364,9 @@ test_path_p() {
 # judge_scope_record rule) or only comment lines. A judge often reviews a head
 # after such a commit, which never got its own panel round.
 # ponytail: the comment test is a line-prefix heuristic (# and // lines, no
-# directive words); upgrade path is a per-language comment parser.
+# directive words); a #/ // line inside a multiline string or heredoc still
+# passes. It only moves which head a signed NO-GO binds to, the delta round
+# still reviews from..to; upgrade path is a per-language comment parser.
 trivial_descendant() {
     [ "$1" != "$2" ] || return 1
     git merge-base --is-ancestor "$1" "$2" 2>/dev/null || return 1
@@ -388,8 +390,9 @@ EOF
     [ -n "$_td_lines" ] || return 1
     _td_bad="$(printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#[^!]|#$|//)' || true)"
     [ -z "$_td_bad" ] || return 1
-    # Directive words, and encoding declarations (coding: / coding=), change meaning.
-    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*(#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=])' || true)"
+    # Directive words, encoding declarations (coding: / coding=) and C
+    # preprocessor lines change meaning although they start with #.
+    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*((#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=])|#[[:space:]]*(define|include|undef|ifn?def|if|else|elif|endif|line|error|import)([^[:alnum:]_]|$))' || true)"
     [ -z "$_td_dir" ] || return 1
     return 0
 }
