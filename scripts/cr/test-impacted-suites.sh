@@ -87,6 +87,10 @@ mkf scripts/test-stem-underscore.sh 'use my_helper here'
 mkf scripts/hooks/gate.sh
 mkf scripts/test-stem-word.sh 'open the gate now'
 mkf scripts/test-stem-gate-full.sh 'bash scripts/hooks/gate.sh'
+mkf scripts/test-stem-lead.sh 'guard_rc x-block-foo-guard "x"'
+mkf scripts/hooks/a+b-c.sh
+mkf scripts/test-stem-plus.sh 'guard_rc a+b-c "x"'
+mkf scripts/test-stem-plus-wild.sh 'guard_rc aab-c "x"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -211,6 +215,15 @@ if grepq "$out" '^scripts/test-stem-underscore\.sh$'; then pass "underscore stem
 change scripts/hooks/gate.sh
 out="$(run_is "$range")"
 if grepq "$out" '^scripts/test-stem-gate-full\.sh$' && ! grepq "$out" 'test-stem-word\.sh'; then pass "one-word stem (gate) is not matched extensionless"; else fail "one-word stem over-listed or control missing: $out"; fi
+# HIMMEL-5167 (judge j2322a items 1, 2): the leading boundary and the escaping of
+# the stem needle are each pinned by a row that goes RED when that piece is removed.
+change scripts/hooks/block-foo-guard.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-stem-ext\.sh$' && ! grepq "$out" 'test-stem-lead\.sh'; then pass "stem needle has a leading boundary: x-block-foo-guard is another word"; else fail "stem matched x-block-foo-guard (no leading boundary) or control missing: $out"; fi
+change scripts/hooks/a+b-c.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-stem-plus\.sh$'; then pass "stem with a regex metacharacter (a+b-c) matches its own literal"; else fail "escaped stem a+b-c did not select its own suite: $out"; fi
+if ! grepq "$out" 'test-stem-plus-wild\.sh'; then pass "stem a+b-c is a literal, not the pattern a+b-c (aab-c unlisted)"; else fail "stem metacharacter acted as a pattern: $out"; fi
 
 # --- 11b. an extensionless basename takes the path rule (HIMMEL-4606) ---------
 # `diff` is a common word: a suite that merely says `diff -u` must not be listed,
@@ -801,6 +814,53 @@ git -C "$FX" commit -q -m "chore: drop pr-check-context.sh"
 change scripts/lanes/unrelated.sh
 out="$(run_is "$range")"
 if grepq "$out" "^${GC}\$"; then pass "a head with no pr-check-context.sh still selects the closure suite"; else fail "closure suite skipped on an unreadable guarded set: $out"; fi
+
+# --- 36. HIMMEL-5167: a temp write that fails is an error, never a short list ---
+# A full /tmp (2026-10-10, PR 2301: 56 suites against 60) made a bash here-string
+# fail with "cannot create temp file for here-document"; its rc was read as "no
+# suites" and the selector exited 0 with a partial list. RLIMIT_FSIZE (ulimit -f,
+# SIGXFSZ ignored so the write returns EFBIG) is the user-space stand-in for
+# ENOSPC: the same failing write(2), no root and no real disk filled. The fixture
+# tree is sized like the real one (about 200 KB of path names, over a pipe's
+# capacity, so a here-string must go through a temp file on every bash).
+BIG="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$FX" "$SHIM" "$SHIM2" "$SHD" "$BIG"' EXIT
+(
+    fixture_enter_git_init_dir "$BIG" || exit 1
+    git init -q
+    git config user.email t@e
+    git config user.name t
+    mkdir -p scripts/bulk
+    pad="$(printf 'p%.0s' $(seq 1 100))"
+    i=0
+    while [ "$i" -lt 1500 ]; do
+        : > "scripts/bulk/filler-${i}-${pad}.txt"
+        i=$((i + 1))
+    done
+    printf '# big-target\n' > scripts/big-target.sh
+    printf 'bash scripts/big-target.sh\n' > scripts/test-big.sh
+    printf 'echo self\n' > scripts/test-self.sh
+    git add -A
+    git commit -q -m "chore: big base"
+    printf '# changed\n' >> scripts/big-target.sh
+    printf '# changed\n' >> scripts/test-self.sh
+    git add -A
+    git commit -q -m "fix: change big-target and a suite"
+)
+big_range="$(git -C "$BIG" rev-parse HEAD~1)..$(git -C "$BIG" rev-parse HEAD)"
+# Probe: does a file-size limit bite here (Git Bash on Windows may not enforce it)?
+probe="$BIG/.fsize-probe"
+( ulimit -f 1; trap '' XFSZ; head -c 4096 /dev/zero > "$probe" ) 2>/dev/null
+if [ "$(wc -c < "$probe" 2>/dev/null | tr -d ' ')" -ge 4096 ] 2>/dev/null; then
+    echo "SKIP 36: this platform does not enforce ulimit -f"
+else
+    out="$( cd "$BIG" && bash "$IS" "$big_range" 2>/dev/null )"; rc=$?
+    if [ "$rc" -eq 0 ] && [ "$out" = "$(printf 'scripts/test-big.sh\nscripts/test-self.sh')" ]; then pass "big fixture, room to write: the suite naming big-target.sh and the changed suite are listed (control)"; else fail "big fixture control: rc=$rc out=$out"; fi
+    out="$( cd "$BIG" && ulimit -f 40 && trap '' XFSZ && bash "$IS" "$big_range" 2>/dev/null )"; rc=$?
+    if [ "$rc" -ne 0 ] && [ -z "$out" ]; then pass "a temp write that fails -> non-zero rc and no list (not a short list at rc0)"; else fail "failing temp write: rc=$rc out=$out"; fi
+    err="$( cd "$BIG" && ulimit -f 40 && trap '' XFSZ && bash "$IS" "$big_range" 2>&1 >/dev/null )"
+    if grepq "$err" 'cannot trust the impacted list'; then pass "the failed temp write is named on stderr"; else fail "failing temp write not named: $err"; fi
+fi
 
 # --- HIMMEL-4781: no range argument defaults to merge-base(default)..HEAD ----
 # The default branch is resolved by scripts/lib/cr-default-base.sh (origin/HEAD,
