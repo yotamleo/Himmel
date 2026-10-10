@@ -671,10 +671,11 @@ function runChain(members, lifecycle = false) {
   }
 
   const emitters = [];
-  // HIMMEL-5171: the once-per-session "this session ran UNVERIFIED" notice,
-  // taken by the first member the launcher could not vouch for and surfaced as
-  // a systemMessage below (exit-0 stderr reaches nobody).
-  let unvouchedNotice = null;
+  // HIMMEL-5171: the first member the launcher could not vouch for. The
+  // once-per-session "this session ran UNVERIFIED" notice is taken only after
+  // the loop, on a non-deny return, so a deny never consumes the flag with no
+  // channel to show it (exit-0 stderr reaches nobody; a systemMessage does).
+  let unvouchedMember = null;
   // Everything a non-denying member said, flushed to OUR stderr after the
   // chain. Held rather than streamed so a later member's deny reaches the
   // model on its own, verbatim.
@@ -702,9 +703,7 @@ function runChain(members, lifecycle = false) {
       denyIntegrityMismatch(member, integrity.relPath, integrity.reason);
       return skipOnNonGatingEvent(hookInput, member, integrity) ? 0 : 2;
     }
-    if (integrity.unvouched && unvouchedNotice === null) {
-      unvouchedNotice = takeUnvouchedNotice(sessionId, member);
-    }
+    if (integrity.unvouched && unvouchedMember === null) unvouchedMember = member;
     const basename = path.basename(member);
     const mustRun = MUST_RUN_CHAIN_MEMBERS.has(basename);
     // Clamped to what is left of the chain budget, but never below the floor:
@@ -866,7 +865,9 @@ function runChain(members, lifecycle = false) {
 
   if (held.length) process.stderr.write(held.join(''));
 
+  const unvouchedNotice = unvouchedMember === null ? null : takeUnvouchedNotice(sessionId, unvouchedMember);
   if (unvouchedNotice) {
+    process.stderr.write(`${unvouchedNotice}\n`);
     const output = { systemMessage: unvouchedNotice };
     if (emitters.length === 0) {
       process.stdout.write(`${JSON.stringify(output)}\n`);
@@ -954,8 +955,12 @@ function main() {
   if (capture) {
     const out = typeof result.stdout === 'string' ? result.stdout : '';
     const parsed = out.trim() ? parseJsonObject(out) : {};
-    const notice = parsed ? takeUnvouchedNotice(sessionId, hookScript) : null;
-    if (parsed && notice) {
+    // Only a clean exit 0 can carry a systemMessage; a deny (exit 2) or any
+    // other failure ignores stdout, so it must not consume the flag.
+    const deliverable = parsed && result.status === 0;
+    const notice = deliverable ? takeUnvouchedNotice(sessionId, hookScript) : null;
+    if (notice) process.stderr.write(`${notice}\n`);
+    if (deliverable && notice) {
       parsed.systemMessage = typeof parsed.systemMessage === 'string' && parsed.systemMessage
         ? `${parsed.systemMessage}\n${notice}` : notice;
       process.stdout.write(`${JSON.stringify(parsed)}\n`);

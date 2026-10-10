@@ -342,6 +342,70 @@ if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g9.out" >
 else
   bad "HIMMEL-5171 deferred notice: expected systemMessage, got rc=$rc out=$(cat "$T/g9.out") err=$(cat "$T/g9.err")"
 fi
+# A member that DENIES under an unvouched session must not consume the
+# once-per-session notice: a deny has no systemMessage channel, so the flag
+# stays free and the next allowed call shows it.
+DENYG="$PROJECT/scripts/hooks/deny-guard.sh"
+printf '#!/usr/bin/env bash\necho "denied by fixture" >&2\nexit 2\n' > "$DENYG"
+gone_dir g10; rm -f "$T/g10/$SID.json"; printf 'started\n' > "$T/g10/$SID.recorder"
+touch -t 202001010000 "$T/g10/$SID.recorder"
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g10" \
+  node "$LAUNCHER" --chain "$DENYG" "$GUARD" >"$T/g10.out" 2>"$T/g10.err"
+rc=$?
+if [ "$rc" -eq 2 ] && [ ! -e "$T/g10/$SID.recorder-notified" ]; then
+  ok "HIMMEL-5171: a chain member that denies under an unvouched session leaves the notice unconsumed"
+else
+  bad "HIMMEL-5171 chain deny: expected rc=2 and no notified flag, got rc=$rc dir=$(ls "$T/g10") err=$(cat "$T/g10.err")"
+fi
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g10" \
+  node "$LAUNCHER" --chain "$GUARD" >"$T/g10.out" 2>"$T/g10.err"
+rc=$?
+if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g10.out" >/dev/null 2>&1; then
+  ok "HIMMEL-5171: the next allowed chain call after a deny shows the notice"
+else
+  bad "HIMMEL-5171 chain after deny: expected systemMessage, got rc=$rc out=$(cat "$T/g10.out") err=$(cat "$T/g10.err")"
+fi
+if grep -q 'HIMMEL-5171' "$T/g10.err"; then
+  ok "HIMMEL-5171: the notice is also written to stderr"
+else
+  bad "HIMMEL-5171 stderr notice missing: $(cat "$T/g10.err")"
+fi
+gone_dir g11; rm -f "$T/g11/$SID.json"; printf 'started\n' > "$T/g11/$SID.recorder"
+touch -t 202001010000 "$T/g11/$SID.recorder"
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g11" \
+  node "$LAUNCHER" --optional "$DENYG" >"$T/g11.out" 2>"$T/g11.err"
+rc=$?
+if [ "$rc" -eq 2 ] && [ ! -e "$T/g11/$SID.recorder-notified" ]; then
+  ok "HIMMEL-5171: a single-path hook that exits 2 under an unvouched session leaves the notice unconsumed"
+else
+  bad "HIMMEL-5171 single deny: expected rc=2 and no notified flag, got rc=$rc dir=$(ls "$T/g11") err=$(cat "$T/g11.err")"
+fi
+gone_run g11 "$T/g11"; rc=$?
+if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g11.out" >/dev/null 2>&1; then
+  ok "HIMMEL-5171: the next allowed single-path call after an exit-2 shows the notice"
+else
+  bad "HIMMEL-5171 single after deny: expected systemMessage, got rc=$rc out=$(cat "$T/g11.out") err=$(cat "$T/g11.err")"
+fi
+# Fail-open is only for a session with NO pins. A tampered pinned guard plus a
+# valid record still denies under a failed marker or a stale `started` one.
+cp "$GUARD" "$T/guard.orig"
+printf '\n# tampered\n' >> "$GUARD"
+gone_dir g12; printf 'failed\n' > "$T/g12/$SID.recorder"
+gone_run g12 "$T/g12"; rc=$?
+if [ "$rc" -eq 2 ] && ! grep -q 'HIMMEL-5171' "$T/g12.out"; then
+  ok "HIMMEL-5171: a tampered pinned guard with a valid record and a failed marker is still denied"
+else
+  bad "HIMMEL-5171 tamper + failed marker: expected rc=2, got rc=$rc out=$(cat "$T/g12.out") err=$(cat "$T/g12.err")"
+fi
+gone_dir g13; printf 'started\n' > "$T/g13/$SID.recorder"
+touch -t 202001010000 "$T/g13/$SID.recorder"
+gone_run g13 "$T/g13"; rc=$?
+if [ "$rc" -eq 2 ]; then
+  ok "HIMMEL-5171: a tampered pinned guard with a valid record and a stale started marker is still denied"
+else
+  bad "HIMMEL-5171 tamper + stale started: expected rc=2, got rc=$rc out=$(cat "$T/g13.out") err=$(cat "$T/g13.err")"
+fi
+cp "$T/guard.orig" "$GUARD"
 # The deny a deleted-after-verified-publish record earns names the recovery.
 if grep -q 'record-hook-integrity.sh' "$T/g1.err" && grep -q "$SID.recorder" "$T/g1.err"; then
   ok "HIMMEL-5171: the missing-record deny names the manual recovery (marker + recorder)"
