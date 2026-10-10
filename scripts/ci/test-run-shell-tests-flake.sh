@@ -342,6 +342,10 @@ if [ -n "$sb" ]; then
 fns=$(sed -n '/^_flake_norm_url() {/,/^}/p;/^_flake_repo_id() {/,/^}/p' "$RUNNER")
 # shellcheck disable=SC1090
 eval "$fns"
+# The runner drops these before any git call; a direct run of this suite (a hook
+# or wrapper that exported them) must not point the fixtures at another repo.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES
 gq() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
 mk_url_repo() { # <dir> <origin-url>
   mkdir -p "$1" && git -C "$1" init -q && git -C "$1" remote add origin "$2"
