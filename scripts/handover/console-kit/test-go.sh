@@ -14,6 +14,7 @@
 #      a judge, as the writer (HIMMEL-3133 fixed pre-existing stale wording here).
 #   7. unresolvable handover root -> exit 1.
 #   13. --trust-reviewed <id> (HIMMEL-3895): id validated, signed into the mac.
+#   20. --fix-main-red <run-id> (HIMMEL-5134): the signed fix-GO for the red-main gate.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+.
 set -uo pipefail
@@ -526,6 +527,31 @@ if [ "$(id -u)" != 0 ]; then
 fi
 chmod 600 "$ROOT19/$VSCOPE/verdicts/N3/zz-locked.md"
 VPR=
+
+# --- 20. HIMMEL-5134: --fix-main-red <run-id> writes the fix-GO ----------------
+# A separate, signed file naming one red run; never an ordinary GO.
+ROOT20="$tmp/root20"; mkdir -p "$ROOT20"
+rc=0; out="$(HANDOVER_DIR="$ROOT20" bash "$SCRIPT" --fix-main-red 37964772913 97 "$SHA" 2>&1)" || rc=$?
+check "5134: --fix-main-red writes -> exit 0" "$rc" "0"
+check "5134: prints the fix-GO path" "$out" "$ROOT20/.locks/go/fix-main-red.97.$SHA.37964772913"
+F20="$ROOT20/.locks/go/fix-main-red.97.$SHA.37964772913"
+contains "5134: names the red run" "$(cat "$F20" 2>/dev/null)" "fix-main-red-run=37964772913"
+contains "5134: carries head=" "$(cat "$F20" 2>/dev/null)" "head=$SHA"
+check "5134: no ordinary GO is written beside it" "$(find "$ROOT20/.locks/go" -maxdepth 1 -name '97.*' | wc -l | tr -d ' ')" "0"
+# the written file verifies under the shared gate for the SAME run only
+fx_rc() { bash -c '. "$1"; go_fixred_gate 97 "$2" "$3" o/r "$4"' _ "$HERE/../../lib/go-gate.sh" "$SHA" "$ROOT20" "$1" >/dev/null 2>&1; echo $?; }
+check "5134: the gate accepts it for the red run" "$(fx_rc 37964772913)" "0"
+check "5134: the gate refuses it for another run" "$(fx_rc 37964772914)" "2"
+for bad in "abc" "0123" "-1" "" "1 2"; do
+  rc=0; HANDOVER_DIR="$ROOT20" bash "$SCRIPT" --fix-main-red "$bad" 97 "$SHA" >/dev/null 2>&1 || rc=$?
+  check "5134: run id '$bad' -> exit 2" "$rc" "2"
+done
+rc=0; HANDOVER_DIR="$ROOT20" bash "$SCRIPT" --fix-main-red 37964772913 --trust-reviewed J1 97 "$SHA" >/dev/null 2>&1 || rc=$?
+check "5134: --fix-main-red with --trust-reviewed -> exit 2" "$rc" "2"
+ROOT20B="$tmp/root20b"; mkdir -p "$ROOT20B"
+rc=0; HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$ROOT20B" _as_claude bash "$SCRIPT" --fix-main-red 37964772913 97 "$SHA" >/dev/null 2>&1 || rc=$?
+check "5134: a console-spawned leg cannot write a fix-GO -> exit 3" "$rc" "3"
+check "5134: nothing written by the refused leg" "$(find "$ROOT20B" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

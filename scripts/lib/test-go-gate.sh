@@ -322,6 +322,44 @@ rc=0; HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac_ok "$2" s q n' _ "$GO_GATE
 rc=0; HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac_ok "$2" s q n' _ "$GO_GATE_SRC" "$SREC" >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 0 ] || fail "6f: the clean record stopped verifying"
 rc=0; HOME="$PINHOME" bash -c '. "$1"; go_verdict_mac_ok "$2" s q n' _ "$GO_GATE_SRC" "$SREC" >/dev/null 2>&1 || rc=$?; [ "$rc" -eq 0 ] || fail "6e: go_verdict_mac_ok disagrees with the snapshot check"
 
+# --- 7. HIMMEL-5134: go_fixred_gate - the console-written fix-GO for the red-main gate
+# A fix-GO names ONE red run: file fix-main-red.<pr>.<sha>.<run>, signed over
+# himmel-go-fixred-v1|<nwo>|<pr>|<sha>|<run>, so it never verifies as an ordinary
+# GO, a trust GO or a verdict, and binds the repo, PR, head and run id.
+FXROOT="$ROOT/fx"; mkdir -p "$FXROOT/.locks/go"
+FXRUN=37964772913
+fx_write() {  # <pr> <sha> <run> <nwo> [<mac-run>] - write a fix-GO as go.sh would
+    local pr=$1 sha=$2 run=$3 nwo=$4 mrun=${5:-$3} mac
+    mac=$(HOME="$PINHOME" bash -c '. "$1"; go_msg_mac himmel-go-fixred-v1 "$2"' _ "$GO_GATE_SRC" "$nwo|$pr|$sha|$mrun")
+    printf 'pr=%s\nhead=%s\nfix-main-red-run=%s\nby=t\nat=x\nmac=%s\n' "$pr" "$sha" "$run" "$mac" \
+        > "$FXROOT/.locks/go/fix-main-red.$pr.$sha.$run"
+}
+fx_gate() {  # <pr> <sha> <nwo> <run> -> go_fixred_gate's rc
+    HOME="$PINHOME" bash -c '. "$1"; go_fixred_gate "$2" "$3" "$4" "$5" "$6"' _ "$GO_GATE_SRC" "$1" "$2" "$FXROOT" "$3" "$4"
+}
+fx_write 92 "$PINSHA" "$FXRUN" o/r
+rc=0; fx_gate 92 "$PINSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "7a: a valid fix-GO for the red run was refused (rc=$rc)"
+rc=0; fx_gate 92 "$PINSHA" o/r 111 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7b: a fix-GO for run $FXRUN passed for a different (newer) red run"
+rc=0; fx_gate 93 "$PINSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7c: a fix-GO for PR 92 passed for PR 93"
+rc=0; fx_gate 92 "$PINSHA" other/repo "$FXRUN" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7d: a fix-GO signed for o/r passed for other/repo"
+fx_write 94 "$PINSHA" "$FXRUN" o/r 999
+rc=0; fx_gate 94 "$PINSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7e: a fix-GO whose mac signs another run id passed"
+printf 'pr=95\nhead=%s\nfix-main-red-run=%s\nby=t\nat=x\n' "$PINSHA" "$FXRUN" > "$FXROOT/.locks/go/fix-main-red.95.$PINSHA.$FXRUN"
+rc=0; fx_gate 95 "$PINSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7f: an unsigned fix-GO passed"
+# an ordinary GO mac copied into a fix-GO file must not verify (domain separation)
+gmac=$(pin_mac go_mac 96 "$PINSHA" o/r)
+printf 'pr=96\nhead=%s\nfix-main-red-run=%s\nmac=%s\n' "$PINSHA" "$FXRUN" "$gmac" > "$FXROOT/.locks/go/fix-main-red.96.$PINSHA.$FXRUN"
+rc=0; fx_gate 96 "$PINSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7g: an ordinary GO mac verified as a fix-GO"
+rc=0; fx_gate 92 "$PINSHA" o/r 'x;1' >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7h: a non-numeric run id was accepted"
+
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
     exit 0
