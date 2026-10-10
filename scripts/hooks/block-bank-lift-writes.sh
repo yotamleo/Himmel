@@ -938,7 +938,9 @@ _lit_name() {
         _name_matches "$b" "$c" && return 1
         case "$p" in */*) p="${p#*/}" ;; *) p="" ;; esac
     done
-    case "$b" in
+    # the whole word, not just the name: `$X/plainlink` is computed whatever X
+    # holds (an inherited value is invisible here)
+    case "$1" in
         *[\$\`\*\?\[\\]*|*$'\003'*|*$'\004'*|*$'\005'*) return 1 ;;
     esac
     _name_matches "$b" "$LIFT_NAME" && return 1
