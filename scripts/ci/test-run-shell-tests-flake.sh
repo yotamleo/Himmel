@@ -32,7 +32,8 @@
 #       drops (HIMMEL-5144, HIMMEL-5145); an absolute local origin is
 #       lexically normalised, a file:// path is percent-decoded and its scheme
 #       is case-insensitive, file://host/... is never joined under the
-#       checkout (HIMMEL-5157)
+#       checkout (HIMMEL-5157); a decoded trailing newline, %00 and a
+#       LOCALHOST host keep their own ids (HIMMEL-5161)
 #   F17 with no override, the row's repo is the shared lib's id for the
 #       runner's own checkout (HIMMEL-5147)
 #   F18 a runner that cannot read the id lib writes no ledger row, names the
@@ -466,6 +467,44 @@ if [ "$h4" = "$p4" ] && [ "$h5" != "$p4" ]; then
   pass "F16: file://localhost/... is the local path; localhostx is another host"
 else
   fail "F16: localhost: [$h4] want [$p4]; localhostx [$h5] must differ"
+fi
+# HIMMEL-5161: a decoded trailing newline is part of the path, so
+# file:///srv/r%0A is a different directory from file:///srv/r (command
+# substitution would strip it); %00 stays escaped, so it is not /srv/r either;
+# the localhost host is case-insensitive; file://host/r.git is not /host/r.git.
+mk_url_repo "$sb/nl1" "file:///srv/r%0A"
+mk_url_repo "$sb/nl2" "file:///srv/r%0A%0A"
+mk_url_repo "$sb/nl3" "file:///srv/r%00"
+mk_url_repo "$sb/nl4" "file://LOCALHOST/srv/r.git"
+mk_url_repo "$sb/nl5" "/host/r.git"
+nl1=$(_flake_repo_id "$sb/nl1" 2>&1); nl2=$(_flake_repo_id "$sb/nl2" 2>&1); nl3=$(_flake_repo_id "$sb/nl3" 2>&1)
+nl4=$(_flake_repo_id "$sb/nl4" 2>&1); nl5=$(_flake_repo_id "$sb/nl5" 2>&1)
+# an id is origin-<digits>: captured stderr from a failed lookup is not one
+_isid() { case "$1" in origin-*[!0-9]*|origin-) return 1 ;; origin-[0-9]*) return 0 ;; *) return 1 ;; esac; }
+if _isid "$nl1" && _isid "$nl2" && [ "$nl1" != "$f2" ] && [ "$nl1" != "$nl2" ] && [ "$nl2" != "$f2" ]; then
+  pass "F16: file:///srv/r%0A and %0A%0A are distinct from file:///srv/r and each other"
+else
+  fail "F16: trailing newline: %0A [$nl1] %0A%0A [$nl2] vs file:///srv/r [$f2]"
+fi
+if _isid "$nl3" && [ "$nl3" != "$f2" ]; then
+  pass "F16: file:///srv/r%00 stays escaped and is distinct from /srv/r"
+else
+  fail "F16: %00: [$nl3] vs file:///srv/r [$f2]"
+fi
+if _isid "$nl4" && _isid "$nl5" && [ "$nl4" = "$p4" ] && [ "$h1" != "$nl5" ]; then
+  pass "F16: file://LOCALHOST/... is the local path; file://host/r.git is not /host/r.git"
+else
+  fail "F16: LOCALHOST [$nl4] want [$p4]; host form [$h1] vs /host/r.git [$nl5] must differ"
+fi
+# the host is lowercased through a command substitution too: a decoded
+# trailing newline in the host must survive it
+mk_url_repo "$sb/nl6" "file://host%0A/r"
+mk_url_repo "$sb/nl7" "file://host/r"
+nl6=$(_flake_repo_id "$sb/nl6" 2>&1); nl7=$(_flake_repo_id "$sb/nl7" 2>&1)
+if _isid "$nl6" && _isid "$nl7" && [ "$nl6" != "$nl7" ]; then
+  pass "F16: file://host%0A/r and file://host/r get different ids"
+else
+  fail "F16: host newline: %0A [$nl6] vs plain [$nl7] must differ"
 fi
 mk_url_repo "$sb/ra/co" "../r.git"; mk_url_repo "$sb/rb/co" "../r.git"
 gq -C "$sb/ra/co" commit -q --allow-empty -m x
