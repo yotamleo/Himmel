@@ -243,4 +243,15 @@ grep -q 'site-not-at-tip:nope.sh' "$tmp/err19.txt" || { echo "FAIL: T19 refusal 
 check "$?" "0" "T19 rc (record the gate accepts)"
 check "$(wc -l <"$git_dir/cr-class-sweeps/feat/t19" | tr -d ' ')" "1" "T19 accepted record landed"
 
+# 20. HIMMEL-5158, intended behaviour pinned: a record naming a site that is not
+# committed yet is refused at write time (the gate judges the tip, so an
+# uncommitted file is not evidence), and the same record lands once it is.
+printf 'echo c\n' > "$repo/c.sh"
+( cd "$repo" && printf 'SWEEP [t19-1@%s] class=y :: sites=a.sh:1, c.sh:1\n' "${t19_head:0:12}" | bash "$SCRIPT" sweep --branch feat/t19 ) 2>"$tmp/err20.txt"
+check "$?" "2" "T20 rc (site not yet committed)"
+grep -q 'site-not-at-tip:c.sh' "$tmp/err20.txt" || { echo "FAIL: T20 refusal does not name the uncommitted site"; fail=1; }
+( cd "$repo" && git add c.sh && git commit -q -m "t20 site" )
+( cd "$repo" && printf 'SWEEP [t19-1@%s] class=y :: sites=a.sh:1, c.sh:1\n' "${t19_head:0:12}" | bash "$SCRIPT" sweep --branch feat/t19 )
+check "$?" "0" "T20 rc (site committed)"
+
 [ "$fail" -eq 0 ] && echo "PASS test-write-verdicts" || exit 1

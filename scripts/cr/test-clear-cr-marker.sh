@@ -2600,6 +2600,10 @@ if [ -e "$tmp/pager.ran" ]; then pass; else fail "8q control: the pager canary m
 rm -f "$tmp/pager.ran"
 write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=git grep --open-files-in-pager=./pager.sh -e echo -- a.sh" "${_r2_ok/\$_tip/$_tip}"
 run_clear "$tmp" 14 "8q a search carrying a program-running option is not a record -> exit 14"
+# HIMMEL-5158: rc 14 alone also held when git itself rejected the option
+# (search-failed), so the allowlist could be deleted unseen. Name the refusal.
+if grepq "$LAST_CLEAR_OUT" -F 'search-option-refused:--open-files-in-pager=./pager.sh'; then pass; else
+    fail "8q must name search-option-refused for the long option: $LAST_CLEAR_OUT"; fi
 if [ -e "$tmp/pager.ran" ] || [ -e "$tmp/a.sh.ran" ] || [ -e "$tmp/echo" ]; then fail "8q the refused search must never run"; else pass; fi
 rm -rf "$tmp"
 # 8r. HIMMEL-4604 (gate side): a raw verdict spelled Agreed is still agreed.
@@ -2667,6 +2671,55 @@ if grepq "$LAST_CLEAR_OUT" -F 'site-not-at-tip:nope.sh'; then pass; else fail "8
 printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, b.sh:4\n' "$_r1" > "$tmp/cand.txt"
 run_clear "$tmp" 0 "8x --check-sweeps accepts a record the gate would accept" --check-sweeps "$tmp/cand.txt"
 if marker_exists "$tmp"; then pass; else fail "8x --check-sweeps must leave the marker alone"; fi
+rm -rf "$tmp"
+
+# 8y. HIMMEL-5158: two heads that do not resolve (a garbage-collected round, or
+# a typed one) are not "the same commit" merely because both resolve to null.
+# A later disproved row at deadbeef0ff must not erase the agreed row at
+# deadbeef0 - resolve(sh) !== null is what keeps null === null from coalescing.
+sweep_fixture
+printf '{"kind":"finding","head":"deadbeef0","branch":"feat/x","model":"codex","finding_id":"r9","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}\n' >> "$tmp/.git/cr-critic-scores.jsonl"
+printf '{"kind":"finding","head":"deadbeef0ff","branch":"feat/x","model":"codex","finding_id":"r9","severity":"imp","file":"a.sh","line":1,"verdict":"disproved"}\n' >> "$tmp/.git/cr-critic-scores.jsonl"
+write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: sites=a.sh:1, b.sh:4" "${_r2_ok/\$_tip/$_tip}"
+run_clear "$tmp" 14 "8y a disproved row at one unresolvable head does not supersede an agreed row at another -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F "r9@deadbeef0(agreed)"; then pass; else fail "8y must name r9@deadbeef0: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+# 8y-gc. Intended behaviour, pinned (HIMMEL-5158): a round head whose commit is
+# gone is still judged by its own spelling. It is not forgiven, and not refused
+# for being gone: a record naming it (sites checked at the tip) clears it.
+sweep_fixture
+printf '{"kind":"finding","head":"deadbeef0","branch":"feat/x","model":"codex","finding_id":"r9","severity":"imp","file":"a.sh","line":1,"verdict":"fixed"}\n' >> "$tmp/.git/cr-critic-scores.jsonl"
+write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: sites=a.sh:1, b.sh:4" "${_r2_ok/\$_tip/$_tip}" \
+    "SWEEP [r9@deadbeef0] class=gone :: sites=a.sh:1, c.sh:9"
+run_clear "$tmp" 0 "8y-gc a fixed row at a garbage-collected head is cleared by a record naming it -> exit 0"
+rm -rf "$tmp"
+# 8z. HIMMEL-5158: a sites= entry must be a regular file (100644/100755), not a
+# symlink (120000). A link names no content, so it proves no sweep of it; an
+# executable regular file is a site like any other.
+sweep_fixture
+(cd "$tmp" && ln -s a.sh link.sh && printf 'echo run\n' > run.sh && chmod +x run.sh && git add link.sh run.sh \
+    && git commit -qm "round 3" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_marker "$tmp" "$_tip"
+write_ledger "$tmp" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1","severity":"sug","file":"a.sh","line":1,"verdict":"fixed"}' "${_tip:0:8}")" \
+    "$(avail_ok "${_tip:0:8}")"
+write_sweeps "$tmp" "SWEEP [r1@${_tip:0:8}] class=linked :: sites=a.sh:1, link.sh"
+run_clear "$tmp" 14 "8z a sweep naming a symlink as a site is not a record -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F 'site-not-a-file:link.sh'; then pass; else
+    fail "8z must name site-not-a-file:link.sh: $LAST_CLEAR_OUT"; fi
+write_sweeps "$tmp" "SWEEP [r1@${_tip:0:8}] class=linked :: sites=a.sh:1, run.sh:1"
+run_clear "$tmp" 0 "8z a sweep naming an executable regular file as a site clears -> exit 0"
+rm -rf "$tmp"
+# 8z-head. Intended behaviour, pinned (HIMMEL-5158): --check-sweeps with no ref
+# for the branch judges against HEAD (the checkout the record was written from),
+# so a record naming a site HEAD lacks is refused and one HEAD has is accepted.
+sweep_fixture
+(cd "$tmp" && git checkout -q --detach && git branch -q -D feat/x) >/dev/null 2>&1
+printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, nope.sh:2\n' "$_r1" > "$tmp/cand.txt"
+run_clear "$tmp" 14 "8z-head --check-sweeps with no branch ref judges against HEAD: absent site refused" --check-sweeps "$tmp/cand.txt" feat/x
+printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, b.sh:4\n' "$_r1" > "$tmp/cand.txt"
+run_clear "$tmp" 0 "8z-head --check-sweeps with no branch ref judges against HEAD: present sites accepted" --check-sweeps "$tmp/cand.txt" feat/x
 rm -rf "$tmp"
 
 # 5a-5e. HIMMEL-2128 — CR_FLOOR_FALLBACK=claude-only gate-3b escape. All five
