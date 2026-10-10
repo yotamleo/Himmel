@@ -13,8 +13,9 @@
 # Each job file is one run's job list, one `<job name><TAB><conclusion>` per line
 # (e.g. from `gh run view <id> --json jobs`):
 #   --pr           the PR's own CI run
-#   --main-base    main's push run AT THE PR's MERGE-BASE commit
-#   --main-latest  main's latest completed push run
+#   --main-base    main's CI run AT THE PR's MERGE-BASE commit (cron or dispatch; an
+#                  EMPTY regular file when no run exists at that exact commit)
+#   --main-latest  main's latest completed CI run
 # Each case file lists the failing cases of a run, one `<job><TAB><case>` per
 # line, read from the failed-job logs:
 #   --pr-cases     the PR run's failing cases      --base-cases  the base run's
@@ -30,26 +31,34 @@
 # --base-sha must equal `git merge-base origin/main HEAD` (computed here, after a
 # fetch, from the leg's own repo) and --main-base-sha (the base run's headSha
 # from `gh run list --commit`); --latest-sha (the latest run's headSha) must equal
-# `git rev-parse origin/main`, so an older run cannot stand in for the base or
-# for latest. --pr-sha (the PR run's headSha) must equal `git rev-parse HEAD`, so an
+# an ancestor-or-equal of `git rev-parse origin/main` (HIMMEL-5124: main CI is a
+# 7 h cron plus dispatch, so the latest completed run is usually behind the tip)
+# and a descendant-or-equal of the verdict run (the covering run, else the
+# merge-base), so a run from before the base cannot stand in for latest.
+# --pr-sha (the PR run's headSha) must equal `git rev-parse HEAD`, so an
 # older PR run cannot stand in for the current head.
 # Exit 0 = ALLOW  1 = REFUSE  2 = usage / unreadable input
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
-# HIMMEL-4260: ci.yml's serialised push concurrency replaces a pending main sweep
-# with a 0-job cancelled run, so when --main-base is a cancelled run the base
-# verdict comes from the next completed push sweep covering the merge-base — the
+# HIMMEL-4260 / HIMMEL-5124: main CI runs on a cron and on dispatch, so most
+# merge-bases have NO run at their own commit (an empty --main-base file), and a
+# run that exists may be cancelled. Either way the base verdict comes from the
+# next completed main run covering the merge-base — the
 # same contiguous-range attribution main-sweep-red uses: --base-cover-from (the
 # previous completed sweep's headSha) must be a strict ancestor of the merge-base,
 # the merge-base an ancestor of --base-cover-sha, and that sha on origin/main;
-# --base-cases are then the covering sweep's failing cases. Without the trio
-# (--base-cover, --base-cover-sha, --base-cover-from) a cancelled base REFUSEs.
+# --base-cases are then the covering run's failing cases. Without the trio
+# (--base-cover, --base-cover-sha, --base-cover-from) a base with no completed run
+# REFUSEs: wait for the next cron or dispatch run. A run whose conclusion is
+# cancelled is cancelled whatever its job rows say (a cancelled run keeps the
+# jobs that had already finished): pass it as an empty file.
 # ponytail: the case lists are extracted from logs by the caller and taken as
 # given, so a wrong list can still mislead; upgrade path is parsing the failed
 # job logs here if that ever bites.
-# ponytail: the script cannot see whether another completed sweep lies inside
-# (from, cover], so "next" is taken from the caller; upgrade path is listing the
-# push runs with gh here if a wrong cover ever bites.
+# ponytail: the script cannot see whether another completed run lies inside
+# (from, cover], nor a newer one than --main-latest, so "next" and "latest" are
+# taken from the caller; upgrade path is listing the main runs with gh here if a
+# wrong one ever bites.
 # ponytail: a red cover proves the failure existed somewhere in (from, cover], not
 # at the merge-base itself, so a case introduced and fixed inside that range can
 # read as inherited; ALLOW also needs it green on latest, which bounds this, and
@@ -117,8 +126,10 @@ if ! git fetch --quiet origin main 2>/dev/null || ! tip="$(git rev-parse --verif
   echo "usage: cannot fetch origin main from $(pwd): the --latest-sha check needs the leg's own repo" >&2
   exit 2
 fi
-if [ "$lsha" != "$tip" ]; then
-  echo "REFUSE — the --main-latest run is for $lsha, but origin/main is $tip: an older run is not latest main. Fetch the newest completed push run; do not merge forward."
+# main CI is a cron, so the latest completed run is usually behind the tip: it must be ON origin/main
+# (resolved to a full sha: --is-ancestor is reflexive) and, below, at or after the verdict run
+if ! rlsha="$(git rev-parse --verify --quiet "$lsha^{commit}")" || ! git merge-base --is-ancestor "$rlsha" "$tip" 2>/dev/null; then
+  echo "REFUSE — the --main-latest run is for $lsha, which is not on origin/main ($tip): only a main run can stand in for latest main. Fetch the newest completed main run; do not merge forward."
   exit 1
 fi
 
@@ -141,13 +152,14 @@ if [ "$psha" != "$head" ]; then
 fi
 
 base_note=""
+verdict="$bsha"
 if is_cancelled "$base"; then
   if [ -z "$cover" ]; then
-    echo "REFUSE — the merge-base run at $bsha was cancelled and no completed sweep covering it was given (--base-cover, --base-cover-sha, --base-cover-from): a cancelled run proves nothing about the base. Report BLOCKED; do not merge forward."
+    echo "REFUSE — the merge-base at $bsha has no completed main run (none at that commit, or it was cancelled) and no completed run covering it was given (--base-cover, --base-cover-sha, --base-cover-from): it proves nothing about the base. Wait for the next cron or dispatch main run; do not merge forward."
     exit 1
   fi
   if is_cancelled "$cover"; then
-    echo "REFUSE — the covering sweep at $csha was cancelled too: it proves nothing about the base. Use the next COMPLETED push sweep; do not merge forward."
+    echo "REFUSE — the covering run at $csha was cancelled too: it proves nothing about the base. Use the next COMPLETED main run; do not merge forward."
     exit 1
   fi
   # resolve both range ends to full shas: --is-ancestor is reflexive, so a short sha, S^0 or HEAD~1
@@ -157,18 +169,24 @@ if is_cancelled "$base"; then
     exit 1
   fi
   if ! git merge-base --is-ancestor "$rcsha" "$tip" 2>/dev/null; then
-    echo "REFUSE — the covering sweep at $rcsha is not on origin/main ($tip): only a main push sweep can stand in for the base. Do not merge forward."
+    echo "REFUSE — the covering run at $rcsha is not on origin/main ($tip): only a main run can stand in for the base. Do not merge forward."
     exit 1
   fi
   if [ "$rcfrom" = "$bsha" ] || ! git merge-base --is-ancestor "$rcfrom" "$bsha" 2>/dev/null || ! git merge-base --is-ancestor "$bsha" "$rcsha" 2>/dev/null; then
-    echo "REFUSE — the covering sweep's range ($rcfrom, $rcsha] does not cover the merge-base $bsha: it is not the next completed sweep after the cancelled run. Do not merge forward."
+    echo "REFUSE — the covering run's range ($rcfrom, $rcsha] does not cover the merge-base $bsha: it is not the next completed main run after the merge-base. Do not merge forward."
     exit 1
   fi
   base="$cover"
-  base_note=" — base verdict from the next completed covering sweep at $rcsha (range $rcfrom..$rcsha), since the merge-base run at $bsha was cancelled"
+  verdict="$rcsha"
+  base_note=" — base verdict from the next completed covering main run at $rcsha (range $rcfrom..$rcsha), since the merge-base at $bsha has no completed run of its own"
 elif [ -n "$cover" ]; then
   echo "usage: the merge-base run at $bsha is not cancelled: its own verdict stands; drop --base-cover" >&2
   exit 2
+fi
+
+if ! git merge-base --is-ancestor "$verdict" "$rlsha" 2>/dev/null; then
+  echo "REFUSE — the --main-latest run at $rlsha does not descend from the base verdict run at $verdict: a run from before the base proves nothing about it being fixed. Fetch the newest completed main run; do not merge forward."
+  exit 1
 fi
 
 blocked=""
