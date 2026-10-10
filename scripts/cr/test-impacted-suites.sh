@@ -91,6 +91,9 @@ mkf scripts/test-stem-lead.sh 'guard_rc x-block-foo-guard "x"'
 mkf scripts/hooks/a+b-c.sh
 mkf scripts/test-stem-plus.sh 'guard_rc a+b-c "x"'
 mkf scripts/test-stem-plus-wild.sh 'guard_rc aab-c "x"'
+mkf scripts/lib/clo-lib.sh
+mkf scripts/hooks/block-clo-hook.sh 'source "$d/lib/clo-lib.sh"'
+mkf scripts/test-clo-stem.sh 'guard_rc block-clo-hook "x"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -224,6 +227,11 @@ change scripts/hooks/a+b-c.sh
 out="$(run_is "$range")"
 if grepq "$out" '^scripts/test-stem-plus\.sh$'; then pass "stem with a regex metacharacter (a+b-c) matches its own literal"; else fail "escaped stem a+b-c did not select its own suite: $out"; fi
 if ! grepq "$out" 'test-stem-plus-wild\.sh'; then pass "stem a+b-c is a literal, not the pattern a+b-c (aab-c unlisted)"; else fail "stem metacharacter acted as a pattern: $out"; fi
+# HIMMEL-5174 (judge j2330a item 1): the closure sourcer is named by its own stem
+# in a suite (`guard_rc block-clo-hook`), never with .sh, so it needs its stem needle.
+change scripts/lib/clo-lib.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-clo-stem\.sh$'; then pass "a changed lib -> its sourcing hook named by stem only in a suite"; else fail "closure sourcer's stem reference not listed: $out"; fi
 
 # --- 11b. an extensionless basename takes the path rule (HIMMEL-4606) ---------
 # `diff` is a common word: a suite that merely says `diff -u` must not be listed,
@@ -861,6 +869,27 @@ else
     err="$( cd "$BIG" && ulimit -f 40 && trap '' XFSZ && bash "$IS" "$big_range" 2>&1 >/dev/null )"
     if grepq "$err" 'cannot trust the impacted list'; then pass "the failed temp write is named on stderr"; else fail "failing temp write not named: $err"; fi
 fi
+
+# --- 36a. HIMMEL-5174 (judge j2330a item 3): every checked create fails closed ---
+# Row 36 pins only the first temp write. Here a mktemp shim makes the work dir
+# with a DIRECTORY already sitting at one scratch file's name, so that file's
+# create cannot open: each name below must end the run at rc 2 with no list. A
+# create that read its failure as rc 1 ("no match") would exit 0 with a short list.
+SHIM3="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$FX" "$SHIM" "$SHIM2" "$SHD" "$BIG" "$SHIM3"' EXIT
+printf '#!/usr/bin/env bash\nd="$(%s "$@")" || exit $?\nif [ -n "${PRECREATE_DIR:-}" ]; then mkdir "$d/$PRECREATE_DIR" || exit 1; fi\nprintf "%%s\\n" "$d"\n' "$(command -v mktemp)" > "$SHIM3/mktemp"
+chmod +x "$SHIM3/mktemp"
+change scripts/lib/clo-lib.sh
+for name in tree changed suites patterns found seen front srcpats asgpats dirpats \
+            hit.src.raw hit.dir.raw hit.asg.raw hit.src hit.dir hit.asg src.out next \
+            varsrc.raw varsrc content-rules grep.out; do
+    out="$( cd "$FX" && PRECREATE_DIR="$name" PATH="$SHIM3:$PATH" bash "$IS" "$range" 2>/dev/null )"; rc=$?
+    if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "create of the scratch file '$name' that cannot open -> rc 2, no list"; else fail "create of '$name' that cannot open: rc=$rc out=$out"; fi
+done
+out="$( cd "$FX" && PRECREATE_DIR=shell PATH="$SHIM3:$PATH" bash "$IS" "$range" --shell 2>/dev/null )"; rc=$?
+if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "--shell: the shell-suite filter file that cannot open -> rc 2, no list"; else fail "--shell filter file: rc=$rc out=$out"; fi
+out="$( cd "$FX" && PRECREATE_DIR=impacted PATH="$SHIM3:$PATH" bash "$IS" "$range" 2>/dev/null )"; rc=$?
+if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "the impacted-list file that cannot open -> rc 2, no list"; else fail "impacted-list file: rc=$rc out=$out"; fi
 
 # --- HIMMEL-4781: no range argument defaults to merge-base(default)..HEAD ----
 # The default branch is resolved by scripts/lib/cr-default-base.sh (origin/HEAD,
