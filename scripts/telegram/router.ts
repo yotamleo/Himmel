@@ -76,9 +76,12 @@ const RESTART = /^\/restart(?:\s+(full))?$/i;
 // non-empty text); the path-safety refusal and the sender gate live downstream
 // (console-route.ts, poller.ts handleInbound), where a non-operator's match falls
 // back to ordinary chat.
-const CONSOLE = /^\/console\s+([A-Za-z0-9_.-]+)\s+([\s\S]+)$/;
+// HIMMEL-5148: the verb is case-insensitive and may carry Telegram's `/cmd@<bot>`
+// addressing; a suffix naming another bot (when `botUsername` is known) is chat.
+// Only the leading verb is matched, so a mid-text or trailing /console stays chat.
+const CONSOLE_VERB = /^\/(consoles?)(?:@([A-Za-z0-9_]+))?(?=\s|$)/i;
 
-export function classify(raw: string): Route {
+export function classify(raw: string, botUsername?: string | null): Route {
   const t = raw.trim();
   if (t === "/lockdown") return { kind: "lockdown" };
   if (t === "/fleet") return { kind: "fleet", verb: "status" };
@@ -128,11 +131,17 @@ export function classify(raw: string): Route {
   const restart = t.match(RESTART);
   // Bare `/restart` => rung 1 ("poller"); `/restart full` => rung 2 ("full").
   if (restart) return { kind: "auto", op: "restart", arg: restart[1] ? "full" : "poller", time: "-" };
-  if (t === "/consoles") return { kind: "consoles" };
-  const con = t.match(CONSOLE);
-  if (con) return { kind: "console", name: con[1], text: con[2] };
-  const bare = t.match(/^\/console\s+([\s\S]+)$/);
-  if (bare) return { kind: "console", name: "", text: bare[1] };
+  const verb = t.match(CONSOLE_VERB);
+  if (verb && (!verb[2] || !botUsername || verb[2].toLowerCase() === botUsername.toLowerCase())) {
+    const rest = t.slice(verb[0].length);
+    if (verb[1].toLowerCase() === "consoles") { if (rest === "") return { kind: "consoles" }; }
+    else {
+      const con = rest.match(/^\s+([A-Za-z0-9_.-]+)\s+([\s\S]+)$/);
+      if (con) return { kind: "console", name: con[1], text: con[2] };
+      const bare = rest.match(/^\s+([\s\S]+)$/);
+      if (bare) return { kind: "console", name: "", text: bare[1] };
+    }
+  }
   const fu = t.match(/^([A-Z][A-Z0-9]+-[0-9]+):\s*([\s\S]+)$/);
   if (fu) return { kind: "followup", ticket: fu[1], text: fu[2] };
   return { kind: "chat", text: t };
