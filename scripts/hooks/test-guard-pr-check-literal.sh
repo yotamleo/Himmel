@@ -1755,6 +1755,45 @@ done
 # shellcheck disable=SC2016 # the $( is literal hook input
 run "HIMMEL-4953 accepted over-deny [wc + unrelated substitution] -> deny" 2 \
     "$(payload 'wc -l scripts/cr/pr-check-env.sh; echo $(date)' "$WT")" "$HR"
+# HIMMEL-5102: `git bisect run <prog>` and `git rebase -x|--exec <cmd>` run an
+# arbitrary program, so a guarded script named beside them is never a pathspec
+# mention. Every spelling (separate, joined, = form, bundled) is denied.
+for v in \
+    'git bisect run bash scripts/cr/pr-check-env.sh' \
+    'git bisect run scripts/cr/pr-check-env.sh' \
+    'git bisect run -- bash scripts/cr/pr-check-env.sh' \
+    'git bisect run bash -c x scripts/cr/' \
+    'git --no-pager bisect run bash -c x scripts/cr/' \
+    'git -C . bisect run bash scripts/cr/pr-check-env.sh' \
+    'git rebase -x bash scripts/cr/pr-check-env.sh' \
+    'git rebase -xbash scripts/cr/pr-check-env.sh' \
+    'git rebase -x "bash scripts/cr/pr-check-env.sh" main' \
+    'git rebase -i -x bash scripts/cr/pr-check-env.sh' \
+    'git rebase -ix bash scripts/cr/pr-check-env.sh' \
+    'git rebase --exec bash scripts/cr/pr-check-env.sh' \
+    'git rebase --exec=bash scripts/cr/pr-check-env.sh' \
+    'git rebase --exec "bash scripts/cr/pr-check-env.sh" main' \
+    'git rebase -x bash main -- scripts/cr/' \
+    'git rebase -x bash -- scripts/handover/' \
+    'git rebase --exec bash main scripts/cr/' \
+    'git rebase -i main -x bash scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5102 bisect run / rebase exec [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# Controls: the non-running bisect verbs and a plain or interactive rebase.
+for v in \
+    'git bisect start' \
+    'git bisect good' \
+    'git bisect bad' \
+    'git bisect reset' \
+    'git bisect log' \
+    'git rebase -i main' \
+    'git rebase main' \
+    'git rebase --continue' \
+    'git rebase --abort' \
+    'git log --oneline -3 -- scripts/cr/pr-check-env.sh' \
+    'git grep -e run -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5102 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo

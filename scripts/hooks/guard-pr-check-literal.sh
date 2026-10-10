@@ -875,6 +875,7 @@ short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
 }
 git_mentions_only() { # git_mentions_only <command-word index>
     local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0 es
+    local bsub='' bidx=0 xc xch
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -945,6 +946,26 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
                 fi ;;
         esac
+        # HIMMEL-5102: `git bisect run <prog>` and `git rebase -x|--exec <cmd>`
+        # run an arbitrary program, so a guarded script they name is never a
+        # pathspec mention. bsub is set only for a positively identified builtin.
+        case "$bsub" in
+            bisect) [ "$j" -ne "$bidx" ] || [ "$w" != run ] || { PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; } ;;
+            rebase)
+                # -x takes the rest of the word as its command; -s/-X/-C/-S take
+                # theirs as a value, so a later x there is text.
+                case "$w" in
+                    --*) ;;
+                    -?*) xc=${w#-}
+                        while [ -n "$xc" ]; do
+                            xch=${xc:0:1}; xc=${xc:1}
+                            case "$xch" in
+                                x) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; break ;;
+                                s|X|C|S) break ;;
+                            esac
+                        done ;;
+                esac ;;
+        esac
         if [ "$dir" = 1 ]; then
             dir=0
             [ "${ST_Q[j]}" = 0 ] || sub='*'
@@ -972,7 +993,8 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     ls-files | ls-tree | merge | mv | notes | pull | push | rebase | \
                     reflog | remote | reset | rev-list | rev-parse | revert | \
                     shortlog | stash | status | tag | worktree)
-                    bad=1; nsub=1 ;;
+                    bad=1; nsub=1
+                    case "$w" in bisect | rebase) bsub=$w; bidx=$((j + 1)) ;; esac ;;
                 *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
             esac
             # A quoted word is not positively identified either.
