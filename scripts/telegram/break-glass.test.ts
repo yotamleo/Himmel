@@ -143,6 +143,28 @@ test("the allow-rule confirm prompt shows the resolved rule text (HIMMEL-5112)",
   }
 });
 
+test("an allow-rule /confirm refuses when the registry rule changed after the prompt (HIMMEL-5112)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-ar-drift-"));
+  const reg = join(root, "rules.json");
+  await writeFile(reg, JSON.stringify({ "fixture-one": "Bash(fixture:*)" }));
+  const prev = process.env.BREAK_GLASS_ALLOW_REGISTRY;
+  process.env.BREAK_GLASS_ALLOW_REGISTRY = reg;
+  try {
+    const h = harness();
+    const code = await issue(root, h, "/allow-rule fixture-one");
+    await writeFile(reg, JSON.stringify({ "fixture-one": "Bash(other:*)" }));
+    await confirm(root, h, code);
+    expect(h.runs).toEqual([]);
+    expect(h.audits[h.audits.length - 1].result).toBe("confirm-refused");
+    const h2 = harness();
+    const code2 = await issue(root, h2, "/allow-rule fixture-one");
+    await confirm(root, h2, code2);
+    expect(h2.runs.length).toBe(1);
+  } finally {
+    if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
+  }
+});
+
 test("a mutating op issues a code and runs nothing; the matching /confirm runs it once", async () => {
   for (const text of BREAK_GLASS.filter((op) => op !== "station-status").map((op) => ({
     "revert-main": "/revert-main 2202", "repin-hooks": "/repin-hooks", "launch-leg": "/launch-leg N7 --hook-bypass",

@@ -693,7 +693,7 @@ export type AutoCommandDeps = {
 // op replaces it. Any /confirm consumes it first (rename, read, unlink), so a
 // wrong code burns it and a right one can never run twice.
 export const CONFIRM_TTL_MS = 5 * 60_000;
-type PendingConfirm = { code: string; chat_id: number; user: number; op: string; arg: string; time: string; expires: number };
+type PendingConfirm = { code: string; chat_id: number; user: number; op: string; arg: string; time: string; expires: number; rule?: string };
 const pendingPath = (root: string) => join(root, "break-glass-pending.json");
 
 // The exact rule text the /allow-rule id resolves to, shown in the confirm prompt
@@ -710,14 +710,16 @@ function allowRuleText(id: string): string {
   return ` → ${rule}`;
 }
 
-async function issueConfirm(root: string, msg: DeliveredMsg, route: { op: string; arg: string; time: string }, now: number): Promise<string> {
+async function issueConfirm(root: string, msg: DeliveredMsg, route: { op: string; arg: string; time: string }, now: number): Promise<{ code: string; rule: string }> {
   const code = randomBytes(4).toString("hex");
   const p: PendingConfirm = { code, chat_id: msg.chat_id, user: msg.from, op: route.op, arg: route.arg, time: route.time, expires: now + CONFIRM_TTL_MS };
+  // The text the operator is shown is the text the code approves (HIMMEL-5112).
+  if (route.op === "allow-rule") p.rule = allowRuleText(route.arg);
   await mkdir(root, { recursive: true });
   const tmp = `${pendingPath(root)}.${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(tmp, JSON.stringify(p), { encoding: "utf8", mode: 0o600 });
   await rename(tmp, pendingPath(root));
-  return code;
+  return { code, rule: p.rule ?? "" };
 }
 
 async function takeConfirm(root: string): Promise<PendingConfirm | null> {
@@ -810,14 +812,15 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
   // Break-glass (HIMMEL-5047): a confirm-coded op only issues a code here; the
   // code is never audited. `/confirm` runs the op the code was issued for.
   if (CONFIRM_OPS.has(route.op)) {
-    const code = await issueConfirm(root, msg, route, nowMs());
+    const { code, rule: ruleShown } = await issueConfirm(root, msg, route, nowMs());
     await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 0, result: "confirm-issued" });
-    await reply(`🔐 ${route.op}${route.arg !== "-" ? ` ${route.arg}` : ""}${route.op === "allow-rule" ? allowRuleText(route.arg) : ""}${route.time === "bypass" ? " --hook-bypass" : ""}: send /confirm ${code} within 5 minutes to run it. Any other /confirm cancels it.`);
+    await reply(`🔐 ${route.op}${route.arg !== "-" ? ` ${route.arg}` : ""}${route.op === "allow-rule" ? ruleShown : ""}${route.time === "bypass" ? " --hook-bypass" : ""}: send /confirm ${code} within 5 minutes to run it. Any other /confirm cancels it.`);
     return;
   }
   if (route.op === "confirm") {
     const p = await takeConfirm(root);
-    if (!confirmMatches(p, msg, route.arg, nowMs()) || !deps.enabledOps?.has(p.op)) {
+    if (!confirmMatches(p, msg, route.arg, nowMs()) || !deps.enabledOps?.has(p.op)
+        || (p.op === "allow-rule" && p.rule !== allowRuleText(p.arg))) {
       await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: p?.op ?? "confirm", arg: p?.arg ?? "-", time: p?.time ?? "-", rc: -1, result: "confirm-refused" });
       await reply("⚠️ confirm refused — no matching pending command (wrong, expired or already used). Nothing ran; send the command again for a new code.");
       return;
