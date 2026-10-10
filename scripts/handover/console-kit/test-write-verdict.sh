@@ -529,6 +529,9 @@ check "18: --bind-reviewed on a GO is refused rc 2" "$rc" 2
 check "18: a refused GO writes nothing" "$([ -e "$scope_dir/q29" ] && echo yes || echo no)" no
 rc=0; out=$(fxcd wv q30 NO-GO "$J_TEST" --evidence-file "$ev" --bind-reviewed "${REV%?}" 2>&1) || rc=$?
 check "18: a short reviewed sha is refused rc 2" "$rc" 2
+rc=0; out=$(fxcd wv q33 NO-GO "$J_TEST" --evidence-file "$ev" --bind-reviewed "" 2>&1) || rc=$?
+check "18: an empty --bind-reviewed value is refused rc 2" "$rc" 2
+check "18: an empty --bind-reviewed value writes nothing" "$([ -e "$scope_dir/q33" ] && echo yes || echo no)" no
 
 # --- 19. HIMMEL-5109: a layer-decision line without its keyword is flagged ---
 printf 'class: option-parsing\nlayer-decision: this one has no keyword\n' > "$evd/ld-bad.md"

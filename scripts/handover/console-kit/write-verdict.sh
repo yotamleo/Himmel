@@ -114,7 +114,10 @@ shift 3
 EVIDENCE="" NAME=judge PR="" BRANCH="" BIND=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --bind-reviewed) [ "$#" -ge 2 ] || usage; BIND=$2; shift 2 ;;
+        --bind-reviewed)
+            [ "$#" -ge 2 ] || usage
+            [ -n "$2" ] || { echo "write-verdict: --bind-reviewed needs the full 40-char lowercase hex sha (got an empty value)" >&2; exit 2; }
+            BIND=$2; shift 2 ;;
         --pr) [ "$#" -ge 2 ] || usage; PR=$2; shift 2 ;;
         --branch) [ "$#" -ge 2 ] || usage; BRANCH=$2; shift 2 ;;
         --evidence-file) [ "$#" -ge 2 ] || usage; EVIDENCE=$2; shift 2 ;;
