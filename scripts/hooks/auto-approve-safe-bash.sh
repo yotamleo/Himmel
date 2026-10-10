@@ -890,7 +890,7 @@ is_redirect_word() {
 # Tokenized with CR as a word byte (bash's view). Only a real root counts, not
 # ~ / $HOME (`du -sh ~` stays ALLOW).
 segment_walks_root() {
-    local base j total tok raw prev='' have_e=0 rec=0 level=0 root=0 dd=0
+    local base j total tok raw opt k prev='' have_e=0 rec=0 level=0 root=0 dd=0 vskip=0
     local -a a ops
     TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
     [ "$RB_STATUS" = bin ] || return 1
@@ -905,6 +905,10 @@ segment_walks_root() {
         raw="${a[$j]}"
         shell_word_value "$raw" || continue
         tok="$SW_VALUE"
+        if [ "$vskip" -eq 1 ]; then       # the value of -e/-f/-I/-P/-o: neither option nor path
+            vskip=0; prev="$tok"
+            continue
+        fi
         if [ "$dd" -eq 1 ]; then          # after `--` every word is an operand
             is_redirect_word "$raw" "$tok" || ops+=("$tok")
             continue
@@ -917,15 +921,29 @@ segment_walks_root() {
                 case "$prev" in -d|--directories) rec=1 ;; esac
                 is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
             --level|--level=*) level=1 ;;
-            --regexp|--regexp=*|--file|--file=*|--files|--type-list) have_e=1 ;;
+            --regexp|--file) have_e=1; vskip=1 ;;
+            --regexp=*|--file=*|--files|--type-list) have_e=1 ;;
+            --charset|--filelimit|--timefmt|--sort) [ "$base" = tree ] && vskip=1 ;;
             --*) ;;
             -*)
                 case "$base" in
                     ls)               case "$tok" in *R*) rec=1 ;; esac ;;
                     grep|egrep|fgrep) case "$tok" in *[rR]*) rec=1 ;; esac
-                                      case "$tok" in *[ef]*) have_e=1 ;; esac ;;
-                    tree)             case "$tok" in *L*) level=1 ;; esac ;;
-                    rg|ripgrep|ag)    case "$tok" in -e*|-f*) have_e=1 ;; esac ;;
+                                      case "$tok" in *[ef]*) have_e=1 ;; esac
+                                      case "$tok" in -*[ef]) vskip=1 ;; esac ;;
+                    tree)             case "$tok" in -I|-P|-o) vskip=1 ;; *L*) level=1 ;; esac ;;
+                    rg|ripgrep|ag)
+                        # the first value-taking letter ends the cluster; e/f = pattern
+                        opt="${tok#-}"; k=0
+                        while [ "$k" -lt "${#opt}" ]; do
+                            case "${opt:$k:1}" in
+                                e|f) have_e=1
+                                     if [ "$((k + 1))" -eq "${#opt}" ]; then vskip=1; fi
+                                     break ;;
+                                g|G|t|T|m|A|B|C|j|d|E|M|r|p|W) break ;;
+                            esac
+                            k=$((k + 1))
+                        done ;;
                 esac ;;
             *) is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
         esac

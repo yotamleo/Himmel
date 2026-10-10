@@ -1642,6 +1642,16 @@ assert "rg --files -g x / never ALLOW"         PASS  "$(decide "$(j_bash "rg --f
 assert "rg -gfoo / src (pattern /) ALLOW"      ALLOW "$(decide "$(j_bash "rg -gfoo / src")")"
 assert "grep recurse / (no -r) ALLOW"          ALLOW "$(decide "$(j_bash "grep recurse /")")"
 assert "grep -d recurse x / never ALLOW"       PASS  "$(decide "$(j_bash "grep -d recurse x /")")"
+# round 3: an option's value is not itself an option or a path operand.
+assert "rg -nefoo / never ALLOW"               PASS  "$(decide "$(j_bash "rg -nefoo /")")"
+assert "tree -I -L / never ALLOW"              PASS  "$(decide "$(j_bash "tree -I -L /")")"
+assert "tree -P -L / never ALLOW"              PASS  "$(decide "$(j_bash "tree -P -L /")")"
+assert "ctl: tree -I x -L 1 / stays ALLOW"     ALLOW "$(decide "$(j_bash "tree -I x -L 1 /")")"
+assert "rg -e / src (pattern /) ALLOW"         ALLOW "$(decide "$(j_bash "rg -e / src")")"
+assert "rg -ne / src (pattern /) ALLOW"        ALLOW "$(decide "$(j_bash "rg -ne / src")")"
+assert "grep -r -e / src (pattern /) ALLOW"    ALLOW "$(decide "$(j_bash "grep -r -e / src")")"
+assert "grep -rne / src (pattern /) ALLOW"     ALLOW "$(decide "$(j_bash "grep -rne / src")")"
+assert "grep -r -e x / never ALLOW"            PASS  "$(decide "$(j_bash "grep -r -e x /")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
