@@ -400,25 +400,37 @@ ar_mode="$(stat -c %a "$AR_TARGET" 2>/dev/null || stat -f %Lp "$AR_TARGET")"  # 
 # the approved text, and unless the registry is one clean JSON document.
 rm -f "$AR_TARGET"
 bg allow-rule reviewed-one - >/dev/null; rc=$?
-[ "$rc" = 1 ] && [ ! -e "$AR_TARGET" ] && echo "PASS B1 no approved-text hash is refused, nothing written" || { echo "FAIL B1 rc=$rc"; FAILED=$((FAILED + 1)); }
+[ "$rc" = 1 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G1 no approved-text hash is refused, nothing written" || { echo "FAIL G1 rc=$rc"; FAILED=$((FAILED + 1)); }
 bg allow-rule reviewed-one "$(rule_hash 'Bash(something:else)')" >/dev/null; rc=$?
-[ "$rc" = 26 ] && [ ! -e "$AR_TARGET" ] && echo "PASS B2 a hash of other text is refused (rc 26), nothing written" || { echo "FAIL B2 rc=$rc"; FAILED=$((FAILED + 1)); }
+[ "$rc" = 26 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G2 a hash of other text is refused (rc 26), nothing written" || { echo "FAIL G2 rc=$rc"; FAILED=$((FAILED + 1)); }
 bg allow-rule reviewed-one "not-a-hash" >/dev/null; rc=$?
-[ "$rc" = 1 ] && [ ! -e "$AR_TARGET" ] && echo "PASS B3 a malformed hash is refused, nothing written" || { echo "FAIL B3 rc=$rc"; FAILED=$((FAILED + 1)); }
+[ "$rc" = 1 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G3 a malformed hash is refused, nothing written" || { echo "FAIL G3 rc=$rc"; FAILED=$((FAILED + 1)); }
 # Registry rewritten between the approval and the execute: same id, new text.
 jq -n '{"reviewed-one":"Bash(bash scripts/example/swapped.sh:*)"}' > "$TMP/rules-swapped.json"
 BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules-swapped.json" bg allow-rule reviewed-one "$RH" >/dev/null; rc=$?
-[ "$rc" = 26 ] && [ ! -e "$AR_TARGET" ] && echo "PASS B4 a registry rewritten after approval is refused, nothing written" || { echo "FAIL B4 rc=$rc"; FAILED=$((FAILED + 1)); }
+[ "$rc" = 26 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G4 a registry rewritten after approval is refused, nothing written" || { echo "FAIL G4 rc=$rc"; FAILED=$((FAILED + 1)); }
 # Parser-difference inputs: a BOM, a second document, a lone surrogate.
 printf '\357\273\277{"reviewed-one":"%s"}\n' "$RULE" > "$TMP/rules-bom.json"
 BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules-bom.json" bg allow-rule reviewed-one "$RH" >/dev/null; rc=$?
-[ "$rc" != 0 ] && [ ! -e "$AR_TARGET" ] && echo "PASS B5 a BOM registry is refused (rc=$rc), nothing written" || { echo "FAIL B5 rc=$rc"; FAILED=$((FAILED + 1)); }
+[ "$rc" != 0 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G5 a BOM registry is refused (rc=$rc), nothing written" || { echo "FAIL G5 rc=$rc"; FAILED=$((FAILED + 1)); }
 printf '{"reviewed-one":"%s"}\n{"reviewed-one":"%s"}\n' "$RULE" "$RULE" > "$TMP/rules-two.json"
 BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules-two.json" bg allow-rule reviewed-one "$RH" >/dev/null; rc=$?
-[ "$rc" != 0 ] && [ ! -e "$AR_TARGET" ] && echo "PASS B6 a two-document registry is refused (rc=$rc), nothing written" || { echo "FAIL B6 rc=$rc"; FAILED=$((FAILED + 1)); }
+[ "$rc" != 0 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G6 a two-document registry is refused (rc=$rc), nothing written" || { echo "FAIL G6 rc=$rc"; FAILED=$((FAILED + 1)); }
 printf '{"reviewed-one":"Bash(a\\ud800b)"}\n' > "$TMP/rules-sur.json"
 BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules-sur.json" bg allow-rule reviewed-one "$(rule_hash 'Bash(a'$'\357\277\275''b)')" >/dev/null; rc=$?
-[ "$rc" != 0 ] && [ ! -e "$AR_TARGET" ] && echo "PASS B7 a lone-surrogate rule is refused (rc=$rc), nothing written" || { echo "FAIL B7 rc=$rc"; FAILED=$((FAILED + 1)); }
+[ "$rc" != 0 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G7 a lone-surrogate rule is refused (rc=$rc), nothing written" || { echo "FAIL G7 rc=$rc"; FAILED=$((FAILED + 1)); }
+# HIMMEL-5140: a second document that is {} (only the multi-document check can
+# refuse it: the first document is the approved rule), and U+2028, which the
+# poller and the executor must both refuse whatever the locale.
+printf '{"reviewed-one":"%s"}\n{}\n' "$RULE" > "$TMP/rules-two-empty.json"
+BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules-two-empty.json" bg allow-rule reviewed-one "$RH" >/dev/null; rc=$?
+[ "$rc" = 26 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G8 a registry with a second {} document is refused (rc 26), nothing written" || { echo "FAIL G8 rc=$rc"; FAILED=$((FAILED + 1)); }
+printf '{"reviewed-one":"Bash(a\\u2028b)"}\n' > "$TMP/rules-ls.json"
+LS_HASH="$(rule_hash "Bash(a$(printf '\342\200\250')b)")"
+for ls_loc in C en_US.UTF-8; do
+    LC_ALL="$ls_loc" BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules-ls.json" bg allow-rule reviewed-one "$LS_HASH" >/dev/null; rc=$?
+    [ "$rc" = 26 ] && [ ! -e "$AR_TARGET" ] && echo "PASS G9 a U+2028 rule is refused (rc 26) under LC_ALL=$ls_loc, nothing written" || { echo "FAIL G9 LC_ALL=$ls_loc rc=$rc"; FAILED=$((FAILED + 1)); }
+done
 # The backups and temp files written beside the real target are gitignored.
 REPO_ROOT="$(git -C "$HERE" rev-parse --show-toplevel)"
 for ig in .claude/settings.local.json.bak-1700000000-42 .claude/settings.local.json.aB3dEf; do
