@@ -22,6 +22,34 @@ const {
   verifyProjectHookIntegrity,
 } = require('./hook-integrity.js');
 
+// HIMMEL-5168. On these events exit 2 does not deny a single action, it keeps
+// the session going (Stop/SubagentStop block the stop and feed stderr to the
+// model, TeammateIdle/TaskCompleted keep the teammate working, PreCompact
+// blocks the compaction). The missing-record deny is permanent for the
+// session, so exit 2 here is a loop the model cannot leave. An integrity
+// failure on one of them still never runs the hook; it skips it, says so, and
+// exits 0. Every other event, including one not listed (a new event, or a
+// payload with no hook_event_name), keeps exit 2: a gate must never fail open
+// because it did not recognise its caller. Gating, kept at exit 2 on purpose:
+// PreToolUse, PermissionRequest, UserPromptSubmit (a deny stops one action or
+// prompt, not the session), PostToolUse, PostToolUseFailure, SessionStart,
+// Notification, SessionEnd (stderr is shown, nothing loops).
+const NON_GATING_EVENTS = new Set(['Stop', 'SubagentStop', 'TeammateIdle', 'TaskCompleted', 'PreCompact']);
+
+// Returns true when the integrity failure was reported as a skipped hook on a
+// non-gating event (caller exits 0), false when it must still deny (exit 2).
+// denyIntegrityMismatch writes the reason to stderr; the systemMessage on
+// stdout is the channel these events surface to the user.
+function skipOnNonGatingEvent(hookInput, member, integrity) {
+  const event = hookInput && typeof hookInput.hook_event_name === 'string' ? hookInput.hook_event_name : '';
+  if (!NON_GATING_EVENTS.has(event)) return false;
+  process.stdout.write(`${JSON.stringify({
+    systemMessage: `himmel hook-integrity: ${path.basename(member)} was NOT run on ${event} `
+      + `(${integrity.reason}); the session is allowed to continue. Start a new session to restore the guard.`,
+  })}\n`);
+  return true;
+}
+
 function normalize(candidate) {
   return String(candidate || '').replace(/\\/g, '/').replace(/\/+$/, '');
 }
@@ -667,7 +695,7 @@ function runChain(members, lifecycle = false) {
     const integrity = verifyProjectHookIntegrity(member, sessionId);
     if (!integrity.ok) {
       denyIntegrityMismatch(member, integrity.relPath, integrity.reason);
-      return 2;
+      return skipOnNonGatingEvent(hookInput, member, integrity) ? 0 : 2;
     }
     const basename = path.basename(member);
     const mustRun = MUST_RUN_CHAIN_MEMBERS.has(basename);
@@ -878,7 +906,8 @@ function main() {
   const integrity = verifyProjectHookIntegrity(hookScript, sessionId);
   if (!integrity.ok) {
     denyIntegrityMismatch(hookScript, integrity.relPath, integrity.reason);
-    process.exit(2);
+    process.exitCode = skipOnNonGatingEvent(hookInput, hookScript, integrity) ? 0 : 2;
+    return;
   }
 
   const bash = resolveBash();
