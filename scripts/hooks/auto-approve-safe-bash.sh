@@ -890,7 +890,7 @@ is_redirect_word() {
 # Tokenized with CR as a word byte (bash's view). Only a real root counts, not
 # ~ / $HOME (`du -sh ~` stays ALLOW).
 segment_walks_root() {
-    local base j total tok raw have_e=0 rec=0 level=0 root=0 dd=0
+    local base j total tok raw prev='' have_e=0 rec=0 level=0 root=0 dd=0
     local -a a ops
     TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
     [ "$RB_STATUS" = bin ] || return 1
@@ -911,10 +911,13 @@ segment_walks_root() {
         fi
         case "$tok" in
             --) dd=1 ;;
-            --recursive|--dereference-recursive|--directories=recurse|recurse)
+            --recursive|--dereference-recursive|--directories=recurse)
                 case "$base" in ls|grep|egrep|fgrep) rec=1 ;; esac ;;
+            recurse)   # only the argument of -d / --directories enables recursion
+                case "$prev" in -d|--directories) rec=1 ;; esac
+                is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
             --level|--level=*) level=1 ;;
-            --regexp|--regexp=*|--file|--file=*) have_e=1 ;;
+            --regexp|--regexp=*|--file|--file=*|--files|--type-list) have_e=1 ;;
             --*) ;;
             -*)
                 case "$base" in
@@ -922,10 +925,11 @@ segment_walks_root() {
                     grep|egrep|fgrep) case "$tok" in *[rR]*) rec=1 ;; esac
                                       case "$tok" in *[ef]*) have_e=1 ;; esac ;;
                     tree)             case "$tok" in *L*) level=1 ;; esac ;;
-                    rg|ripgrep|ag)    case "$tok" in *[ef]*) have_e=1 ;; esac ;;
+                    rg|ripgrep|ag)    case "$tok" in -e*|-f*) have_e=1 ;; esac ;;
                 esac ;;
             *) is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
         esac
+        prev="$tok"
     done
     case "$base" in
         grep|egrep|fgrep|rg|ripgrep|ag)

@@ -1635,6 +1635,13 @@ assert "rg -e foo / never ALLOW"               PASS  "$(decide "$(j_bash "rg -e 
 assert "grep -r -- x / never ALLOW"            PASS  "$(decide "$(j_bash "grep -r -- x /")")"
 assert "ls -- -R / (-R is a filename) ALLOW"   ALLOW "$(decide "$(j_bash "ls -- -R /")")"
 assert "ctl: rg -efoo src stays ALLOW"         ALLOW "$(decide "$(j_bash "rg -efoo src")")"
+# round 2: --files has no pattern operand; -g's value is not a pattern flag;
+# bare `recurse` is only the argument of -d / --directories.
+assert "rg --files / never ALLOW"              PASS  "$(decide "$(j_bash "rg --files /")")"
+assert "rg --files -g x / never ALLOW"         PASS  "$(decide "$(j_bash "rg --files -g x /")")"
+assert "rg -gfoo / src (pattern /) ALLOW"      ALLOW "$(decide "$(j_bash "rg -gfoo / src")")"
+assert "grep recurse / (no -r) ALLOW"          ALLOW "$(decide "$(j_bash "grep recurse /")")"
+assert "grep -d recurse x / never ALLOW"       PASS  "$(decide "$(j_bash "grep -d recurse x /")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
