@@ -74,6 +74,14 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 
+# HIMMEL-5115: the red-main gate reads `gh run list` for main's CI. Every
+# pre-existing case sees the GREEN window below, a real capture of
+# `gh run list --branch main --workflow CI --json conclusion,createdAt,databaseId,event,headSha,status`
+# (2026-10-10: cancelled pushes over a completed success). Exported once so a
+# case that does not care about main's state is unaffected.
+MOG_RUN_GREEN='[{"conclusion":"cancelled","createdAt":"2026-10-10T01:41:58Z","databaseId":38014176513,"event":"push","headSha":"34d7d3d317ee8ba21db397fa0d7abd8c10a8027c","status":"completed"},{"conclusion":"cancelled","createdAt":"2026-10-10T00:58:28Z","databaseId":38011295134,"event":"push","headSha":"5286ec495369d71a198a334d02647ba31fc78d0e","status":"completed"},{"conclusion":"success","createdAt":"2026-10-09T23:02:19Z","databaseId":38002387566,"event":"push","headSha":"3b31ceaa568b628ebb3edad04630307adfc1602f","status":"completed"},{"conclusion":"success","createdAt":"2026-10-09T21:21:08Z","databaseId":37992919316,"event":"push","headSha":"f3395dbb5a6ac2fa4f1a0c54da6dfcbd0e0c1b0c","status":"completed"}]'
+export STUB_RUN_LIST_JSON_DEFAULT="$MOG_RUN_GREEN"
+
 # run_mog <expected-exit> <test-name> [-- extra merge-on-green args...]
 # Stub behavior controlled by env vars exported before the call:
 #   STUB_STATE          initial PR state in the meta query. Default OPEN.
@@ -341,7 +349,8 @@ repo_arg="${3:-}"
 api_path="${2:-}"
 json=""
 jqexpr=""
-while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; --jq) jqexpr="${2:-}";; esac; shift; done
+run_branch="" run_workflow=""
+while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; --jq) jqexpr="${2:-}";; --branch) run_branch="${2:-}";; --workflow) run_workflow="${2:-}";; esac; shift; done
 nwo="${STUB_NWO:-owner/repo}"
 def_files='[{"filename":"README.md"}]'
 case "$verb" in
@@ -422,6 +431,12 @@ case "$verb" in
                     fi
                 fi
                 printf '%s %s %s' "${STUB_POST_STATE:-MERGED}" "${STUB_POST_HEAD:-${STUB_SHA-abc123def456}}" "${STUB_POST_BASE:-${STUB_BASE-main}}" ;;
+            commits)
+                # HIMMEL-5115 — the PR's commit messages, read only when main is
+                # red, to find a `Fixes-main-red:` declaration. Real jq through
+                # the script's own --jq.
+                [ "${STUB_COMMITS_FAIL:-0}" = "1" ] && { echo "gh: commits failed" >&2; exit 1; }
+                printf '%s' "${STUB_PR_COMMITS_JSON:-{\"commits\":[]\}}" | jq -r "$jqexpr" ;;
             comments)
                 # HIMMEL-2383 after-report pending marker: the wrapper pipes
                 # this raw JSON through a REAL jq --arg pass (gh's own --jq
@@ -501,6 +516,21 @@ case "$verb" in
         [ "${STUB_MERGE_FAIL:-0}" = "1" ] && { echo "merge conflict / head moved" >&2; exit 1; }
         echo "merged"
         ;;
+    "run list")
+        # HIMMEL-5115 — the red-main gate's read of main's CI runs. The JSON goes
+        # through the SCRIPT'S OWN --jq via real jq. Unset STUB_RUN_LIST_JSON
+        # serves STUB_RUN_LIST_JSON_DEFAULT, a real green window (exported once,
+        # below the fixture builder), so every pre-existing case sees a green main.
+        [ "${STUB_RUN_LIST_FAIL:-0}" = "1" ] && { echo "gh: run list failed" >&2; exit 1; }
+        [ -n "$jqexpr" ] || { echo "gh stub: 'run list' missing --jq" >&2; exit 93; }
+        # A real `gh run list` without these flags returns every branch's and
+        # workflow's runs, so a call that drops one must not see main's window.
+        [ "$run_branch" = "${STUB_DEFAULT_BRANCH-main}" ] || { echo "gh stub: 'run list' --branch '$run_branch' is not the default branch" >&2; exit 94; }
+        [ "$run_workflow" = "CI" ] || { echo "gh stub: 'run list' --workflow '$run_workflow' is not CI" >&2; exit 95; }
+        printf '%s' "${STUB_RUN_LIST_JSON-${STUB_RUN_LIST_JSON_DEFAULT:-[]}}" | jq -r "$jqexpr" ;;
+    "run view")
+        [ "${STUB_RUN_VIEW_FAIL:-0}" = "1" ] && { echo "gh: run view failed" >&2; exit 1; }
+        cat "${STUB_RUN_LOG_FILE:-/dev/null}" ;;
     "api repos/"*)
         # HIMMEL-2869 — public_origin_merge_allowed's branch-protection read.
         # Match ONLY the classic protection endpoint; anything else this stub
@@ -3820,6 +3850,139 @@ mog3437_unset_out="$(mog3437_run "$mog3437_wt" - scripts/handover/merge-on-green
 if grepq "$mog3437_unset_out" -F -e "rc=2"; then pass; else fail "3437: relative entry with HIMMEL_REPO unset did not exit 2: $mog3437_unset_out"; fi
 
 rm -rf "$mog3437_anchor" "$mog3437_wt"
+
+# ── HIMMEL-5115 — refuse while main's latest COMPLETED CI run is red ─────────
+# Real window (gh run list on main, 2026-10-09): the latest completed non-
+# cancelled run 37964772913 FAILED (shell-unit-shard 8, exit 124 in apt-get),
+# two cancelled pushes behind it. main CI runs on a cron/dispatch now
+# (HIMMEL-5113), so "latest completed" is a sweep, and the refusal names the
+# commit range that run covered.
+MOG_RUN_RED='[{"conclusion":"failure","createdAt":"2026-10-09T17:13:47Z","databaseId":37964772913,"event":"push","headSha":"f343c0e266336aee395f2612d8f62ca3b927528f","status":"completed"},{"conclusion":"cancelled","createdAt":"2026-10-09T17:07:20Z","databaseId":37964009625,"event":"push","headSha":"7a635cad090d9d51297e61a48add1d7f7a98fb34","status":"completed"},{"conclusion":"cancelled","createdAt":"2026-10-09T17:06:12Z","databaseId":37963871864,"event":"push","headSha":"ed3a561c2321412eff3f9779eab384219ad5a61a","status":"completed"}]'
+# A cancelled and an in-progress run NEWER than the red one: neither is "completed".
+MOG_RUN_RED_NEWER_CANCELLED='[{"conclusion":"","createdAt":"2026-10-09T17:50:00Z","databaseId":37968999999,"event":"schedule","headSha":"3cb0693f11e8ffa3cff18f1d6b06b1078bc305da","status":"in_progress"},{"conclusion":"cancelled","createdAt":"2026-10-09T17:41:38Z","databaseId":37968070108,"event":"push","headSha":"3cb0693f11e8ffa3cff18f1d6b06b1078bc305da","status":"completed"},{"conclusion":"failure","createdAt":"2026-10-09T17:13:47Z","databaseId":37964772913,"event":"push","headSha":"f343c0e266336aee395f2612d8f62ca3b927528f","status":"completed"},{"conclusion":"cancelled","createdAt":"2026-10-09T17:07:20Z","databaseId":37964009625,"event":"push","headSha":"7a635cad090d9d51297e61a48add1d7f7a98fb34","status":"completed"}]'
+# The real failed-job log lines (job, step, line; tab-separated) of run 37964772913.
+MOG_RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/mog-runlog.XXXXXX")" || { echo "FAIL: 5115 setup: mktemp" >&2; exit 1; }
+printf '%s\t%s\t%s\n' \
+    'shell-unit-shard (ubuntu-latest, 8)' 'UNKNOWN STEP' '2026-10-09T17:44:06.7905525Z Run apt-get install at' \
+    'shell-unit-shard (ubuntu-latest, 8)' 'UNKNOWN STEP' '2026-10-09T17:54:35.0819579Z ##[error]Process completed with exit code 124.' \
+    'shell-unit (ubuntu-latest)' 'UNKNOWN STEP' '2026-10-09T18:24:30.5567074Z ##[error]shell-unit shards did not all pass (matrix rollup: failure)' > "$MOG_RUN_LOG"
+mog5115_commits() { printf '{"commits":[{"messageHeadline":"fix: x","messageBody":"%s"}]}' "$1"; }
+
+# 5115-a (RED, real window) — main red, no declaration: merged before this gate.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" run_mog 22 "5115-a: main's latest completed run is red → exit 22"
+assert_audit_has "5115-a: audited as a red-main refusal" "REFUSED reason=main-red"
+assert_err_has "5115-a: stderr names the red run" "37964772913"
+assert_err_has "5115-a: stderr names the range base (only cancelled runs behind, so outside the window)" "previous run outside the listed window"
+assert_err_has "5115-a: stderr names the commit range (head)" "f343c0e2"
+assert_clear_not_invoked "5115-a: nothing mutated before the refusal"
+no_merge_call "5115-a: no merge call"
+
+# 5115-b — green main (cancelled pushes over a success) is allowed.
+run_mog 0 "5115-b: green main (cancelled newer, success behind) → merged"
+assert_gh_has "5115-b: main's runs were read" "run list"
+
+# 5115-c — cancelled and in-progress runs are skipped: fall back to the
+# previous COMPLETED run, which is red.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED_NEWER_CANCELLED" run_mog 22 "5115-c: cancelled/in-progress latest falls back to the red completed run → exit 22"
+assert_err_has "5115-c: the fallback run is the red one" "37964772913"
+
+# 5115-d — declared fix by run id, verified against the red run.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: run=37964772913')" \
+    run_mog 0 "5115-d: valid run= declaration → merged"
+assert_audit_has "5115-d: audited as the declared fix" "main-red-declared"
+
+# 5115-e — forged: the run id is not the red run.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: run=12345')" \
+    run_mog 22 "5115-e: forged run id → exit 22"
+assert_audit_has "5115-e: audited as a refusal" "REFUSED reason=main-red"
+
+# 5115-f — declared by suite, verified against the red run's failed log.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=shell-unit-shard')" \
+    run_mog 0 "5115-f: suite= named in the red run's failed log → merged"
+assert_gh_has "5115-f: the failed log was read for the red run" "run view 37964772913"
+
+# 5115-g — forged: a suite the red run never failed on.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=test-unrelated.sh')" \
+    run_mog 22 "5115-g: unrelated suite= → exit 22"
+
+# 5115-h — a declaration whose log cannot be read is not verified: refuse.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_VIEW_FAIL=1 \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=shell-unit-shard')" \
+    run_mog 22 "5115-h: unreadable failed log → exit 22"
+
+# 5115-l — a fragment of a failed job name is not a job: `unit` sits inside
+# `shell-unit-shard (...)` but names nothing the run failed on.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=unit')" \
+    run_mog 22 "5115-l: fragment suite= is not a failed job → exit 22"
+
+# 5115-m — the declaration may be the commit subject on a one-line commit.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" \
+    STUB_PR_COMMITS_JSON='{"commits":[{"messageHeadline":"Fixes-main-red: run=37964772913","messageBody":""}]}' \
+    run_mog 0 "5115-m: declaration on the commit subject → merged"
+
+# 5115-n — the reported range base is the previous COMPLETED non-cancelled
+# sweep, not a cancelled run sitting between.
+STUB_RUN_LIST_JSON='[{"databaseId":300,"status":"completed","conclusion":"failure","event":"schedule","headSha":"aaaaaaaaaaaa1111111111111111111111111111"},{"databaseId":200,"status":"completed","conclusion":"cancelled","event":"push","headSha":"bbbbbbbbbbbb2222222222222222222222222222"},{"databaseId":100,"status":"completed","conclusion":"success","event":"schedule","headSha":"cccccccccccc3333333333333333333333333333"}]' \
+    run_mog 22 "5115-n: range base skips a cancelled run → exit 22"
+assert_err_has "5115-n: range runs from the previous completed sweep" "cccccccccccc..aaaaaaaaaaaa"
+
+# 5115-o/p — a .sh suite on an ##[error] line must be a whole path component:
+# `test-foo.sh` is named there, `foo.sh` is only the tail of it.
+MOG_RUN_LOG2="$(mktemp "${TMPDIR:-/tmp}/mog-runlog2.XXXXXX")" || { echo "FAIL: 5115 setup: mktemp" >&2; exit 1; }
+printf '%s\t%s\t%s\n' \
+    'shell-unit-shard (ubuntu-latest, 3)' 'UNKNOWN STEP' '2026-10-09T17:54:35.0819579Z ##[error]scripts/handover/test-foo.sh failed (2 assertions)' > "$MOG_RUN_LOG2"
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG2" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=test-foo.sh')" \
+    run_mog 0 "5115-o: whole .sh name on an error line → merged"
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG2" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=foo.sh')" \
+    run_mog 22 "5115-p: tail fragment of a .sh name → exit 22"
+rm -f "$MOG_RUN_LOG2"
+
+# 5115-q — a prefix is a matrix base name only when followed by ` (`: a job
+# `shell-unit-shard extra` is a different job, not a shard of `shell-unit-shard`.
+MOG_RUN_LOG3="$(mktemp "${TMPDIR:-/tmp}/mog-runlog3.XXXXXX")" || { echo "FAIL: 5115 setup: mktemp" >&2; exit 1; }
+printf '%s\t%s\t%s\n' \
+    'shell-unit-shard extra' 'UNKNOWN STEP' '2026-10-09T17:54:35.0819579Z ##[error]Process completed with exit code 1.' > "$MOG_RUN_LOG3"
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG3" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=shell-unit-shard')" \
+    run_mog 22 "5115-q: prefix followed by a non-matrix suffix → exit 22"
+rm -f "$MOG_RUN_LOG3"
+
+# 5115-i — DECIDED: no completed run in the window means no red was observed.
+# Allowed, and the audit says so.
+STUB_RUN_LIST_JSON='[]' run_mog 0 "5115-i: no completed run at all → merged, audited"
+assert_audit_has "5115-i: audited as a decided no-completed-run" "main-red=no-completed-run"
+
+# 5115-r — a run list that hit the --limit 50 cap with no completed
+# non-cancelled run says nothing about main: refuse, never "no red observed".
+mog5115_cap='['
+for mog5115_i in $(seq 1 50); do
+    mog5115_cap="${mog5115_cap}{\"conclusion\":\"cancelled\",\"createdAt\":\"2026-10-09T17:00:00Z\",\"databaseId\":$((38000000000 + mog5115_i)),\"event\":\"push\",\"headSha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"status\":\"completed\"},"
+done
+mog5115_cap="${mog5115_cap%,}]"
+STUB_RUN_LIST_JSON="$mog5115_cap" run_mog 22 "5115-r: 50 cancelled runs, none completed → exit 22"
+assert_audit_has "5115-r: audited as a run-list refusal" "phase=run-list seen=50"
+
+# 5115-s — a newer completed GREEN pull_request run (a fork PR from a branch
+# named main) on top of a RED schedule run must not hide the red; and a RED
+# pull_request run on top of a green schedule run must not block.
+STUB_RUN_LIST_JSON='[{"databaseId":400,"status":"completed","conclusion":"success","event":"pull_request","headSha":"dddddddddddd4444444444444444444444444444"},{"databaseId":300,"status":"completed","conclusion":"failure","event":"schedule","headSha":"aaaaaaaaaaaa1111111111111111111111111111"},{"databaseId":100,"status":"completed","conclusion":"success","event":"schedule","headSha":"cccccccccccc3333333333333333333333333333"}]' \
+    run_mog 22 "5115-s: green fork pull_request run does not hide a red schedule run → exit 22"
+assert_err_has "5115-s: the red run is the schedule run" "300"
+STUB_RUN_LIST_JSON='[{"databaseId":400,"status":"completed","conclusion":"failure","event":"pull_request_target","headSha":"dddddddddddd4444444444444444444444444444"},{"databaseId":300,"status":"completed","conclusion":"success","event":"schedule","headSha":"aaaaaaaaaaaa1111111111111111111111111111"}]' \
+    run_mog 0 "5115-s2: red fork pull_request_target run does not block a green main → merged"
+
+# 5115-j — an unreadable run list is unverified: refuse (fail closed).
+STUB_RUN_LIST_FAIL=1 run_mog 22 "5115-j: run list read fails → exit 22"
+assert_audit_has "5115-j: audited" "REFUSED reason=main-red"
+
+# 5115-k — the dry run reports the same refusal.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" run_mog 22 "5115-k: dry-run on red main → exit 22" -- --dry-run
+rm -f "$MOG_RUN_LOG"
 
 echo
 echo "merge-on-green: $PASS passed, $FAIL failed"
