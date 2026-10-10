@@ -66,7 +66,7 @@
 
 import { readFileSync } from "node:fs";
 import type { AgentInfo, AgentRole, AguiEvent, Failure, JsonPatchOp } from "./events.ts";
-import { commandVerdicts, extractHead, extractLedgerVerdicts, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
+import { commandVerdicts, extractHead, extractLedgerRows, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
 
 export type MapperStats = {
   lines: number; // non-blank lines seen
@@ -108,11 +108,10 @@ const BUS_HEADER = /^bus #(\d+) (?:data )?from /gm;
 const BUS_SEND = /^mcp__(?:plugin_himmel-bus_)?himmel-bus__send$/;
 const busDeliveries = (text: string) => [...text.matchAll(BUS_HEADER)].map((m) => Number(m[1]));
 
-// HIMMEL-4655: ledger-append.sh says so when it has written a verdict (an amend, or a finding's verdict appended as
-// one); a fresh finding row prints nothing, so for it only a refusal line in the result says it was not written.
-// ponytail: a fresh finding row in a branch that never ran still shows, have ledger-append.sh confirm every finding append if a real journal shows one
-const LEDGER_CONFIRMED = /^ledger-append\.sh: (?:amended|appended verdict amend for) (\S+) at ([0-9a-f]+)(?: -> (\{.*\}))?/gm;
-const LEDGER_REFUSED = /^ledger-append\.sh: (?!amended |appended verdict amend for )/m;
+// HIMMEL-4655, HIMMEL-5155: ledger-append.sh prints one line per row it wrote: `amended <id>` for the amend verb,
+// `appended finding <id>` for a fresh finding row, `appended verdict amend for <id>` for a finding whose verdict
+// went onto an existing row. A row with no line of its own was not written.
+const LEDGER_CONFIRMED = /^ledger-append\.sh: (amended|appended finding|appended verdict amend for) (\S+) at ([0-9a-f]+)(?: -> (\{.*\}))?/gm;
 
 const roleOfName = (name: string): AgentRole =>
   /-console$/.test(name) ? "console" : /judge/i.test(name) ? "judge" : /(^|-)N\d+(-|$)/.test(name) ? "leg" : "agent";
@@ -167,18 +166,21 @@ function sameVerdict(set: string | undefined, row: LedgerRow): boolean {
   }
 }
 
-// The ledger rows a tool result confirms: one its output names (id, and head when the row has one), or a finding
-// row when the output carries no refusal. An amend always prints its confirmation, so none means not written. Each
-// confirmation line backs one row, so a repeated amend of one id counts only as many times as the ledger said so.
+// The ledger rows a tool result confirms: one whose own confirmation line the output carries (kind, id, and head
+// when the row has one). An amend verb is confirmed only by an `amended` line, a finding verb by `appended finding`
+// or `appended verdict amend`, so a finding and an amend of one id each need their own. Each line backs one row, so
+// a repeated row counts only as many times as the ledger said so.
 function confirmedRows(rows: LedgerRow[], text: string): VerdictUpdate[] {
   if (!rows.length) return [];
   const said = [...text.matchAll(LEDGER_CONFIRMED)];
-  const refused = LEDGER_REFUSED.test(text);
   return rows
     .filter((r) => {
-      const at = said.findIndex(([, id, sha, set]) => id === r.id && (!r.head || r.head.startsWith(sha) || sha.startsWith(r.head)) && sameVerdict(set, r));
+      const at = said.findIndex(
+        ([, what, id, sha, set]) =>
+          (what === "amended") === r.amend && id === r.id && (!r.head || r.head.startsWith(sha) || sha.startsWith(r.head)) && sameVerdict(set, r),
+      );
       if (at >= 0) said.splice(at, 1);
-      return at >= 0 || (!r.amend && !refused);
+      return at >= 0;
     })
     .map(({ amend: _, ...v }) => v);
 }
@@ -390,12 +392,11 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     const command = str(args.command);
     const call: PendingCall = { name, input: args, verdicts: [], ledger: [] };
     if (name === "Bash" && command) {
-      const rows = extractLedgerVerdicts(command);
+      const rows = extractLedgerRows(command);
       const all = commandVerdicts(command, (path) => verdictFiles.get(path));
-      const amends = new Set(extractLedgerVerdicts(command.replace(/(ledger-append\.sh["']?\s+)finding\b/g, "$1-")).map((v) => v.id));
       return {
         ...call, verdicts: all.slice(0, all.length - rows.length),
-        ledger: rows.map((v) => ({ ...v, amend: amends.has(v.id) })), head: extractHead(command),
+        ledger: rows.map(({ verb, ...v }) => ({ ...v, amend: verb === "amend" })), head: extractHead(command),
       };
     }
     const path = str(args.file_path);

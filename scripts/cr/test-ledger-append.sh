@@ -1037,7 +1037,8 @@ BFL2="$tmp/batch-conflict-ledger.jsonl"; : > "$BFL2"
 CR_LEDGER="$BFL2" bash "$LA" finding --batch-file "$BF2" 2>"$tmp/batch-conflict.err"
 check "batch mode exits non-zero if ANY row refused" "$?" "3"
 check "batch mode still writes the non-conflicting rows" "$(wc -l < "$BFL2" | tr -d ' ')" "2"
-check "batch mode names the conflicting row in stderr" "$(grep -c 'c-1' "$tmp/batch-conflict.err")" "2"
+check "batch mode names the conflicting row in stderr" "$(grep 'c-1' "$tmp/batch-conflict.err" | grep -vc 'appended finding')" "2"
+check "HIMMEL-5155: batch mode confirms each written row, not the refused one" "$(grep -c '^ledger-append.sh: appended finding c-[12] at ' "$tmp/batch-conflict.err")" "2"
 
 # batch mode requires a pre-resolved full-SHA head per row (it does not
 # per-row shell out to normalize an abbreviation - that would reintroduce the
@@ -1610,5 +1611,22 @@ check "finding with no --branch on a detached HEAD is refused" "$?" "2"
 check "the refused empty-branch row wrote nothing" "$(grep -c '"head":"VB3"' "$VB")" "0"
 CR_LEDGER="$VB" bash "$LA" finding --branch b --head VB4 --model m --id vb-5 --severity major --file f --line 1
 check "control: finding with no --verdict (unadjudicated) is accepted" "$?" "0"
+
+# ── HIMMEL-5155: a fresh finding append prints one confirmation line (the AG-UI
+# journal mapper keys on it); a dedup no-op or a refusal prints none.
+CF="$tmp/confirm.jsonl"
+CR_LEDGER="$CF" bash "$LA" finding --branch b --head CFX1 --model m --id cf-1 --severity imp --file f --line 1 --verdict agreed 2>"$tmp/cf1.err"
+check "HIMMEL-5155: a fresh finding prints its confirmation line" "$(cat "$tmp/cf1.err")" 'ledger-append.sh: appended finding cf-1 at CFX1 -> {"verdict":"agreed"}'
+CR_LEDGER="$CF" bash "$LA" finding --branch b --head CFX1 --model m --id cf-1 --severity imp --file f --line 1 --verdict agreed 2>"$tmp/cf2.err"
+check "HIMMEL-5155: an identical repeat prints no confirmation" "$(grep -c 'appended finding' "$tmp/cf2.err")" "0"
+CR_LEDGER="$CF" bash "$LA" finding --branch b --head CFX1 --model m --id cf-1 --severity crit --file f --line 1 --verdict agreed 2>"$tmp/cf3.err"
+check "HIMMEL-5155: a refused conflicting rewrite prints no confirmation" "$(grep -c 'appended finding' "$tmp/cf3.err")" "0"
+CFB="$tmp/confirm-batch.jsonl"; : > "$CFB"
+CFR="$tmp/confirm-batch-rows.jsonl"
+printf '%s\n' '{"id":"cb-1","head":"0123456789abcdef0123456789abcdef01234567","branch":"b","model":"m","severity":"imp","file":"f","line":1,"verdict":""}' > "$CFR"
+CR_LEDGER="$CFB" bash "$LA" finding --batch-file "$CFR" 2>"$tmp/cb1.err"
+check "HIMMEL-5155: a fresh batch row prints its confirmation line" "$(cat "$tmp/cb1.err")" "ledger-append.sh: appended finding cb-1 at 01234567"
+CR_LEDGER="$CFB" bash "$LA" finding --batch-file "$CFR" 2>"$tmp/cb2.err"
+check "HIMMEL-5155: a repeated batch row prints no confirmation" "$(grep -c 'appended finding' "$tmp/cb2.err")" "0"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

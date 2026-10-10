@@ -125,7 +125,12 @@ export function extractVerdicts(text: string): VerdictUpdate[] {
 // row's --head rides along so the caller can skip a row recorded against
 // another review.
 export function extractLedgerVerdicts(command: string): VerdictUpdate[] {
-  const out: VerdictUpdate[] = [];
+  return extractLedgerRows(command).map(({ verb: _, ...v }) => v);
+}
+
+// The same rows with the ledger verb each came from, so a reader can match a row to its own confirmation line.
+export function extractLedgerRows(command: string): (VerdictUpdate & { verb: "finding" | "amend" })[] {
+  const out: (VerdictUpdate & { verb: "finding" | "amend" })[] = [];
   for (const rest of command.split(LEDGER_CALL).slice(1)) {
     const call = SHELL_COMMAND.exec(rest)![0];
     const verb = /^\S+/.exec(call)?.[0];
@@ -142,7 +147,7 @@ export function extractLedgerVerdicts(command: string): VerdictUpdate[] {
     const id = flag(call, "id");
     if (!id || !verdict || !LEDGER_VERDICTS.has(verdict as Verdict)) continue;
     const head = extractHead(call);
-    out.push({ id, verdict: verdict as Verdict, ...(ticket ? { ticket } : {}), ...(head ? { head } : {}) });
+    out.push({ id, verdict: verdict as Verdict, ...(ticket ? { ticket } : {}), ...(head ? { head } : {}), verb: verb as "finding" | "amend" });
   }
   return out;
 }
