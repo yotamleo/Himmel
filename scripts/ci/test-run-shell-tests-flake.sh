@@ -487,12 +487,23 @@ fi
 # with the checkout's own plain-https origin, which a stale copy hashes the same
 # way, so only a structural check catches a re-added copy in either caller.
 echo "== F19: neither caller defines the id functions itself =="
+f19_re='^[[:space:]]*(function[[:space:]]+)?(_flake_norm_url|_flake_repo_id)[[:space:]]*(\(\))?[[:space:]]*(\{|$)'
+f19_ctl=$(mktemp) || exit 1
+printf '_flake_repo_id() {\n  :\n}\n' > "$f19_ctl"
+grep -Eq "$f19_re" "$f19_ctl"; f19_rc=$?
+rm -f "$f19_ctl"
+if [ "$f19_rc" -eq 0 ]; then
+  pass "F19: the matcher finds a definition (positive control)"
+else
+  fail "F19: the matcher missed a known definition, rc=$f19_rc"
+fi
 for f in scripts/ci/run-shell-tests.sh scripts/observability/suite-flake-summary.sh; do
-  if grep -Eq '^[[:space:]]*(function[[:space:]]+)?(_flake_norm_url|_flake_repo_id)[[:space:]]*(\(\))?[[:space:]]*(\{|$)' "$RUNNER_ROOT/$f"; then
-    fail "F19: $f defines _flake_norm_url or _flake_repo_id itself"
-  else
-    pass "F19: $f defines neither id function"
-  fi
+  grep -Eq "$f19_re" "$RUNNER_ROOT/$f"; f19_rc=$?
+  case "$f19_rc" in
+    0) fail "F19: $f defines _flake_norm_url or _flake_repo_id itself" ;;
+    1) pass "F19: $f defines neither id function" ;;
+    *) fail "F19: $f could not be read, grep rc=$f19_rc" ;;
+  esac
 done
 
 rst_tally
