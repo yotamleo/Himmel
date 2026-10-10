@@ -932,24 +932,30 @@ function main() {
     process.exit(2);
   }
   // HIMMEL-5171: a session no recorder vouched for says so once, in a
-  // systemMessage. The child's stdout is captured only on that one call, so the
-  // hook's own JSON can carry it; plain-text output is passed through untouched.
-  const notice = integrity.unvouched ? takeUnvouchedNotice(sessionId, hookScript) : null;
+  // systemMessage. The child's stdout is captured only while the session is
+  // unvouched, so the hook's own JSON can carry it. The once-per-session flag is
+  // taken only after the output is known to be deliverable (empty or a JSON
+  // object); plain-text output is passed through untouched and leaves the flag
+  // for the next call. maxBuffer is raised so a verbose hook is not killed by
+  // spawnSync's 1 MiB default now that stdout is no longer inherited.
+  const capture = integrity.unvouched === true;
   const result = spawnSync(bash, hookArgs, {
     input,
-    stdio: ['pipe', notice ? 'pipe' : 'inherit', 'inherit'],
+    stdio: ['pipe', capture ? 'pipe' : 'inherit', 'inherit'],
     env: process.env,
     windowsHide: true,   // HIMMEL-2043
-    ...(notice ? { encoding: 'utf8' } : {}),
+    ...(capture ? { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 } : {}),
   });
   if (result.error && !isRecoverableEpipe(result)) {
+    if (capture && typeof result.stdout === 'string') process.stdout.write(result.stdout);
     process.stderr.write(`run-hook-with-bash: failed to start ${bash}: ${result.error.message}\n`);
     process.exit(2);
   }
-  if (notice) {
+  if (capture) {
     const out = typeof result.stdout === 'string' ? result.stdout : '';
     const parsed = out.trim() ? parseJsonObject(out) : {};
-    if (parsed) {
+    const notice = parsed ? takeUnvouchedNotice(sessionId, hookScript) : null;
+    if (parsed && notice) {
       parsed.systemMessage = typeof parsed.systemMessage === 'string' && parsed.systemMessage
         ? `${parsed.systemMessage}\n${notice}` : notice;
       process.stdout.write(`${JSON.stringify(parsed)}\n`);

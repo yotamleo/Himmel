@@ -322,6 +322,26 @@ if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g8.out" >
 else
   bad "HIMMEL-5171 chain notice: expected rc=0 + systemMessage, got rc=$rc out=$(cat "$T/g8.out") err=$(cat "$T/g8.err")"
 fi
+# A hook whose stdout is not JSON cannot carry the notice: its output passes
+# through untouched and the once-per-session flag is left for a call that can.
+PLAIN="$PROJECT/scripts/hooks/plain-guard.sh"
+printf '#!/usr/bin/env bash\nprintf "plain text\\n"\n' > "$PLAIN"
+gone_dir g9; rm -f "$T/g9/$SID.json"; printf 'started\n' > "$T/g9/$SID.recorder"
+touch -t 202001010000 "$T/g9/$SID.recorder"
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g9" \
+  node "$LAUNCHER" --optional "$PLAIN" >"$T/g9.out" 2>"$T/g9.err"
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$T/g9.out")" = "plain text" ] && [ ! -e "$T/g9/$SID.recorder-notified" ]; then
+  ok "HIMMEL-5171: plain-text hook output passes through and does not consume the notice"
+else
+  bad "HIMMEL-5171 plain output: expected rc=0, 'plain text', no notified flag, got rc=$rc out=$(cat "$T/g9.out") dir=$(ls "$T/g9")"
+fi
+gone_run g9 "$T/g9"; rc=$?
+if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g9.out" >/dev/null 2>&1; then
+  ok "HIMMEL-5171: the notice is delivered by the next call whose output is JSON"
+else
+  bad "HIMMEL-5171 deferred notice: expected systemMessage, got rc=$rc out=$(cat "$T/g9.out") err=$(cat "$T/g9.err")"
+fi
 # The deny a deleted-after-verified-publish record earns names the recovery.
 if grep -q 'record-hook-integrity.sh' "$T/g1.err" && grep -q "$SID.recorder" "$T/g1.err"; then
   ok "HIMMEL-5171: the missing-record deny names the manual recovery (marker + recorder)"
