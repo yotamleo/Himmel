@@ -25,6 +25,8 @@
 #   F13 a prior flake of the same suite name from another repo, or an old row
 #       with no repo id, never raises the ticket line (HIMMEL-5121)
 #   F14 a suite that fails both attempts keeps BOTH logs under FAIL_LOG_DIR
+#   F15 a repo id override with a backslash or quote is reduced to a safe
+#       charset and still matches its own rows
 #
 # Usage: bash scripts/ci/test-run-shell-tests-flake.sh
 set -uo pipefail
@@ -310,6 +312,22 @@ if [ "$rc" -eq 1 ] && grepq "$logs" -F 'distinct failure of attempt 1' \
   pass "F14: both attempts' logs are preserved under FAIL_LOG_DIR"
 else
   fail "F14: rc=$rc logs: $(ls "$sb/logs" 2>&1) :: $logs"
+fi
+rm -rf "$sb"
+fi
+
+# --- F15 ------------------------------------------------------------------------
+echo "== F15: a repo id override with a backslash or quote still matches its own rows =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake15.XXXXXX") || { fail "F15: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+now=$(date +%s)
+printf '{"suite":"test-flaky.sh","repo":"a_b_c","case":"","sha":"x","run":"","ts":%s}\n' "$((now - 3600))" > "$sb/ledger.jsonl"
+run_flake "$sb" SUITE_FLAKE_REPO_ID='a\b"c'
+if [ "$rc" -eq 0 ] && grepq "$out" -F '[FLAKE]' && grepq "$out" -F 'file a ticket'; then
+  pass "F15: the override is reduced to a safe charset, so the repeat check matches"
+else
+  fail "F15: rc=$rc out: $out ledger: $(cat "$sb/ledger.jsonl" 2>&1)"
 fi
 rm -rf "$sb"
 fi
