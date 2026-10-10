@@ -39,11 +39,26 @@ export type ConsoleRoute = { kind: "console"; name: string; text: string; thread
 
 export type LiveConsole = { name: string; hb: number; bucket: string; project: string };
 
+export type ArmedConsole = LiveConsole & { busy: boolean };
+
+// HIMMEL-5125: a console mid-turn has no fresh waiter heartbeat, but its armed
+// inbox is still read: the next waiter resumes from <inbox>.cursor. Past this
+// age (or after a non-wake exit) the console is treated as released or dead.
+const LIVE_MAX_AGE_MS = 300_000;
+const BUSY_MAX_AGE_MS = 1_800_000;
+export const BUSY_NOTE = "console is busy, will pick up on next wait";
+
 export async function liveConsoles(root: string, now = Date.now()): Promise<LiveConsole[]> {
+  return (await armedConsoles(root, now)).filter(c => !c.busy).map(({ busy: _busy, ...c }) => c);
+}
+
+// Armed consoles that can take a queued line: a fresh waiter, or a busy one (a
+// stale waiter heartbeat, or an exit on a console-wait.sh `wake-*` reason).
+export async function armedConsoles(root: string, now = Date.now()): Promise<ArmedConsole[]> {
   const dir = join(root, "consoles");
   let files: string[];
   try { files = await readdir(dir); } catch { return []; }
-  const live: LiveConsole[] = [];
+  const live: ArmedConsole[] = [];
   for (const f of files.sort()) {
     if (!f.endsWith(".md.wait")) continue;
     const name = f.slice(0, -8);
@@ -51,20 +66,22 @@ export async function liveConsoles(root: string, now = Date.now()): Promise<Live
     if (!inbox) continue;
     let raw: string;
     try { raw = await readFile(inbox + ".wait", "utf8"); } catch { continue; }
-    const match = /^hb=(\d+) pid=\d+ key=\S+ tick=(?:ok|fail|-) state=(waiting|sampling)$/.exec(raw.trim());
+    const match = /^hb=(\d+) pid=\d+ key=\S+ tick=(?:ok|fail|-) state=(waiting|sampling|exited)(?: exit=(\S+))?$/.exec(raw.trim());
     if (!match) continue;
     const hb = Number(match[1]);
     const age = now - hb * 1000;
-    if (!Number.isSafeInteger(hb) || age < 0 || age >= 300_000) continue;
+    if (!Number.isSafeInteger(hb) || age < 0 || age >= BUSY_MAX_AGE_MS) continue;
+    const exited = match[2] === "exited";
+    if (exited && !match[3]?.startsWith("wake-")) continue;
     try { if (!(await stat(inbox)).isFile()) continue; } catch { continue; }
     let meta: { bucket?: string; project?: string } = {};
     try { meta = JSON.parse(await readFile(inbox + ".meta.json", "utf8")); } catch {}
-    live.push({ name, hb, bucket: typeof meta?.bucket === "string" ? meta.bucket : "unknown", project: typeof meta?.project === "string" ? meta.project : "unknown" });
+    live.push({ name, hb, busy: exited || age >= LIVE_MAX_AGE_MS, bucket: typeof meta?.bucket === "string" ? meta.bucket : "unknown", project: typeof meta?.project === "string" ? meta.project : "unknown" });
   }
   return live;
 }
 
-const describeConsoles = (live: LiveConsole[]) => live.map(c => `${c.name} — hb=${c.hb} (${new Date(c.hb * 1000).toISOString()}) bucket=${c.bucket} project=${c.project}`).join("\n");
+const describeConsoles = (live: (LiveConsole & { busy?: boolean })[]) => live.map(c => `${c.name} — hb=${c.hb} (${new Date(c.hb * 1000).toISOString()}) bucket=${c.bucket} project=${c.project}${c.busy ? " (busy)" : ""}`).join("\n");
 
 // Same refusals as console-kit/inbox-send.sh (empty, path separator, `..`,
 // whitespace) — the path is built from this value. The router's charset already
@@ -99,14 +116,14 @@ export async function routeFleetCommand(
     return;
   }
   const pinned = msg.reply_to_message_id == null ? null : await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id);
-  const live = await liveConsoles(root);
+  const live = await armedConsoles(root);
   const target = pinned ? live.find(c => c.name === pinned) : live.length === 1 ? live[0] : undefined;
   if (!target) {
     await reply(msg.chat_id, pinned ? `⚠️ console ${pinned} is stale or not live — nothing was queued.` : live.length > 1 ? `More than one console is live; reply to its announcement or answer:\n${describeConsoles(live)}` : "⚠️ no live console — nothing was queued.");
     return;
   }
   const text = route.verb === "status" ? "fleet status" : `${route.verb}${route.leg ? ` ${route.leg}` : ""}`;
-  await routeToConsole(root, msg, { kind: "console", name: target.name, text, thread: true }, (chat, ack, name) => reply(chat, name ? `queued ${text} → console ${name}` : ack, name));
+  await routeToConsole(root, msg, { kind: "console", name: target.name, text, thread: true }, (chat, ack, name) => reply(chat, name ? `queued ${text} → console ${name}${ack.includes(BUSY_NOTE) ? ` — ${BUSY_NOTE}` : ""}` : ack, name));
 }
 
 export async function routeToConsole(
@@ -135,13 +152,29 @@ export async function routeToConsole(
   const named = file && await stat(file).then(s => s.isFile(), () => false);
   if (!named) {
     if (route.thread) { await say(`⚠️ no console "${name}" has an armed inbox — nothing was sent.`); return; }
-    const live = await liveConsoles(root);
-    if (live.length !== 1) {
-      await say(live.length ? `More than one console is live; choose /console <name> <text>:\n${describeConsoles(live)}` : `⚠️ no live console${name ? ` (requested "${name}")` : ""} — nothing was sent.`);
-      return;
+    const live = await armedConsoles(root);
+    if (live.length === 1) {
+      text = name ? `${name} ${text}` : text;
+      name = live[0].name;
+    } else {
+      // HIMMEL-5125: with several armed consoles, a unique case-insensitive
+      // fragment (prefix, suffix or substring) of one name routes there and is
+      // stripped from the text, as a full name is.
+      // The narrowest tier with a hit decides, so "CO" finds `...10CO-roadmap-
+      // console` rather than every name containing "console".
+      const frag = name && name.length >= 2 ? name.toLowerCase() : "";
+      const tiers = frag ? [
+        (c: ArmedConsole) => c.name.includes(name!),
+        (c: ArmedConsole) => c.name.toLowerCase().startsWith(frag) || c.name.toLowerCase().endsWith(frag),
+        (c: ArmedConsole) => c.name.toLowerCase().includes(frag),
+      ] : [];
+      const hits = tiers.map(t => live.filter(t)).find(h => h.length) ?? [];
+      if (hits.length === 1) name = hits[0].name;
+      else {
+        await say(hits.length > 1 ? `More than one console matches "${name}"; choose /console <name> <text>:\n${describeConsoles(hits)}` : live.length ? `More than one console is live; choose /console <name> <text>:\n${describeConsoles(live)}` : `⚠️ no live console${name ? ` (requested "${name}")` : ""} — nothing was sent.`);
+        return;
+      }
     }
-    text = name ? `${name} ${text}` : text;
-    name = live[0].name;
     file = consoleInboxPath(root, name);
   }
   if (!file) return;
@@ -150,7 +183,8 @@ export async function routeToConsole(
   // check (HIMMEL-3440) — no separate existsSync() step left to race.
   const delivered = await appendIfExists(file, `- ${hhmm()} [telegram from=${msg.from} chat=${msg.chat_id}] ${foldLine(text)}`);
   if (!delivered) { await say(`⚠️ no console "${name}" is listening (it has not armed its inbox) — nothing was sent.`); return; }
-  await say(`→ console ${name}`, name);
+  const busy = (await armedConsoles(root)).some(c => c.name === name && c.busy);
+  await say(`→ console ${name}${busy ? ` — queued, ${BUSY_NOTE}` : ""}`, name);
 }
 
 function replyPath(root: string, chat: number, message: number): string | null {
