@@ -412,7 +412,7 @@ echo "== HIMMEL-4545 over-deny trim: plain literal names under an unproven cwd =
 # contents landing on state / .himmel / HOME, so those shapes allow and every
 # shape that can spill a directory or name a computed word still denies.
 row "4545 cp name after \$( ) (trim)"        allow "n=\$(date +%H); cp $T/src/other.txt copy.txt"
-row "4545 mv computed dir, literal names (trim)" allow "S=/tmp/s; cd \$S && mv \$S/legs.new \$S/legs.txt"
+row "4545 mv computed cd dir stays denied"  deny  "S=/tmp/s; cd \$S && mv \$S/legs.new \$S/legs.txt"
 row "4545 backtick then cp to name (trim)"  allow "echo \`date\` ; cp $T/src/other.txt backup.txt"
 row "4545 arithmetic then cp to name (trim)" allow "x=\$((1|2)); cp /etc/hosts f"
 row "4545 rsync file to name (trim)"        allow "n=\$(date +%H); rsync -a $T/src/other.txt out.txt"
@@ -470,6 +470,14 @@ row "4545 ln -sf over plain symlink (unproven cwd)" deny  "n=\$(date +%H); ln -s
 row "4545 cp to plain symlink chain (unproven cwd)" deny  "n=\$(date +%H); cp $T/src/other.txt plainlink2" "$T/cwl"
 row "4545 cp to state-dir symlink (unproven cwd)"   deny  "n=\$(date +%H); cp $T/src/other.txt statelink" "$T/cwl"
 row "4545 cp to plain name, no link (unproven ctrl)" allow "n=\$(date +%H); cp $T/src/other.txt nolink" "$T/cwl"
+# A literal absolute cd moves the cwd to a directory the payload does not
+# name: the link there is resolved; any other directory change stays denied.
+row "4545 cd abs then cp to plain symlink"          deny  "cd $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 cd abs then mv to plain symlink chain"    deny  "cd $T/cwl; mv $T/src/other.txt plainlink2" "$T"
+row "4545 pushd abs then cp to state-dir symlink"   deny  "pushd $T/cwl && cp $T/src/other.txt statelink" "$T"
+row "4545 cd abs then cd rel then cp to symlink"    deny  "cd $T && cd cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 cd rel then cp to plain symlink"          deny  "cd cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 cd abs then cp to plain name, no link"    allow "cd $T/cwl && cp $T/src/other.txt nolink" "$T"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or
 # relocate the lift's whole tree; a plain-name test alone would pass it.
 row "4545 ln -s abs HOME src still denies"  deny  "cd /tmp && ln -s $HOME link"

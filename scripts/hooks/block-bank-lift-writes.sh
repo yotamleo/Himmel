@@ -894,6 +894,11 @@ set_rule() {
 # find -execdir, a `(` or backtick (subshell, $( ), <( )), a { } brace group,
 # env/sudo with -C/-i, and a shell running a -c string.
 DIRWORD_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd|eval|su|runuser|chroot)([^A-Za-z0-9_.-]|$)|CDPATH|chdir|-execdir|[(`]|(^|[[:space:];&|])[{]([[:space:]]|$)|(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*[Ci]|(^|[^A-Za-z0-9_.-])(bash|sh|zsh|dash|ksh|mksh|ash|fish|busybox)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*c'
+# DIRWORD_RE without its `(`/backtick and `{ }` alternatives: the words that
+# can move the cwd themselves. A bare subshell, $( ) or brace group does not
+# (what it runs is read as text), so _plain_name_copy reads this one after it
+# has accounted for every literal absolute `cd`.
+DIRMOVE_RE=${DIRWORD_RE/'|[(`]|(^|[[:space:];&|])[{]([[:space:]]|$)'/}
 # tar/unzip read options from these variables. A variable can be set in many
 # forms (prefix, export, env, declare/typeset/local, readonly, printf -v, read,
 # a nameref, +=, a nested body), so the BARE name anywhere in the raw text or
@@ -966,6 +971,24 @@ _plain_name_copy() {
             esac
             ;;
     esac
+    # The cwd is unproven because of a directory-changing word. A literal
+    # absolute `cd`/`pushd <dir>` names where the copy lands: the link is
+    # looked up there too. Any other directory-changing word (a relative or
+    # computed cd, eval, a subshell, ...) leaves the cwd unknown: refused.
+    local rest wrest dir re
+    rest=$CMD wrest=$WTOK_SP
+    re='(^|[^A-Za-z0-9_.-])(cd|pushd)[[:space:]]+(--[[:space:]]+)?(/[A-Za-z0-9_./+@%,:=-]*)([[:space:];&|]|$)'
+    while [[ "$rest" =~ $re ]]; do
+        dir=${BASH_REMATCH[4]}
+        case "$(lift_ref "${dir%/}/$dest")" in
+            LIFT|STATE|HIMMEL|HOME) return 1 ;;
+        esac
+        rest=${rest/"${BASH_REMATCH[0]}"/ }
+    done
+    while [[ "$wrest" =~ $re ]]; do
+        wrest=${wrest/"${BASH_REMATCH[0]}"/ }
+    done
+    [ "$(printf '%s\n%s' "$rest" "$wrest" | grep -Ec "$DIRMOVE_RE")" = 0 ] || return 1
     return 0
 }
 
