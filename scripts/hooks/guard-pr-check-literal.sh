@@ -983,7 +983,10 @@ git_mentions_only() { # git_mentions_only <command-word index>
         esac
         # An unknown global option (`-P`, `--bare`, ...) leaves sub='*', so the
         # builtin arm below never sees the subcommand; arm it from the word.
-        if [ -z "$bsub" ] && [ "$sub" = '*' ]; then
+        # Re-armed on every later bisect/rebase word: a valued global option
+        # after sub='*' (`-P --namespace bisect rebase -x`) is not skipped, so
+        # its value can be mistaken for the subcommand; the real one re-arms.
+        if [ "$sub" = '*' ]; then
             case "$w" in bisect | rebase) bsub=$w; bnext=1 ;; esac
         fi
         if [ "$dir" = 1 ]; then
@@ -1046,7 +1049,10 @@ readers_only() { # true when every command the command line runs is a reader
     # no word is known, so no option can be proven a pathspec mention.
     st_tokenize "$cmd" || {
         PR_TOKFAIL=1
-        [[ $cmd =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
+        # The command word itself may be unparseable (`g\it`, `g''it`): match
+        # the git word on the text with quotes and backslashes removed.
+        pr_unq=${cmd//[\\\'\"]/}
+        [[ $cmd =~ $PR_GITWORD_RE || $pr_unq =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
         return 1
     }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1

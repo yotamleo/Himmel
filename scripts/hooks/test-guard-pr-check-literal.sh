@@ -1834,6 +1834,26 @@ for v in \
     'git rebase -rx main'; do
     run "HIMMEL-5102 round2 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# Round 3 (judge j2328b): a valued global option after an unknown one takes its
+# value as the subcommand, and a command word the tokenizer cannot parse.
+# shellcheck disable=SC2016 # a literal ${x:-y} is the tokenizer-failure payload
+for v in \
+    'git -P --namespace bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P --namespace rebase bisect run scripts/cr/pr-check-env.sh' \
+    'git "--namespace" bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --bare --namespace bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P -C bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P --git-dir bisect bisect run scripts/cr/pr-check-env.sh' \
+    'git -P --work-tree bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'g\it rebase -x scripts/cr/pr-check-env.sh main; : ${x:-y}' \
+    "g''it bisect run scripts/cr/pr-check-env.sh; : \${x:-y}"; do
+    run "HIMMEL-5102 round3 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git -P --namespace bisect log -- scripts/cr/pr-check-env.sh' \
+    'git -P --namespace rebase main'; do
+    run "HIMMEL-5102 round3 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo
