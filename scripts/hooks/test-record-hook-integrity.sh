@@ -1053,6 +1053,8 @@ if /bin/bash -c '[ "${BASH_VERSINFO[0]}" -lt 4 ]' 2>/dev/null; then
   else
     bad "row26b: rc=$rc26 err=$(head -3 "$T/row26.err") record=$(cat "$OUT26/sess-26.json" 2>/dev/null || echo '<no record>')"
   fi
+else
+  printf 'SKIP %s\n' "row26b: /bin/bash is not bash 3 on this host (row26a still guards the source)"
 fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
