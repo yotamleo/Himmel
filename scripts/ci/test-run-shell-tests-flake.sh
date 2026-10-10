@@ -332,4 +332,50 @@ fi
 rm -rf "$sb"
 fi
 
+# --- F16 ------------------------------------------------------------------------
+# The default repo id is computed by _flake_repo_id; the runner cannot be pointed
+# at a fixture repo (it always means its own checkout), so the two functions are
+# lifted out of it and run against throwaway repos.
+echo "== F16: one repo is one id across URL spellings and worktrees =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake16.XXXXXX") || { fail "F16: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+fns=$(sed -n '/^_flake_norm_url() {/,/^}/p;/^_flake_repo_id() {/,/^}/p' "$RUNNER")
+# shellcheck disable=SC1090
+eval "$fns"
+# The runner drops these before any git call; a direct run of this suite (a hook
+# or wrapper that exported them) must not point the fixtures at another repo.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES
+gq() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+mk_url_repo() { # <dir> <origin-url>
+  mkdir -p "$1" && git -C "$1" init -q && git -C "$1" remote add origin "$2"
+}
+mk_url_repo "$sb/u1" "https://GitHub.com/o/r.git"
+mk_url_repo "$sb/u2" "https://github.com/o/r"
+mk_url_repo "$sb/u3" "git@github.com:o/r.git"
+mk_url_repo "$sb/u4" "ssh://git@github.com/o/r.git"
+mk_url_repo "$sb/u5" "https://tok@github.com/o/r/"
+mk_url_repo "$sb/u6" "https://github.com/o/other.git"
+i1=$(_flake_repo_id "$sb/u1" 2>&1); i2=$(_flake_repo_id "$sb/u2" 2>&1)
+i3=$(_flake_repo_id "$sb/u3" 2>&1); i4=$(_flake_repo_id "$sb/u4" 2>&1)
+i5=$(_flake_repo_id "$sb/u5" 2>&1); i6=$(_flake_repo_id "$sb/u6" 2>&1)
+if [ -n "$i1" ] && [ "$i1" = "$i2" ] && [ "$i1" = "$i3" ] && [ "$i1" = "$i4" ] && [ "$i1" = "$i5" ] \
+    && [ "$i1" != "$i6" ]; then
+  pass "F16: https, https+.git, scp, ssh and credentialed spellings agree; another repo differs"
+else
+  fail "F16: ids: [$i1] [$i2] [$i3] [$i4] [$i5] vs other [$i6]"
+fi
+case "$i1" in *github*|*tok*) fail "F16: the id leaks the URL: $i1" ;; esac
+mkdir -p "$sb/n1" "$sb/n2" && git -C "$sb/n1" init -q && git -C "$sb/n2" init -q
+gq -C "$sb/n1" commit -q --allow-empty -m x
+git -C "$sb/n1" worktree add -q "$sb/n1-wt" -b wt 2>/dev/null
+d1=$(_flake_repo_id "$sb/n1" 2>&1); d2=$(_flake_repo_id "$sb/n1-wt" 2>&1); d3=$(_flake_repo_id "$sb/n2" 2>&1)
+if [ -n "$d1" ] && [ "$d1" = "$d2" ] && [ "$d1" != "$d3" ]; then
+  pass "F16: a no-origin repo and its worktree share an id; another no-origin repo differs"
+else
+  fail "F16: no-origin ids: main [$d1] worktree [$d2] other [$d3]"
+fi
+rm -rf "$sb"
+fi
+
 rst_tally
