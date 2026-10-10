@@ -898,7 +898,8 @@ DIRWORD_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd|eval|su|runuser|chroot)([^A-Za-z0-
 # DIRWORD_RE without its `(`/backtick and `{ }` alternatives: the words that
 # can move the cwd themselves. A bare subshell, $( ) or brace group does not
 # (what it runs is read as text), so _plain_name_copy reads this one after it
-# has accounted for every literal absolute `cd`.
+# has accounted for every literal absolute `cd`, then refuses a command word a
+# substitution or variable may compute (_peel_subst).
 DIRMOVE_RE=${DIRWORD_RE/'|[(`]|(^|[[:space:];&|])[{]([[:space:]]|$)'/}
 # tar/unzip read options from these variables. A variable can be set in many
 # forms (prefix, export, env, declare/typeset/local, readonly, printf -v, read,
@@ -964,7 +965,7 @@ _lit_name() {
 _plain_name_copy() {
     local dest="$1" flags="$2" s
     shift 2
-    [ "$flags" = 00 ] || return 1
+    [ "$flags" = 000 ] || return 1
     _lit_name "$dest" || return 1
     for s in "$@"; do _lit_name "$s" || return 1; done
     case "$CWD" in
@@ -996,14 +997,48 @@ _plain_name_copy() {
         wrest=${wrest/"${BASH_REMATCH[0]}"/ }
     done
     [ "$(printf '%s\n%s' "$rest" "$wrest" | grep -Ec "$DIRMOVE_RE")" = 0 ] || return 1
+    # DIRMOVE_RE reads the text, so a command word computed by a substitution
+    # (`$(printf c%s d) /dir`, a backtick, `. <(...)`, `$x /dir`) is invisible
+    # to it, and the base denied every ( or backtick. Peel each substitution
+    # to `$SUB`; every segment that still carries an expansion must then be an
+    # echo/printf, an assignment-only word list, or a copy verb.
+    local t seg
+    for t in "$rest" "$wrest"; do
+        _peel_subst "$t" || return 1
+        while IFS= read -r seg; do
+            case "$seg" in *'$'*|*'`'*) ;; *) continue ;; esac
+            [[ "$seg" =~ ^[[:space:]]*(echo|printf|cp|mv|ln|rsync|install)([[:space:]]|$) ]] && continue
+            [[ "$seg" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]*)+$ ]] && continue
+            return 1
+        done <<EOF_SEG
+$(printf '%s' "$PEELED" | tr ';&|(){}' '\n')
+EOF_SEG
+    done
     return 0
+}
+
+# _peel_subst <text> -> sets PEELED to the text with every innermost $( ),
+# $(( )), <( ), >( ) and backtick pair replaced by `$SUB`; returns 1 when a
+# substitution is left unpeeled (nested arithmetic parens, a lone backtick).
+# shellcheck disable=SC2016  # the patterns name literal substitution shapes
+_peel_subst() {
+    PEELED=$1
+    local i=0 prev
+    while :; do
+        case "$PEELED" in *'$('*|*'<('*|*'>('*|*'`'*) ;; *) return 0 ;; esac
+        [ "$i" -lt 20 ] || return 1
+        prev=$PEELED
+        PEELED=$(printf '%s' "$PEELED" | sed -E -e 's/\$\(\([^()]*\)\)/$SUB/g' -e 's/[$<>]\([^()]*\)/$SUB/g' -e 's/`[^`]*`/$SUB/g')
+        [ "$PEELED" != "$prev" ] || return 1
+        i=$((i + 1))
+    done
 }
 
 # check_copy <verb> <args...>: cp / mv / install / rsync / ln destination and
 # aliasing rules.
 check_copy() {
     local verb="$1"; shift
-    local tdir="" T=0 sym=0 a v kind src srcb need dest dk endopts=0 parents=0 rel
+    local tdir="" T=0 sym=0 a v kind src srcb need dest dk endopts=0 parents=0 rel optval=0
     local -a pos=()
     while [ $# -gt 0 ]; do
         a="$1"; shift
@@ -1018,6 +1053,10 @@ check_copy() {
             --no-dereference) [ "$verb" = ln ] && T=1 ;;
             --symbolic*|--link) sym=1 ;;
             --suffix|--mode|--owner|--group|--backup-dir|--rsh|--filter|--exclude|--include|--temp-dir|--partial-dir|--compare-dest|--copy-dest|--link-dest|--chmod|--chown) shift ;;
+            # a long option that carries a value can name a file the copy
+            # writes (rsync --log-file=plainlink); the plain-name allow
+            # refuses it
+            --*=*|--log-file|--write-batch|--only-write-batch) optval=1 ;;
             --*) ;;
             -?*)
                 v="${a#-}"
@@ -1075,7 +1114,7 @@ check_copy() {
     # one is judged as with a proven cwd. HIMMEL-4545: except a plain
     # file-to-name copy, which cannot reach the lift through any cwd.
     if _rel_unproven "$dest"; then
-        _plain_name_copy "$dest" "$T$parents" ${pos[@]+"${pos[@]}"} \
+        _plain_name_copy "$dest" "$T$parents$optval" ${pos[@]+"${pos[@]}"} \
             || deny "$verb writes to a relative destination ($dest): $UNPROVEN_FIX"
     fi
     # HIMMEL-4458: cp --parents / rsync -R (--relative) recreate the SOURCE's

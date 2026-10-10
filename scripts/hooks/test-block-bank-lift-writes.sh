@@ -486,6 +486,15 @@ row "4545 \"c\"d abs then cp to plain symlink"       deny  "\"c\"d $T/cwl && cp 
 row "4545 c\\d abs then mv to symlink chain"         deny  "c\\d $T/cwl; mv $T/src/other.txt plainlink2" "$T"
 row "4545 pu\\shd abs then cp to state-dir symlink"  deny  "pu\\shd $T/cwl && cp $T/src/other.txt statelink" "$T"
 row "4545 c\\d abs then cp to plain name, no link"   allow "c\\d $T/cwl && cp $T/src/other.txt nolink" "$T"
+# j2320c: a cd word computed by a substitution is unreadable as text; the base
+# denied every ( or backtick, and the trim must not turn that into an allow.
+row "4545 \$(printf cd) abs then cp to symlink"      deny  "\$(printf c%s d) $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 backtick cd abs then cp to symlink"        deny  "\`printf c%s d\` $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 source <( ) cd then cp to symlink"         deny  ". <(printf 'cd %s' $T/cwl) && cp $T/src/other.txt plainlink" "$T"
+row "4545 var holds cd after \$( ), then cp to link" deny  "n=\$(date +%H); x=cd; \$x $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 command \$(printf cd) abs then cp to link" deny  "command \$(printf c%s d) $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 \$( ) then cp to plain name, no link"      allow "echo \$(printf x); cp $T/src/other.txt nolink" "$T/cwl"
+row "4545 rsync --log-file= link after \$( )"        deny  "n=\$(date +%H); rsync -a --log-file=plainlink $T/src/other.txt out.txt" "$T/cwl"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or
 # relocate the lift's whole tree; a plain-name test alone would pass it.
 row "4545 ln -s abs HOME src still denies"  deny  "cd /tmp && ln -s $HOME link"
