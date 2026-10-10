@@ -1854,6 +1854,15 @@ for v in \
     'git -P --namespace rebase main'; do
     run "HIMMEL-5102 round3 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# Round 4 (codex-1): a later bisect/rebase operand word must not overwrite the
+# other builtin's armed state.
+for v in \
+    'git -P rebase bisect -x scripts/cr/pr-check-env.sh main' \
+    'git -P bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P rebase bisect --exec scripts/cr/pr-check-env.sh main'; do
+    run "HIMMEL-5102 round4 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+run "HIMMEL-5102 round4 control [git -P rebase bisect main] -> allow" 0 "$(payload 'git -P rebase bisect main' "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo

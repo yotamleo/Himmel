@@ -875,7 +875,7 @@ short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
 }
 git_mentions_only() { # git_mentions_only <command-word index>
     local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0 es
-    local bsub='' bnext=0 xc xch
+    local bsub='' bnext=0 rsub=0 xc xch
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -898,10 +898,12 @@ git_mentions_only() { # git_mentions_only <command-word index>
             # expanded word after rebase may be the run verb or an exec flag.
             case "$bsub" in
                 bisect) [ "$bnext" = 0 ] || { bnext=0; PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; } ;;
-                rebase) case "$w" in
-                        -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1 ;;
-                    esac ;;
             esac
+            if [ "$rsub" = 1 ]; then
+                case "$w" in
+                    -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1 ;;
+                esac
+            fi
             xp=1; j=$((j + 1)); continue
         fi
         # After --, option-shaped words are literal pathspec operands.
@@ -966,28 +968,31 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     bnext=0
                     [ "$w" != run ] || { PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; }
                 } ;;
-            rebase)
-                # -x takes the rest of the word as its command; -s/-X/-C/-S take
-                # theirs as a value, so a later x there is text.
-                case "$w" in
-                    --*) ;;
-                    -?*) xc=${w#-}
-                        while [ -n "$xc" ]; do
-                            xch=${xc:0:1}; xc=${xc:1}
-                            case "$xch" in
-                                x) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; break ;;
-                                s|X|C|S|r) break ;;
-                            esac
-                        done ;;
-                esac ;;
         esac
+        # rsub is independent of bsub: a later `bisect` operand word must not
+        # overwrite the armed rebase (`git -P rebase bisect -x CMD main`).
+        if [ "$rsub" = 1 ]; then
+            # -x takes the rest of the word as its command; -s/-X/-C/-S take
+            # theirs as a value, so a later x there is text.
+            case "$w" in
+                --*) ;;
+                -?*) xc=${w#-}
+                    while [ -n "$xc" ]; do
+                        xch=${xc:0:1}; xc=${xc:1}
+                        case "$xch" in
+                            x) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; break ;;
+                            s|X|C|S|r) break ;;
+                        esac
+                    done ;;
+            esac
+        fi
         # An unknown global option (`-P`, `--bare`, ...) leaves sub='*', so the
         # builtin arm below never sees the subcommand; arm it from the word.
         # Re-armed on every later bisect/rebase word: a valued global option
         # after sub='*' (`-P --namespace bisect rebase -x`) is not skipped, so
         # its value can be mistaken for the subcommand; the real one re-arms.
         if [ "$sub" = '*' ]; then
-            case "$w" in bisect | rebase) bsub=$w; bnext=1 ;; esac
+            case "$w" in bisect) bsub=bisect; bnext=1 ;; rebase) rsub=1 ;; esac
         fi
         if [ "$dir" = 1 ]; then
             dir=0
@@ -1017,7 +1022,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     reflog | remote | reset | rev-list | rev-parse | revert | \
                     shortlog | stash | status | tag | worktree)
                     bad=1; nsub=1
-                    case "$w" in bisect | rebase) bsub=$w; bnext=1 ;; esac ;;
+                    case "$w" in bisect) bsub=bisect; bnext=1 ;; rebase) rsub=1 ;; esac ;;
                 *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
             esac
             # A quoted word is not positively identified either.
