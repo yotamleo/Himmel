@@ -129,9 +129,16 @@ $candidates
 EOF
     root="${lockroot:-$primary}"
     if [ -n "$root" ] && [ -d "$root/.locks/go" ]; then
-        local newest pr sha
+        local newest pr sha f
         # shellcheck disable=SC2012  # GO filenames are <pr>.<sha>, always [0-9a-f.]
-        newest="$(ls -t "$root/.locks/go" 2>/dev/null | head -n 1)"
+        # Only ordinary <pr>.<40-hex sha> files: a fix-main-red.<pr>.<sha>.<run>
+        # FIX-GO (go.sh --fix-main-red, HIMMEL-5134) shares the directory.
+        newest=""
+        while IFS= read -r f; do
+            if printf '%s\n' "$f" | grep -qE '^[0-9]+\.[0-9a-f]{40}$'; then newest="$f"; break; fi
+        done <<EOF
+$(ls -t "$root/.locks/go" 2>/dev/null)
+EOF
         if [ -n "$newest" ]; then
             pr="${newest%%.*}"; sha="${newest#*.}"
             gofile="$pr.${sha:0:7}"

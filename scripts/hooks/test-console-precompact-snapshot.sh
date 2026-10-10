@@ -168,5 +168,26 @@ echo "== a workdir that cannot be created (parent is a file) -> exit 0 =="
 out="$(fire "$STDIN" HIMMEL_CONSOLE_DOC="$DOC" HIMMEL_CONSOLE_WORKDIR="$TMP/a-file/sub")"; rc=$?
 eq "exits 0" "$rc" 0
 
+echo "== a fix-main-red GO file newer than an ordinary GO is never the last GO (HIMMEL-5142) =="
+SHA_FIX=3333333333333333333333333333333333333333
+printf 'pr=14\nhead=%s\n' "$SHA_FIX" > "$ROOT/.locks/go/fix-main-red.14.$SHA_FIX.987654"
+touch -t 202609181200 "$ROOT/.locks/go/fix-main-red.14.$SHA_FIX.987654"
+out="$(fire "$STDIN" HIMMEL_CONSOLE_DOC="$DOC" HIMMEL_CONSOLE_WORKDIR="$TMP/work-fixgo")"; rc=$?
+eq "exits 0" "$rc" 0
+eq "go-file= skips the newer fix-main-red file" "$(field "$TMP/work-fixgo/precompact-1.snap" go-file)" "13.2222222"
+
+echo "== only a fix-main-red GO present -> go-file= empty (HIMMEL-5142) =="
+ROOT_FIXONLY="$TMP/root-fixonly"
+mkdir -p "$ROOT_FIXONLY/yotamleo/himmel" "$ROOT_FIXONLY/.locks/queue/$SLUG.lock" "$ROOT_FIXONLY/.locks/go"
+DOC_FIXONLY="$ROOT_FIXONLY/yotamleo/himmel/fix-console.md"
+cp "$DOC" "$DOC_FIXONLY"
+printf '{"session":"host-pid4242","host":"host","handover":"%s","started":"2026-09-18T10:00:00Z","heartbeat":"2026-09-18T10:00:00Z"}\n' "$DOC_FIXONLY" \
+    > "$ROOT_FIXONLY/.locks/queue/$SLUG.lock/owner.json"
+printf 'pr=14\nhead=%s\n' "$SHA_FIX" > "$ROOT_FIXONLY/.locks/go/fix-main-red.14.$SHA_FIX.987654"
+out="$(printf '%s' "$STDIN" | env -u HIMMEL_CONSOLE_DOC -u HIMMEL_CONSOLE_WORKDIR \
+    HOME="$HOME_FIX" HANDOVER_DIR="$ROOT_FIXONLY" HIMMEL_CONSOLE_DOC="$DOC_FIXONLY" HIMMEL_CONSOLE_WORKDIR="$TMP/work-fixonly" bash "$HOOK" 2>&1)"; rc=$?
+eq "exits 0" "$rc" 0
+eq "go-file= empty when only a fix GO exists" "$(field "$TMP/work-fixonly/precompact-1.snap" go-file)" ""
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
