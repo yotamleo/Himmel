@@ -211,7 +211,7 @@ def _split(command):
     return parts
 
 
-VAR_USE_RE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
+VAR_USE_RE = re.compile(r"(?<!\\)\$(?:\{(\w+)\}|(\w+))")
 
 
 def _resolve_vars(segs):
@@ -221,18 +221,21 @@ def _resolve_vars(segs):
     upgrade by running the command through a real shell parser if a spelling
     beyond this shows up in scored transcripts."""
     env, out = {}, []
+
+    def sub(m):
+        return env.get(m.group(1) or m.group(2), m.group(0))
+
     for seg in segs:
-        if env:
-            seg = VAR_USE_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), seg)
+        if env:  # single-quoted spans stay literal, as in the shell
+            seg = "".join(p if p.startswith("'") else VAR_USE_RE.sub(sub, p)
+                          for p in re.split(r"('[^']*')", seg))
         try:
             toks = shlex.split(seg, comments=True)
         except ValueError:
             toks = []
-        for t in toks:
-            m = re.match(r"^([A-Za-z_]\w*)=([^$`]*)$", t)
-            if not m:
-                break
-            env[m.group(1)] = m.group(2)
+        pairs = [re.match(r"^([A-Za-z_]\w*)=([^$`]*)$", t) for t in toks]
+        if toks and all(pairs):  # `VAR=x cmd` scopes VAR to cmd, so only a bare assignment persists
+            env.update((m.group(1), m.group(2)) for m in pairs)
         out.append(seg)
     return out
 

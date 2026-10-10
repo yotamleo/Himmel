@@ -202,6 +202,8 @@ check "a quoted \"\$f\" resolves" '[ "$(tt "f=scripts/a/test-x.sh; bash \"\$f\""
 check "an assignment among other setup and a && chain resolves" '[ "$(tt "cd d && f=a/test-x.sh && bash \$f")" = "[[\"test-x.sh\"], \"pass+fail\"]" ]'
 check "a variable assigned in no segment of this command does not resolve" '[ "$(tt "bash \$f")" = "null" ]'
 check "an unrelated variable does not resolve" '[ "$(tt "g=scripts/a/test-x.sh; bash \$f")" = "null" ]'
+check "a prefix assignment scoped to another command does not persist (codex-1)" '[ "$(tt "f=a/test-x.sh echo setup; bash \$f")" = "null" ]'
+check "a single-quoted or escaped \$f stays literal (codex-2)" '[ "$(tt "f=a/test-x.sh; bash '"'"'\$f'"'"'")" = "null" ] && [ "$(tt "f=a/test-x.sh; bash \\\$f")" = "null" ]'
 check "a non-test value is not a test run" '[ "$(tt "f=scripts/a/helper.sh; bash \$f")" = "null" ]'
 leg var-red-green 'f=scripts/a/test-x.sh; echo run; bash $f' "Exit code 1
 FAIL" 'f=scripts/a/test-x.sh; bash $f' "ok"
