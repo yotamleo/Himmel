@@ -57,6 +57,9 @@
 # REFUSEs: wait for the next cron or dispatch run. A run whose conclusion is
 # cancelled is cancelled whatever its job rows say, and --main-base-conclusion /
 # --base-cover-conclusion carry that, so the script no longer trusts the rows alone.
+# HIMMEL-5137: only success and failure are completed verdicts; any other conclusion
+# REFUSEs (cancelled routes a base to the cover), and none is accepted for the base
+# only with an empty file and never for a cover.
 # ponytail: the case lists are extracted from logs by the caller and taken as
 # given, so a wrong list can still mislead; upgrade path is parsing the failed
 # job logs here if that ever bites.
@@ -165,6 +168,20 @@ if [ "$psha" != "$head" ]; then
   exit 1
 fi
 
+# HIMMEL-5137: only success and failure are completed verdicts whose rows are trusted; cancelled
+# routes to the cover below; none means no run exists, so it must come with an empty file
+case "$bconc" in
+  success|failure|cancelled) ;;
+  none)
+    if awk -F'\t' 'NF {f=1} END {exit !f}' "$base"; then
+      echo "REFUSE — --main-base-conclusion is none (no run at the merge-base $bsha) but --main-base carries job rows: the input contradicts itself and proves nothing about the base. Do not merge forward."
+      exit 1
+    fi ;;
+  *)
+    echo "REFUSE — the merge-base run at $bsha concluded $bconc, not success or failure: it is not a completed verdict and proves nothing about the base. Wait for a completed main run; do not merge forward."
+    exit 1 ;;
+esac
+
 base_note=""
 verdict="$bsha"
 if is_cancelled "$base" || [ "$bconc" = cancelled ]; then
@@ -176,6 +193,12 @@ if is_cancelled "$base" || [ "$bconc" = cancelled ]; then
     echo "REFUSE — the covering run at $csha was cancelled too: it proves nothing about the base. Use the next COMPLETED main run; do not merge forward."
     exit 1
   fi
+  case "$cconc" in
+    success|failure) ;;
+    *)
+      echo "REFUSE — the covering run at $csha concluded $cconc, not success or failure: it is not a completed run and proves nothing about the base. Use the next COMPLETED main run; do not merge forward."
+      exit 1 ;;
+  esac
   # resolve both range ends to full shas: --is-ancestor is reflexive, so a short sha, S^0 or HEAD~1
   # naming the merge-base must not slip past a string compare; the ALLOW line names the resolved sha too
   if ! rcsha="$(git rev-parse --verify --quiet "$csha^{commit}")" || ! rcfrom="$(git rev-parse --verify --quiet "$cfrom^{commit}")"; then

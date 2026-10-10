@@ -237,6 +237,24 @@ runcov "merge-base run completed: its own verdict stands, a cover is a usage err
   --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
 runcov "merge-base run completed red, no cover: ALLOW as before" 0 'ALLOW.*a'
 
+# HIMMEL-5137: only success|failure are completed verdicts; none must come with an empty file
+runcov "base conclusion none with NON-empty rows, no cover: REFUSE (rows contradict none)" 1 'REFUSE.*none' --main-base-conclusion none
+runcov "base conclusion none with NON-empty rows + cover: REFUSE" 1 'REFUSE.*none' --main-base-conclusion none \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
+for c in timed_out neutral stale skipped startup_failure action_required; do
+  runcov "base conclusion $c with failure rows, no cover: REFUSE (not a completed verdict)" 1 "REFUSE.*$c" --main-base-conclusion "$c"
+done
+: > "$tmp/base"
+runcov "base conclusion none with an EMPTY file + red cover: ALLOW (the honest no-run flow)" 0 'ALLOW.*covering main run' --main-base-conclusion none \
+  --base-cover "$tmp/cover" --base-cover-conclusion failure --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "cover conclusion none with rows: REFUSE (a nonexistent run is not a completed cover)" 1 'REFUSE.*none' \
+  --base-cover "$tmp/cover" --base-cover-conclusion none --base-cover-sha "$CC" --base-cover-from "$CP"
+for c in timed_out neutral stale skipped startup_failure action_required; do
+  runcov "cover conclusion $c with failure rows: REFUSE (not a completed verdict)" 1 "REFUSE.*$c" \
+    --base-cover "$tmp/cover" --base-cover-conclusion "$c" --base-cover-sha "$CC" --base-cover-from "$CP"
+done
+printf 'a\tfailure\n' > "$tmp/base"
+
 # HIMMEL-5124 real-environment rows. The merge-base de9b2a8e8 (main after PR 2277) has NO CI run:
 #   gh run list --commit de9b2a8e82ecdc393fa7b5619525ff80107f5b61 --json databaseId,event,conclusion  ->  []
 # so --main-base is an empty file. Cover = job rows of run 38014176513 (main push 34d7d3d31, CI,
