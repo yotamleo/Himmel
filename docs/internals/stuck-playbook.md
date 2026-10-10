@@ -208,7 +208,9 @@ head>`). The PR's own green rollup is not the question here: main is.
    `--log-failed`) and decide whether your PR is the fix or merely unrelated.
 2. **Your PR is the fix:** add a commit-message line, in any commit of the PR,
    `Fixes-main-red: run=<red run id>`, or `Fixes-main-red: suite=<name>` where
-   `<name>` (4+ chars of `[A-Za-z0-9._-]`) is a **failed job** of that run, or a
+   `<name>` (4+ chars of `[A-Za-z0-9._-]`) is a **failed job** of that run (the
+   whole job name or its matrix base name, e.g. `shell-unit-shard`; never a
+   fragment), or a
    `test-*.sh` suite printed on a `##[error]` line of its failed log. It is
    verified against the run, never trusted: a wrong run id or an unrelated name
    is refused with the same exit 22. Trailers belong in the FIRST commit; a

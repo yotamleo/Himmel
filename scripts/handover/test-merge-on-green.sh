@@ -3867,7 +3867,7 @@ mog5115_commits() { printf '{"commits":[{"messageHeadline":"fix: x","messageBody
 STUB_RUN_LIST_JSON="$MOG_RUN_RED" run_mog 22 "5115-a: main's latest completed run is red → exit 22"
 assert_audit_has "5115-a: audited as a red-main refusal" "REFUSED reason=main-red"
 assert_err_has "5115-a: stderr names the red run" "37964772913"
-assert_err_has "5115-a: stderr names the commit range (base)" "7a635cad"
+assert_err_has "5115-a: stderr names the range base (only cancelled runs behind, so outside the window)" "previous run outside the listed window"
 assert_err_has "5115-a: stderr names the commit range (head)" "f343c0e2"
 assert_clear_not_invoked "5115-a: nothing mutated before the refusal"
 no_merge_call "5115-a: no merge call"
@@ -3906,6 +3906,23 @@ STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG" \
 STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_VIEW_FAIL=1 \
     STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=shell-unit-shard')" \
     run_mog 22 "5115-h: unreadable failed log → exit 22"
+
+# 5115-l — a fragment of a failed job name is not a job: `unit` sits inside
+# `shell-unit-shard (...)` but names nothing the run failed on.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=unit')" \
+    run_mog 22 "5115-l: fragment suite= is not a failed job → exit 22"
+
+# 5115-m — the declaration may be the commit subject on a one-line commit.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" \
+    STUB_PR_COMMITS_JSON='{"commits":[{"messageHeadline":"Fixes-main-red: run=37964772913","messageBody":""}]}' \
+    run_mog 0 "5115-m: declaration on the commit subject → merged"
+
+# 5115-n — the reported range base is the previous COMPLETED non-cancelled
+# sweep, not a cancelled run sitting between.
+STUB_RUN_LIST_JSON='[{"databaseId":300,"status":"completed","conclusion":"failure","event":"schedule","headSha":"aaaaaaaaaaaa1111111111111111111111111111"},{"databaseId":200,"status":"completed","conclusion":"cancelled","event":"push","headSha":"bbbbbbbbbbbb2222222222222222222222222222"},{"databaseId":100,"status":"completed","conclusion":"success","event":"schedule","headSha":"cccccccccccc3333333333333333333333333333"}]' \
+    run_mog 22 "5115-n: range base skips a cancelled run → exit 22"
+assert_err_has "5115-n: range runs from the previous completed sweep" "cccccccccccc..aaaaaaaaaaaa"
 
 # 5115-i — DECIDED: no completed run in the window means no red was observed.
 # Allowed, and the audit says so.

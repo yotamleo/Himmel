@@ -931,7 +931,9 @@ esac
 #     is a commit-message line in the PR: `Fixes-main-red: run=<run id>` (must
 #     equal the red run), or `Fixes-main-red: suite=<name>` (<name>, 4+ chars
 #     of [A-Za-z0-9._-], must be a failed JOB of that run per `gh run view
-#     --log-failed`, or — when it ends in .sh — appear on a `##[error]` line).
+#     --log-failed` — the whole job name or its matrix base name, never a
+#     fragment — or, when it ends in .sh, appear on a `##[error]` line). The
+#     line is read from the commit subject or body.
 #     Verified against the run, never trusted: an unrelated name is refused.
 #   - red and undeclared, or the run list / commits / log unreadable → exit 22.
 #   - no completed non-cancelled run in the window at all → DECIDED: nothing
@@ -953,9 +955,9 @@ mr_rows=$("$GH" run list --repo "$nwo" --branch "$default_branch" --workflow CI 
 mr_run="" mr_conc="" mr_head="" mr_base=""
 while IFS='|' read -r mr_id mr_status mr_c _ mr_sha; do
     [ -n "$mr_id" ] || continue
-    if [ -n "$mr_run" ]; then mr_base=$mr_sha; break; fi
     [ "$mr_status" = completed ] || continue
     case "$mr_c" in cancelled | skipped | null | "") continue ;; esac
+    if [ -n "$mr_run" ]; then mr_base=$mr_sha; break; fi
     mr_run=$mr_id mr_conc=$mr_c mr_head=$mr_sha
 done <<< "$mr_rows"
 if [ -z "$mr_run" ]; then
@@ -965,7 +967,7 @@ elif [ "$mr_conc" != success ]; then
     [ -n "$mr_base" ] || mr_range="(previous run outside the listed window)..${mr_head:0:12}"
     mr_how="declare the fix with a commit-message line 'Fixes-main-red: run=$mr_run' (or 'suite=<failed job or test-*.sh>')"
     mr_rc=0
-    mr_msgs=$("$GH" pr view "$pr_num" --repo "$nwo" --json commits --jq '.commits[].messageBody' 2>/dev/null) || mr_rc=$?
+    mr_msgs=$("$GH" pr view "$pr_num" --repo "$nwo" --json commits --jq '.commits[] | .messageHeadline, .messageBody' 2>/dev/null) || mr_rc=$?
     [ "$mr_rc" -eq 0 ] || main_red_refuse "main's latest completed CI run $mr_run is $mr_conc (covers $mr_range) and the PR's commits are unreadable, so no fix declaration can be verified" "run=$mr_run conclusion=$mr_conc range=$mr_range phase=commits"
     mr_ok="" mr_log="" mr_log_rc=-1
     while IFS= read -r mr_line; do
@@ -987,7 +989,7 @@ elif [ "$mr_conc" != success ]; then
                 fi
                 [ "$mr_log_rc" -eq 0 ] || main_red_refuse "main's latest completed CI run $mr_run is $mr_conc (covers $mr_range) and its failed log is unreadable, so the declared suite $mr_tok cannot be verified" "run=$mr_run conclusion=$mr_conc range=$mr_range phase=run-log"
                 if printf '%s\n' "$mr_log" | awk -F'\t' -v t="$mr_tok" '
-                        index($1, t) { f = 1 }
+                        $1 == t || (index($1, t) == 1 && substr($1, length(t) + 1, 1) ~ /[ (]/) { f = 1 }
                         t ~ /\.sh$/ && index($0, "##[error]") && index($0, t) { f = 1 }
                         END { exit !f }'; then
                     mr_ok="suite=$mr_tok"; break
