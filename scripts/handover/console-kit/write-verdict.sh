@@ -420,4 +420,14 @@ else
     echo "write-verdict: writing '$TARGET' failed" >&2
     exit 5
 fi
+# HIMMEL-5165: the evidence sat in a judge dir (/tmp/claude-<uid>/j<PR>[a-z]/...): the verdict is
+# written, so release that dir to tmp-reap.sh even while its holder (an in-process judge shares
+# the console's pid) lives. Best effort: the verdict is already on disk.
+jd_seg=${EVIDENCE#"$SCRATCH"/}; jd_seg=${jd_seg%%/*}
+case "$jd_seg" in
+    j[0-9]*|j[0-9]*[a-z])
+        case "${jd_seg#j}" in *[!0-9a-z]*|*[a-z]?*) ;; *)
+            { [ -L "$SCRATCH/$jd_seg/.verdict-written" ] || : > "$SCRATCH/$jd_seg/.verdict-written"; } 2>/dev/null || true ;;
+        esac ;;
+esac
 printf '%s\n' "$TARGET"

@@ -552,6 +552,16 @@ printf 'class: option-parsing\nlayer-decision: classifier the reader rejects a C
 rc=0; out=$(wv q34 NO-GO "$SHA_A" --evidence-file "$evd/ld-crlf.md" 2>&1) || rc=$?
 contains "19: a CRLF layer-decision line warns like the gate's regex rejects it" "$out" "layer-decision line lacks a layer keyword"
 
+# --- 20. HIMMEL-5165: a verdict written from a judge dir releases that dir ---
+jdir="$scratch/j7$$"; mkdir -p "$jdir" && printf 'ev\n' > "$jdir/evidence.md"
+rc=0; out=$(wv q35 GO "$SHA_A" --evidence-file "$jdir/evidence.md" 2>&1) || rc=$?
+check "20: GO from a judge dir rc 0" "$rc" 0
+check "20: ... drops the .verdict-written release marker" "$([ -f "$jdir/.verdict-written" ] && echo yes || echo no)" yes
+printf 'ev\n' > "$evd/not-judge.md"
+rc=0; out=$(wv q36 GO "$SHA_A" --evidence-file "$evd/not-judge.md" 2>&1) || rc=$?
+check "20: evidence outside a judge dir drops no marker" "$([ -e "$evd/.verdict-written" ] && echo yes || echo no)" no
+rm -rf "$jdir"
+
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"
 exit 1
