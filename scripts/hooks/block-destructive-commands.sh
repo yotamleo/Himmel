@@ -478,6 +478,19 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
     _hd_lone_cr=
     _hd_nocrlf="${cmd//$'\r\n'/}"
     [[ $_hd_nocrlf == *$'\r'* ]] && _hd_lone_cr=1
+    # _hd_find_term: 0 when _hd_body holds the terminator _hd_termpat names,
+    # with _hd_after = the text after it. HIMMEL-4729: the terminator is a
+    # literal (\n, tabs and the delimiter word), so a byte-wise match under a
+    # function-local LC_ALL=C finds exactly what the UTF-8 one did; in a UTF-8
+    # locale the regex took 0.6 s on a 45 KB body, and `#*MATCH` is quadratic
+    # in the text before it, so the rest is taken by offset instead.
+    _hd_find_term() {
+        local LC_ALL=C _hd_m _hd_pre
+        [[ $_hd_body =~ $_hd_termpat ]] || return 1
+        _hd_m="${BASH_REMATCH[0]}"
+        _hd_pre="${_hd_body%%"$_hd_m"*}"
+        _hd_after="${_hd_body:${#_hd_pre}+${#_hd_m}}"
+    }
     # Strips rm_scrub_raw in place. With _hd_check_carried set it also applies
     # the HIMMEL-4126 disqualifier and sets _hd_carried_hit when that fires.
     _hd_strip() {
@@ -584,8 +597,7 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         else
             _hd_termpat=$'(^|\n)'"$_hd_word"$'($|\n)'
         fi
-        if [[ $_hd_body =~ $_hd_termpat ]]; then
-            _hd_after="${_hd_body#*"${BASH_REMATCH[0]}"}"
+        if _hd_find_term; then
             rm_scrub_raw="${_hd_prefix} ${_hd_openerline_rest}"$'\n'"${_hd_after}"
         else
             break

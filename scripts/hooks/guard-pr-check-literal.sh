@@ -193,8 +193,19 @@ case "$tool" in Bash|"") ;; *) exit 0 ;; esac
 # them, so 'scripts/cr/x', scripts/cr/\x and $'scripts/cr/x' all read as
 # what they spell.
 # A backslash-newline is a line continuation: the shell joins it away first.
-flat=${cmd//$'\\\n'/}
-flat=${flat//[\'\"\\]/}
+#
+# HIMMEL-4729: under a UTF-8 locale a ${x//pat/rep} re-decodes the whole text
+# for each match (45 KB of prose: 0.3 s per call). Every character these
+# strip is ASCII and a UTF-8 sequence never contains an ASCII byte, so the
+# same expansion under a function-local LC_ALL=C is byte-identical and
+# linear. Each helper puts its result in REPLY (no fork).
+_c_unquote() { local LC_ALL=C; REPLY=${1//[\'\"\\]/}; }
+_c_ops_to_nl() { local LC_ALL=C; REPLY=${1//[;&|()<>\`]/$'\n'}; }
+_c_ops_eq_to_nl() { local LC_ALL=C; REPLY=${1//[;&|()<>\`=]/$'\n'}; }
+_c_join_continuations() { local LC_ALL=C; REPLY=${1//$'\\\n'/}; }
+_c_join_continuations "$cmd"
+_c_unquote "$REPLY"
+flat=$REPLY
 
 # >>> BEGIN shell-tokenize (HIMMEL-3546; canonical: scripts/hooks/lib/shell-tokenize.sh) >>>
 # st_tokenize CMD — split CMD into words and segments the way bash reads it,
@@ -667,7 +678,8 @@ if st_tokenize "$cmd" && [ "$ST_NSEG" -eq 1 ] && [ "$ST_SUBST$ST_HEREDOC$ST_ANSI
         done
         if [ "$tk_dropped" = 1 ]; then
             flat=${tk_flat# }
-            flat=${flat//[\'\"\\]/}
+            _c_unquote "$flat"
+            flat=$REPLY
         fi
     fi
 fi
@@ -718,7 +730,8 @@ drop_braced_vars() { # drop_braced_vars <text> - print it with every ${...} remo
     printf '%s' "$t"
 }
 if [ "$mentions" -eq 0 ] && [[ $cmd == *env*\$\{* ]] && [[ $cmd =~ -[a-zA-Z]*S|--s ]]; then
-    names_target "$(drop_braced_vars "${cmd//[\'\"\\]/}")" && mentions=1
+    _c_unquote "$cmd"
+    names_target "$(drop_braced_vars "$REPLY")" && mentions=1
 fi
 # HIMMEL-3913: a parse-independent raw-text backstop, the twin of HIMMEL-1813's
 # in block-chokepoint-env-prefix.sh. The tokenizer reads quoted here-string text
@@ -753,11 +766,13 @@ PRLIT_INERT_REDIR_RE='(^|[^0-9&])([0-9]*>&[[:space:]]*([0-9]+|-)|([0-9]*|&)>[[:s
 PRLIT_SHADOW_RE="(^|[;&|(\`{}${prlit_nl}[:space:]])(function[[:space:]]+${prlit_reader}([[:space:]]|\\()|${prlit_reader}[[:space:]]*\\(\\)|alias[[:space:]]+${prlit_reader}=)"
 prlit_backstop() { # prlit_backstop <raw command> - true when the raw text names a target and can persist text
     local t=$1 m rep
-    names_target "${t//[\'\"\\]/}" || return 1
+    _c_unquote "$t"
+    local dq=$REPLY
+    names_target "$dq" || return 1
     [[ $t =~ $PRLIT_SHADOW_RE ]] && return 0
     [[ $t == *'<<<'* ]] && return 0
     [[ $t =~ $PRLIT_TEE_RE ]] && return 0
-    [[ ${t//[\'\"\\]/} =~ $PRLIT_TEE_RE ]] && return 0
+    [[ $dq =~ $PRLIT_TEE_RE ]] && return 0
     while [[ $t =~ $PRLIT_INERT_REDIR_RE ]]; do
         m=${BASH_REMATCH[0]}
         rep="${BASH_REMATCH[1]} ${BASH_REMATCH[5]}"
@@ -1124,7 +1139,8 @@ is_htarget() { # is_htarget <basename> - names, or globs onto, an HTARGETS
 # wrapper counts as running something itself, since its option operands
 # (env -C <dir>) hide the word that follows. Both a wrapper and a VAR= prefix
 # (BASH_ENV runs a file first) make a guarded run unverifiable.
-simple=${flat//[;&|()<>\`]/$'\n'}
+_c_ops_to_nl "$flat"
+simple=$REPLY
 runs=0
 chdir=0
 wrapped=0
@@ -1410,7 +1426,8 @@ for word in $flat; do
 done
 entries=""
 hentries=""
-for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
+_c_ops_eq_to_nl "$flat"
+for tok in $REPLY; do
     if [ "$himmel_anchor_prefix" -eq 1 ]; then
         # shellcheck disable=SC2016 # literal text match, never expanded
         case "$tok" in '$HIMMEL_REPO/'*|'${HIMMEL_REPO}/'*) continue ;; esac

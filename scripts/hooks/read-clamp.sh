@@ -70,11 +70,22 @@ row=$(jq -r --arg sep "$SOH" '
 # /bin/bash) never splits on \001 -- CTLESC is its internal quote byte -- so
 # `read` returned the whole row in $tool and every gate below silently allowed
 # (HIMMEL-3177). block-read-secrets.sh splits the same way.
-tool="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
-fp="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
-offset="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
-limit="${row%%"$SOH"*}"; row="${row#*"$SOH"}"
-cmd="${row%%"$SOH"*}"; session_id="${row#*"$SOH"}"
+#
+# Under a UTF-8 locale each `%%`/`#` pattern match re-decodes the multibyte
+# command (688 ms at 45 KB, HIMMEL-4729). The delimiter is ASCII and a UTF-8
+# sequence never contains an ASCII byte, so the split runs byte-wise under a
+# function-local LC_ALL=C, as in HIMMEL-4678. The head comes from `%%` (a left
+# to right scan that stops at the first SOH) and the rest by offset: `#*SOH`
+# tries every prefix length and is quadratic in the head even under C.
+split_row() {
+    local LC_ALL=C head
+    head="${row%%"$SOH"*}"; tool=$head; row="${row:${#head}+1}"
+    head="${row%%"$SOH"*}"; fp=$head; row="${row:${#head}+1}"
+    head="${row%%"$SOH"*}"; offset=$head; row="${row:${#head}+1}"
+    head="${row%%"$SOH"*}"; limit=$head; row="${row:${#head}+1}"
+    head="${row%%"$SOH"*}"; cmd=$head; session_id="${row:${#head}+1}"
+}
+split_row
 
 # file_line_count: prints a file's line count, or nothing (and fails) if the
 # file cannot be read -- callers must allow on failure, never deny on a guess.
