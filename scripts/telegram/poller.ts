@@ -463,8 +463,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
   const NO_TAG = { model: null as ModelOverride | null, rest: msg.text, unknown: false };
   const tag = fromOperator ? parseModelTag(msg.text) : NO_TAG;
   const tagged = tag.model !== null || tag.unknown;
-  const addressedLockdown = botUsername && tag.rest.trim().toLowerCase() === `/lockdown@${botUsername.toLowerCase()}`;
-  const route = classify(addressedLockdown ? "/lockdown" : tag.rest, botUsername);
+  const route = classify(tag.rest, botUsername);
   // Non-DM chats (negative chat_id = group/channel) get their own session keyed
   // by chat_id so meta.chat_id pins replies to that chat, not the operator DM
   // (HIMMEL-238). "_" not ":" — the session id is an NTFS directory name.

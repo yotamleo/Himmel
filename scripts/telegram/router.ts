@@ -81,19 +81,35 @@ const RESTART = /^\/restart(?:\s+(full))?$/i;
 // Only the leading verb is matched, so a mid-text or trailing /console stays chat.
 const CONSOLE_VERB = /^\/(consoles?)(?:@([A-Za-z0-9_]+))?(?=\s|$)/i;
 
+const FLEET_VERB = /^\/(lockdown|fleet|legs|halt|go|push)(?:@([A-Za-z0-9_]+))?(?![A-Za-z0-9_@])/i;
+
 export function classify(raw: string, botUsername?: string | null): Route {
   const t = raw.trim();
-  if (t === "/lockdown") return { kind: "lockdown" };
-  if (t === "/fleet") return { kind: "fleet", verb: "status" };
-  if (t === "/legs") return { kind: "fleet", verb: "legs" };
-  if (t === "/halt") return { kind: "fleet", verb: "halt" };
-  const fleet = t.match(/^\/(go|push|halt) ([A-Za-z0-9_.-]{1,64})$/);
-  if (fleet && !fleet[2].includes("..")) return { kind: "fleet", verb: fleet[1] === "go" ? "go?" : fleet[1] as "push" | "halt", leg: fleet[2] };
-  // HIMMEL-4947: a reserved fleet verb with any other shape (bad/oversized/
-  // traversal label, control char, extra args, missing label, wrong case) is a
-  // terminal refusal, never agent chat. The next char must not continue a
-  // word, so `/gopher` and `/legsx` stay ordinary chat.
-  if (/^\/(?:go|push|halt|fleet|legs)(?![A-Za-z0-9_@])/i.test(t)) return { kind: "fleet-malformed" };
+  // HIMMEL-5150: fleet verbs and /lockdown take the same case-insensitive verb and
+  // `/cmd@<bot>` addressing as /console; a suffix naming another bot (when
+  // `botUsername` is known) is chat. With no known bot name an `@` suffix cannot
+  // be checked, so only the fail-safe verbs (/halt, /lockdown) accept it. The leg
+  // label stays case-exact. The auto ops below are deliberately NOT loosened.
+  const fv = t.match(FLEET_VERB);
+  const fvVerb = fv ? fv[1].toLowerCase() : "";
+  const fvAddressed = !fv || !fv[2] || (botUsername ? fv[2].toLowerCase() === botUsername.toLowerCase() : fvVerb === "halt" || fvVerb === "lockdown");
+  if (fv && fvAddressed) {
+    const verb = fvVerb;
+    const rest = t.slice(fv[0].length);
+    if (rest === "") {
+      if (verb === "lockdown") return { kind: "lockdown" };
+      if (verb === "fleet") return { kind: "fleet", verb: "status" };
+      if (verb === "legs") return { kind: "fleet", verb: "legs" };
+      if (verb === "halt") return { kind: "fleet", verb: "halt" };
+    }
+    const label = rest.match(/^ ([A-Za-z0-9_.-]{1,64})$/);
+    if (label && !label[1].includes("..") && (verb === "go" || verb === "push" || verb === "halt")) return { kind: "fleet", verb: verb === "go" ? "go?" : verb, leg: label[1] };
+    // HIMMEL-4947: a reserved fleet verb with any other shape (bad/oversized/
+    // traversal label, control char, extra args, missing label) is a terminal
+    // refusal, never agent chat. FLEET_VERB's lookahead keeps `/gopher` and
+    // `/legsx` ordinary chat; /lockdown with trailing text is chat.
+    if (verb !== "lockdown") return { kind: "fleet-malformed" };
+  }
   if (t === "status" || t === "sessions") return { kind: "control", verb: t as "status" | "sessions" };
   const stop = t.match(/^stop\s+(\S+)$/i);
   if (stop && KEY.test(stop[1])) return { kind: "control", verb: "stop", ticket: stop[1] };
