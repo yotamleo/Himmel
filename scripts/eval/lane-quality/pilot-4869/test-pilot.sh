@@ -143,6 +143,32 @@ check 'the export drops the eval kit and the handover stub, keeps the launcher' 
 check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
 sed 's/^LANE=.*/LANE=claudex/' "$TMP/root/rows/p01.env" >"$TMP/claudex.env"
 check 'a claudex row builds its jail (no API host to map)' 'bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1 && ! grep -q api "$TMP/root/run/p01/hosts"'
+# HIMMEL-5077: the claudex classifier runs client-side on the codex model, so the
+# jail user settings carry a jail-only PreToolUse hook that allows exactly the row's
+# own lq-work test scripts (a permissions.allow glob would let `*` cross `/` and `..`),
+# and say lq-work rewrites are routine; the deny list and every other lane stay as were.
+mkdir -p "$TMP/home5077/.claude"
+echo '{"permissions":{"allow":["Read"],"deny":["Bash(rm -rf *)"]},"autoMode":{"environment":["$defaults"]}}' >"$TMP/home5077/.claude/settings.json"
+HOME="$TMP/home5077" bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1
+CS="$TMP/root/run/p01/user-settings.json"; jwt="$TMP/repo/.claude/worktrees/lq-pilot-p01"
+check 'a claudex jail adds no permissions.allow rule (the glob crossed / and ..)' '[ "$(jq -c ".permissions.allow" "$CS" 2>/dev/null)" = "[\"Read\"]" ]'
+check 'a claudex jail keeps the deny list untouched' '[ "$(jq -c ".permissions.deny" "$CS" 2>/dev/null)" = "[\"Bash(rm -rf *)\"]" ]'
+check 'a claudex jail keeps the classifier defaults and calls lq-work an eval copy' 'jq -e --arg j "$jwt" ".autoMode.allow[0] == \"\$defaults\" and (.autoMode.allow | length) == 2 and (.autoMode.allow[1] | contains(\$j + \"/lq-work\") and contains(\"lq-work is a disposable eval copy\") and (contains(\"row worktree\") | not)) and .autoMode.environment == [\"\$defaults\"]" "$CS" >/dev/null 2>&1'
+H="$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[0].command] | last // empty' "$CS" 2>/dev/null)"
+check 'a claudex jail registers a Bash PreToolUse hook that is a copy under the read-only run dir' '[ -n "$H" ] && [ -f "$TMP/root/run/p01/lq-allow-hook.sh" ] && printf "%s" "$H" | grep -qF "$TMP/root/run/p01/lq-allow-hook.sh"'
+hook() { jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | bash -c "$H" 2>/dev/null; }
+allows() { [ -n "$H" ] && hook "$1" | jq -e '.hookSpecificOutput.permissionDecision == "allow"' >/dev/null 2>&1; }
+mkdir -p "$wt/lq-work" "$wt/other"; echo : >"$wt/lq-work/test-ok.sh"; echo : >"$wt/lq-work/build.sh"; echo : >"$wt/other/test-ok.sh"
+echo : >"$TMP/outside.sh"; ln -sf "$TMP/outside.sh" "$wt/lq-work/test-link.sh"
+check 'the hook allows the row'"'"'s own lq-work test script' 'allows "bash $wt/lq-work/test-ok.sh"'
+check 'the hook gives a test- directory traversal no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-/../../other/test-ok.sh" && ! allows "bash $wt/lq-work/../other/test-ok.sh"'
+check 'the hook gives a symlinked test script pointing outside lq-work no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-link.sh"'
+check 'the hook gives a chained or substituted command no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh; rm -rf x" && ! allows "bash $wt/lq-work/test-ok.sh && true" && ! allows "bash $wt/lq-work/test-ok.sh | cat" && ! allows "bash \$(echo $wt/lq-work/test-ok.sh)" && ! allows "bash $wt/lq-work/test-ok.sh x"'
+check 'the hook gives a non-test name or a script outside lq-work no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/build.sh" && ! allows "bash $wt/other/test-ok.sh" && ! allows "sh $wt/lq-work/test-ok.sh" && ! allows "rm -rf $wt/lq-work"'
+check 'the hook says nothing at all outside an allow (no deny, no ask)' '[ -n "$H" ] && [ -z "$(hook "bash $wt/lq-work/build.sh")" ] && [ -z "$(printf "not json" | bash -c "$H" 2>/dev/null)" ]'
+rm -rf "$wt/lq-work" "$wt/other"; rm -f "$TMP/outside.sh"
+HOME="$TMP/home5077" bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1
+check 'a deepseek jail gets no claudex allow rule' '[ "$(jq -c . "$CS")" = "$(jq -c . "$TMP/home5077/.claude/settings.json")" ]'
 cp "$wt/.git" "$TMP/dotgit"
 printf 'gitdir: %s\n' "$TMP/repo/.git" >"$wt/.git"
 check 'a worktree repointed at the primary .git is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
