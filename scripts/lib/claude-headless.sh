@@ -191,7 +191,7 @@ pid_gone() { # <pid> <recorded start>
 # lstart still answer for it, so under a non-reaping init (container PID 1, a
 # subreaper) a killed process would otherwise hold its slot indefinitely
 # (HIMMEL-5133). Unknown state (ps unavailable) is not a zombie: the slot stays.
-# A stat carrying the l flag (Zl) is a multithreaded process whose main thread
+# A stat carrying the l flag (Zl, Z<l, ZNl) is a multithreaded process whose main thread
 # exited while other threads still run: alive, never a zombie (HIMMEL-5139).
 proc_zombie() {
   case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in *l*) return 1 ;; Z*) return 0 ;; esac

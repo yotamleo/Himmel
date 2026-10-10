@@ -127,6 +127,9 @@ assert_eq "R2 run-shell-tests enforces every seam but the internal HELD" \
 assert_eq "R3 merge-on-green enforces its full list" \
     "ARMAUTOMERGE MERGE_ON_GREEN_LOG HIMMEL_CONSOLE_LEG HANDOVER_DIR HIMMEL_REPO" \
     "$(_csg_registry_seams "$REGISTRY" scripts/handover/merge-on-green.sh)"
+assert_eq "R3b claude-headless enforces its mock seam and the four dispatch seams (HIMMEL-5138)" \
+    "NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK HIMMEL_DISPATCH_MAX_CONCURRENT HIMMEL_DISPATCH_ROW_TTL_SECS HIMMEL_HEADLESS_SEAM_DIR HIMMEL_HEADLESS_NO_FLOCK" \
+    "$(_csg_registry_seams "$REGISTRY" scripts/lib/claude-headless.sh)"
 _csg_registry_seams "$REGISTRY" scripts/not-a-chokepoint.sh >/dev/null; rc=$?
 assert_eq "R4 an unregistered key fails (the gate then refuses)" "fail" "$([ "$rc" -ne 0 ] && echo fail || echo ok)"
 _csg_registry_seams "$TMP/no-registry.json" scripts/quiet-run.sh >/dev/null; rc=$?
