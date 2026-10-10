@@ -64,10 +64,10 @@ if [ -s "$DIR/.holder" ]; then
             && die "$DIR is held by live pid $op; use another suffix"
     ;; esac
 fi
-# HIMMEL-5165: a reused dir is a new judge; the earlier verdict's release marker no longer applies.
-# Cleared BEFORE the new holder lands, so a reaper never sees a live holder beside a stale marker.
-[ -L "$DIR/.verdict-written" ] || rm -f "$DIR/.verdict-written" 2>/dev/null
-[ -L "$DIR/.verdict-written" ] || [ ! -e "$DIR/.verdict-written" ] || die "cannot clear stale $DIR/.verdict-written"
+# HIMMEL-5165: a dir whose verdict is written is released to tmp-reap.sh and may be deleted at any
+# moment; reusing it would race the reaper, so the caller picks another suffix instead
+[ -f "$DIR/.verdict-written" ] && [ ! -L "$DIR/.verdict-written" ] \
+    && die "$DIR already released by a written verdict; use another suffix"
 printf '%s %s\n' "$holder" "$start" > "$DIR/.holder" 2>/dev/null || die "cannot write $DIR/.holder"
 [ -s "$DIR/.holder" ] || die "holder file empty: $DIR/.holder"
 printf '%s\n' "$DIR"
