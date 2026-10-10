@@ -18,6 +18,10 @@
 #   F6  a flake beside a real failure   -> rc 1 (the flake does not mask FAIL)
 #   F7  a suite killed at its cap       -> not retried
 #   F8  a retry of a no-retry suite that would have passed stays FAIL
+#   F9  a leading-zero SUITE_FLAKE_WINDOW_DAYS reads as decimal
+#   F10 a flake is a ::warning and a step-summary section on CI
+#   F11 a retry that only prints SKIP and exits 0 stays FAIL
+#   F12 an unwritable ledger WARNs, verdict unchanged
 #
 # Usage: bash scripts/ci/test-run-shell-tests-flake.sh
 set -uo pipefail
@@ -194,6 +198,73 @@ if [ "$rc" -eq 1 ] && [ "$(cat "$sb/scripts/slow.count" 2>/dev/null || echo 0)" 
   pass "F7: a capped suite ran once and renders CAP EXCEEDED"
 else
   fail "F7: rc=$rc runs=$(cat "$sb/scripts/slow.count" 2>&1) out: $out"
+fi
+rm -rf "$sb"
+fi
+
+# --- F10 ------------------------------------------------------------------------
+echo "== F10: a flake is visible on a green CI run (HIMMEL-5116 delta) =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake10.XXXXXX") || { fail "F10: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+run_flake "$sb" GITHUB_ACTIONS=true GITHUB_STEP_SUMMARY="$sb/summary.md"
+if [ "$rc" -eq 0 ] && grepq "$out" -F '::warning title=FLAKE::test-flaky.sh' \
+    && grepq "$(cat "$sb/summary.md" 2>/dev/null)" -F 'FLAKE' \
+    && grepq "$(cat "$sb/summary.md" 2>/dev/null)" -F 'test-flaky.sh'; then
+  pass "F10: ::warning title=FLAKE:: emitted and a FLAKE section appended to GITHUB_STEP_SUMMARY, rc 0"
+else
+  fail "F10: rc=$rc summary=$(cat "$sb/summary.md" 2>&1) out: $out"
+fi
+rm -rf "$sb"
+fi
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake10b.XXXXXX") || { fail "F10b: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+run_flake "$sb" GITHUB_ACTIONS=false
+if [ "$rc" -eq 0 ] && grepq "$out" -F '[FLAKE]' && ! grepq "$out" -F '::warning'; then
+  pass "F10b: no workflow command outside GitHub Actions"
+else
+  fail "F10b: rc=$rc out: $out"
+fi
+rm -rf "$sb"
+fi
+
+# --- F11 ------------------------------------------------------------------------
+echo "== F11: a retry that only prints SKIP and exits 0 stays FAIL =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake11.XXXXXX") || { fail "F11: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mkdir -p "$sb/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$sb/scripts/test-pass.sh"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'cnt="$(dirname "$0")/skippy.count"\n'
+  printf 'n=$(cat "$cnt" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$cnt"\n'
+  printf 'if [ "$n" -le 1 ]; then echo "not ok 1 - real failure"; exit 1; fi\n'
+  printf 'echo "SKIP: tool missing"\nexit 0\n'
+} > "$sb/scripts/test-skippy.sh"
+chmod +x "$sb/scripts/test-pass.sh" "$sb/scripts/test-skippy.sh"
+run_flake "$sb"
+if [ "$rc" -eq 1 ] && grepq "$out" -E '^ FAIL: 1' && ! grepq "$out" -E '^ FLAKE:' \
+    && ! grepq "$out" -F '[FLAKE]' && [ "$(ledger_rows "$sb")" = 0 ]; then
+  pass "F11: a SKIP-and-exit-0 retry renders FAIL, no FLAKE, no ledger row"
+else
+  fail "F11: rc=$rc rows=$(ledger_rows "$sb") out: $out"
+fi
+rm -rf "$sb"
+fi
+
+# --- F12 ------------------------------------------------------------------------
+echo "== F12: an unwritable ledger path WARNs and leaves the verdict alone =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake12.XXXXXX") || { fail "F12: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mk_flake_sandbox "$sb" "" 1
+: > "$sb/blocker"
+run_flake "$sb" SUITE_FLAKE_LEDGER="$sb/blocker/ledger.jsonl"
+if [ "$rc" -eq 0 ] && grepq "$out" -F '[FLAKE]' && grepq "$out" -E '^ FLAKE: 1' \
+    && grepq "$out" -F 'could not append the flake ledger row'; then
+  pass "F12: WARN printed, still a FLAKE, rc 0"
+else
+  fail "F12: rc=$rc out: $out"
 fi
 rm -rf "$sb"
 fi

@@ -3395,8 +3395,10 @@ rc127=0
 failed_suites=""
 # HIMMEL-5116 — a suite that fails is re-run ONCE, alone. Passing on the retry
 # is a FLAKE: neither PASS nor FAIL, counted and listed in the summary, and
-# appended to a jsonl ledger (suite, case lines, sha, run id, ts) that CI uploads
-# with FAIL_LOG_DIR and the console tick reads locally. A second flake of one
+# appended to a jsonl ledger (suite, case lines, sha, run id, ts). The ledger
+# lands in FAIL_LOG_DIR, which CI uploads only when a job fails, so on GitHub
+# Actions a flake is also a ::warning and a step-summary section. No tick or
+# board reader consumes the ledger yet. A second flake of one
 # suite inside SUITE_FLAKE_WINDOW_DAYS prints a loud "file a ticket" line (no
 # Jira call from CI). A suite whose header carries `# no-retry` is never
 # retried (a guard whose flake would mask a real race). A suite the watchdog
@@ -3468,6 +3470,24 @@ _flake_record() {
     printf '[FLAKE-TICKET] file a ticket: %s has flaked %s time(s) before inside %s days — a repeat flake is a defect, not noise (HIMMEL-5116; no Jira call is made from CI)\n' \
       "$1" "$_prior" "$SUITE_FLAKE_WINDOW_DAYS"
   fi
+}
+# A flake-only shard exits 0 and CI uploads FAIL_LOG_DIR only on failure, so on
+# GitHub Actions the flake would otherwise be invisible: surface it as a
+# workflow warning annotation and a step-summary section (HIMMEL-5116, j2276a).
+_flake_announce() {
+  local _p="$1" _rc="$2" _esc
+  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    # Workflow-command data escapes: % first, then CR and LF.
+    _esc=$(printf '%s' "$_p" | sed -e 's/%/%25/g' -e 's/\r/%0D/g')
+    printf '::warning title=FLAKE::%s\n' "$_esc"
+  fi
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ ! -L "$GITHUB_STEP_SUMMARY" ]; then
+    {
+      [ "$flake" -le 1 ] && printf '### FLAKE: suites that failed once and passed on the single retry\n\n'
+      printf -- "- \`%s\` (first run rc=%s)\n" "$_p" "$_rc"
+    } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null
+  fi
+  return 0
 }
 timed_out=0
 cap_exceeded_clean=0
@@ -4125,6 +4145,13 @@ while IFS= read -r suite <&3; do
   done
 
   dur=$(( SECONDS - start ))
+  # A retry that exits 0 through the suite's own SKIP path ran none of the
+  # assertions that failed the first time, so it is no evidence of a flake: the
+  # suite stays FAIL with the first attempt's status (HIMMEL-5116, j2276a).
+  if [ "$rc" -eq 0 ] && [ "$_attempt" -eq 2 ] && _log_has_skip_line "$log"; then
+    printf '[RETRY-SKIP] %s retry exited 0 only through a SKIP line; keeping the first failure (rc=%s)\n' "$suite" "$first_rc"
+    rc=$first_rc
+  fi
   ran=$((ran + 1))
   manifest_add "ran $rc ${mf_rel:-}"
 
@@ -4134,6 +4161,7 @@ while IFS= read -r suite <&3; do
 "
     printf '[FLAKE] %s (first run rc=%s, passed on retry, %ss)\n' "$suite" "$first_rc" "$dur"
     _flake_record "$relpath" "$first_rc" "$first_log"
+    _flake_announce "$relpath" "$first_rc"
     if [ -n "${FAIL_LOG_DIR:-}" ]; then
       mkdir -p "$FAIL_LOG_DIR"
       cp "$first_log" "$FAIL_LOG_DIR/$(printf '%s' "$relpath" | sed 's/_/_u/g; s#/#_s#g').flake.log" 2>/dev/null
