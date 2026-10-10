@@ -1652,6 +1652,13 @@ assert "rg -ne / src (pattern /) ALLOW"        ALLOW "$(decide "$(j_bash "rg -ne
 assert "grep -r -e / src (pattern /) ALLOW"    ALLOW "$(decide "$(j_bash "grep -r -e / src")")"
 assert "grep -rne / src (pattern /) ALLOW"     ALLOW "$(decide "$(j_bash "grep -rne / src")")"
 assert "grep -r -e x / never ALLOW"            PASS  "$(decide "$(j_bash "grep -r -e x /")")"
+# delta round: only the FIRST value-taking letter of a short cluster takes a value.
+assert "grep -ref / never ALLOW"               PASS  "$(decide "$(j_bash "grep -ref /")")"
+assert "tree -aI -L / never ALLOW"             PASS  "$(decide "$(j_bash "tree -aI -L /")")"
+assert "tree -aP -L / never ALLOW"             PASS  "$(decide "$(j_bash "tree -aP -L /")")"
+assert "ctl: tree -aL 1 / stays ALLOW"         ALLOW "$(decide "$(j_bash "tree -aL 1 /")")"
+assert "ctl: tree -aI x -L 1 / stays ALLOW"    ALLOW "$(decide "$(j_bash "tree -aI x -L 1 /")")"
+assert "ctl: grep -rne x src stays ALLOW"      ALLOW "$(decide "$(j_bash "grep -rne x src")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

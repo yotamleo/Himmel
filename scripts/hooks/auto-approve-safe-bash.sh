@@ -928,10 +928,26 @@ segment_walks_root() {
             -*)
                 case "$base" in
                     ls)               case "$tok" in *R*) rec=1 ;; esac ;;
-                    grep|egrep|fgrep) case "$tok" in *[rR]*) rec=1 ;; esac
-                                      case "$tok" in *[ef]*) have_e=1 ;; esac
-                                      case "$tok" in -*[ef]) vskip=1 ;; esac ;;
-                    tree)             case "$tok" in -I|-P|-o) vskip=1 ;; *L*) level=1 ;; esac ;;
+                    grep|egrep|fgrep|tree)
+                        # the first value-taking letter ends the cluster; what
+                        # follows it is its attached value, and the NEXT word
+                        # is the value only when that letter is the last char
+                        opt="${tok#-}"; k=0
+                        while [ "$k" -lt "${#opt}" ]; do
+                            case "$base:${opt:$k:1}" in
+                                grep:[rR]|egrep:[rR]|fgrep:[rR]) rec=1 ;;
+                                grep:[ef]|egrep:[ef]|fgrep:[ef])
+                                    have_e=1
+                                    if [ "$((k + 1))" -eq "${#opt}" ]; then vskip=1; fi
+                                    break ;;
+                                grep:[mABCdD]|egrep:[mABCdD]|fgrep:[mABCdD]) break ;;
+                                tree:L) level=1; break ;;
+                                tree:[IPo])
+                                    if [ "$((k + 1))" -eq "${#opt}" ]; then vskip=1; fi
+                                    break ;;
+                            esac
+                            k=$((k + 1))
+                        done ;;
                     rg|ripgrep|ag)
                         # the first value-taking letter ends the cluster; e/f = pattern
                         opt="${tok#-}"; k=0
