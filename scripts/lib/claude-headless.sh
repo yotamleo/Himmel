@@ -191,8 +191,10 @@ pid_gone() { # <pid> <recorded start>
 # lstart still answer for it, so under a non-reaping init (container PID 1, a
 # subreaper) a killed process would otherwise hold its slot indefinitely
 # (HIMMEL-5133). Unknown state (ps unavailable) is not a zombie: the slot stays.
+# A stat carrying the l flag (Zl) is a multithreaded process whose main thread
+# exited while other threads still run: alive, never a zombie (HIMMEL-5139).
 proc_zombie() {
-  case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in Z*) return 0 ;; esac
+  case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in *l*) return 1 ;; Z*) return 0 ;; esac
   return 1
 }
 
@@ -435,8 +437,7 @@ steal_stale_reclaim_lock() {
     # between its pid re-check and its rm can still let two reclaimers proceed;
     # no portable kernel lock exists without flock(1). Upgrade path: require
     # flock on macOS (HIMMEL-5107). Also open: an owner pid still empty after
-    # 0.2s counts as dead, and HIMMEL_HEADLESS_SEAM_DIR / _NO_FLOCK are not in
-    # chokepoints.json seam_env_vars.
+    # 0.2s counts as dead.
     seam steal-restore
     if mkdir "$RECLAIM_LOCK" 2>/dev/null; then
       cp "$moved/pid" "$RECLAIM_LOCK/pid" 2>/dev/null || true
