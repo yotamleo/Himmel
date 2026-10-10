@@ -246,15 +246,15 @@ hasnt "failed: shell-unit-shard (ubuntu-latest, 4)" "$out" "a cancelled sibling 
 
 # 13. GitHub reports the RUN as `cancelled` when one job hits timeout-minutes, even
 # with a failed aggregator beside it: that must open the issue. A cancelled non-shard
-# job whose check-run note says it exceeded the maximum execution time is red too.
+# job (lint here) whose check-run note says it exceeded the maximum execution time
+# is red; the shard and doc-invariants are cancelled with no note and are not.
 newcase timeout-cancelled-run
 printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cancelled https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
 printf 'cancelled%sshell-unit-shard (ubuntu-latest, 2)%s21\nfailure%sshell-unit (ubuntu-latest)%s22\ncancelled%slint%s23\ncancelled%sdoc-invariants%s24\n' "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
 printf 'The job running on runner X has exceeded the maximum execution time of 25 minutes.\n' > "$STUB/ann-23"
 sweep
 if [ "$rc" -eq 0 ]; then ok "timed-out cancelled run exits 0"; else bad "timed-out cancelled run exits $rc: $out"; fi
-has "gh issue create" "$log" "a cancelled run with a timed-out shard and failed aggregator opens the issue"
-has "failed: lint" "$out" "the timed-out job is reported"
+has "gh issue create" "$log" "a cancelled run with a timed-out job and failed aggregator opens the issue"
 # HIMMEL-5143: the only shard here is cancelled with no timeout note, so the
 # aggregate's failure is its cancellation, not a verdict (was asserted reported).
 hasnt "failed: shell-unit" "$out" "an aggregate failed only by a cancelled shard is not reported"
@@ -605,6 +605,29 @@ sed 's/^success\(\tshell-unit-shard (ubuntu-latest, 3)\)$/failure\1/; s/^success
 sweep
 has "failed: shell-unit (ubuntu-latest)" "$out" "a dispatch aggregate failure is recorded under the event-independent name"
 hasnt "dispatch verify" "$out" "the report never names the event-dependent aggregate"
+
+# HIMMEL-5146 (j2302a). A finished GREEN shard keeps the aggregate red even when
+# every other shard was cancelled: pins the shard_ok=0 clause of the
+# cancelled-shard rule (without it this row is wrongly dropped as not red).
+newcase one-green-shard-aggregate-red
+sed 's/^cancelled\(\tshell-unit-shard (ubuntu-latest, 3)\)$/success\1/' "$PUSH_FIX" > "$STUB/jobs.tsv"
+sweep
+has "gh issue create" "$log" "one green shard + cancelled rest + failed aggregate stays red"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when one shard finished green"
+
+# The ' (dispatch verify)' strip is for the shell-unit aggregate only: another
+# job carrying that text keeps its own name.
+newcase dispatch-verify-other-job-kept
+printf 'failure%slint (dispatch verify)\n' "$tab" > "$STUB/jobs.tsv"
+sweep
+has "failed: lint (dispatch verify)" "$out" "a non-aggregate job named '(dispatch verify)' is not rewritten"
+
+# ... and the aggregate's OS survives the normalisation on a non-ubuntu leg.
+newcase dispatch-aggregate-macos-kept
+printf 'failure%sshell-unit (dispatch verify) (macos-latest)\n' "$tab" > "$STUB/jobs.tsv"
+sweep
+has "failed: shell-unit (macos-latest)" "$out" "the dispatch aggregate keeps its macos-latest OS"
+hasnt "dispatch verify" "$out" "the macos aggregate is reported without the dispatch suffix"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
