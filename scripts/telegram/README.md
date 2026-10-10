@@ -124,7 +124,11 @@ which would dirty the primary and break `/repin-hooks`' ff-only pull). It is
 idempotent (a rule already present writes nothing and makes no backup) and the
 previous file is copied to `<file>.bak-<epoch>-<pid>` before every write. A target
 that is not a JSON object with an array `permissions.allow` is left alone
-(rc 27). Add a rule by PR to `allow-rules.json`: that review is the control.
+(rc 27). The confirm prompt shows the rule text, and `/confirm` hands the
+executor the sha256 of exactly that text (HIMMEL-5127): `break-glass.sh` refuses
+(rc 26) when the registry's text at execute time hashes differently, and a
+registry that is not one BOM-free JSON document is refused (rc 26). Add a rule
+by PR to `allow-rules.json`: that review is the control.
 The name is `allow-rule` in `TELEGRAM_AUTO_ACTIONS`, like the other break-glass ops.
 
 ## Human — quick commands (Windows / PowerShell)
