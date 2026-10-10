@@ -62,6 +62,9 @@
 #      agreed or fixed, at ANY round head, has a class-sweep record in
 #      <git-common-dir>/cr-class-sweeps/<branch> (HIMMEL-4566; written by
 #      write-verdicts.sh sweep). A legacy row with no branch stamp is exempt.
+#      `--check-sweeps <file>` (HIMMEL-4641) runs only this gate's record
+#      check over the SWEEP lines in <file>, at write time: exit 14 when the
+#      gate would refuse one, else 0; no marker, no write, no clear.
 #   5. POST-PR ONLY: when a PR already exists for the branch, its head commit
 #      must BE the branch tip certified by the ledger, and check-ci.sh must also return 0 (CI green +
 #      all review threads resolved + no changes-requested). check-ci evaluates
@@ -165,9 +168,15 @@ fi
 
 branch=""
 DRY_RUN=0
+check_sweeps=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1; shift ;;
+        --check-sweeps)
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "clear-cr-marker: --check-sweeps needs a file" >&2; exit 10
+            fi
+            check_sweeps="$2"; shift 2 ;;
         -h|--help)
             # Anchored to the `set -uo pipefail` line, not a hardcoded count, so
             # a header edit cannot silently truncate this reference (HIMMEL-1042).
@@ -220,6 +229,22 @@ if [ -z "$branch" ]; then
     exit 12
 fi
 
+if [ -n "$check_sweeps" ]; then
+# HIMMEL-4641 --check-sweeps (write-verdicts.sh sweep, at write time): judge the
+# candidate records with gate 4d's own checks and nothing else. No marker,
+# remote-head, stale-marker or dotenv gate; nothing is written or cleared. The
+# tip is the branch ref, else HEAD. The skipped gates sit in the else arm, closed
+# by the fi before the ledger read (not reindented, to keep the diff small).
+if [ ! -f "$check_sweeps" ] || [ -L "$check_sweeps" ]; then
+    echo "clear-cr-marker: --check-sweeps file is missing or a symlink — refusing." >&2
+    exit 10
+fi
+tip=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || git rev-parse --verify HEAD 2>/dev/null || true)
+if [ -z "$tip" ]; then
+    echo "clear-cr-marker: cannot resolve a tip for --check-sweeps — refusing." >&2
+    exit 12
+fi
+else
 marker="$git_dir/cr-pending/$branch"
 if [ ! -f "$marker" ]; then
     echo "clear-cr-marker: no pending CR marker for $branch — nothing to do."
@@ -419,6 +444,7 @@ esac
 # bridge as CR_REQUIRE_CROSS_MODEL, never an env override at the GATE INTEGRITY
 # seams (ledger, check-ci, gh).
 cr_floor_fallback=$(printf '%s' "${CR_FLOOR_FALLBACK:-}" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+fi
 
 # 3+4. Ledger evidence at the certified SHA. Current writers normalize ledger
 # heads to full SHAs, but old rows may still carry the short sha /pr-check used
@@ -441,7 +467,7 @@ panel_empty=$(CRITICS="$SCRIPT_DIR/critics.json" node -e '
   try { const p = JSON.parse(require("fs").readFileSync(process.env.CRITICS, "utf8")).panel;
         console.log(String(Array.isArray(p) && p.length === 0 ? 1 : 0)); } catch (_) { console.log("0"); }' 2>/dev/null)
 # shellcheck disable=SC2016  # $-refs below are JS inside a single-quoted node script, not shell
-verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANCH="$branch" node -e '
+verdict=$(LEDGER="$ledger" SWEEPS="${check_sweeps:-$git_dir/cr-class-sweeps/$branch}" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANCH="$branch" node -e '
   const fs = require("fs"), e = process.env;
   const lines = fs.existsSync(e.LEDGER)
       ? fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean) : [];
@@ -627,6 +653,9 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
       // hex) to an earlier row of the same id/artifact/perspective replaces
       // it - the later row wins across spellings too. A head that is not hex
       // keys on its raw text alone and never coalesces (fail closed).
+      // HIMMEL-4641: prefix-related is not enough - a fabricated head that
+      // merely extends another is prefix-related to it. Both spellings must
+      // RESOLVE (to a commit, unambiguously) and to the SAME commit.
       // HIMMEL-4604: the verdict is compared lowercase, so a raw row spelled
       // Agreed or Fixed still needs its record.
       if (o.kind === "finding" && e.BRANCH && o.branch === e.BRANCH) {
@@ -634,7 +663,8 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
           const rest = [o.finding_id || "?", o.artifact || "diff", o.perspective || "off"].join(SEP);
           if (isHex(sh)) {
               for (const [k, w] of sweptByKey) {
-                  if (w.rest === rest && isHex(w.head) && (w.head.startsWith(sh) || sh.startsWith(w.head))) sweptByKey.delete(k);
+                  if (w.rest === rest && isHex(w.head) && (w.head.startsWith(sh) || sh.startsWith(w.head)) &&
+                      resolve(sh) !== null && resolve(sh) === resolve(w.head)) sweptByKey.delete(k);
               }
           }
           sweptByKey.set([String(o.head || ""), rest].join(SEP),
@@ -754,9 +784,10 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
   //    at most when the finding names none).
   // ponytail: residual forgeability - a search with zero hits still passes, and
   // a sites list may name real files nobody opened; the gate proves the record
-  // is consistent with the tree, not that a sweep happened. Upgrade path: a
-  // second writer countersigning sweeps, or requiring at least one hit once
-  // test-pr-check-rounds.sh zero-hit fixture moves (v1.0.2b follow-up).
+  // is consistent with the tree, not that a sweep happened. Zero hits is kept
+  // on purpose (HIMMEL-4637): a sweep of a FIXED class legitimately finds
+  // nothing, so requiring one hit would refuse the honest record. Upgrade
+  // path: a second writer countersigning sweeps (HIMMEL-4637).
   const SQ = String.fromCharCode(39), DQ = String.fromCharCode(34);
   const BS = String.fromCharCode(92), BQ = String.fromCharCode(96);
   const META = ";|&$()<>" + BQ + String.fromCharCode(10, 13, 0);
@@ -768,6 +799,11 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
       p[0] !== "/" && p[0] !== "-" && p[0] !== ":" &&
       !p.split("/").some((s) => s === "." || s === "..");
   const inTree = (rev, p) => !!rev && gitOk(["cat-file", "-e", rev + ":" + p.replace(/\/+$/, "")]);
+  // HIMMEL-4637: cat-file -e also accepts a tree (and a submodule commit); a
+  // sites= entry names a file, so it must be a blob.
+  const isBlob = (rev, p) => { if (!rev) return false;
+      try { return gitRun(["cat-file", "-t", rev + ":" + p.replace(/\/+$/, "")]).trim() === "blob"; }
+      catch { return false; } };
   // POSIX-shell word splitting of the recorded command, refusing anything a
   // shell would run or expand (unquoted metacharacters, $ or a backquote inside
   // double quotes, an unbalanced quote). null = refused.
@@ -842,20 +878,22 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
               if (!safePath(p)) return { err: "search-pathspec-refused:" + word(p) };
               if (!/[*?[]/.test(p) && !inTree(e.FULL_SHA, p)) return { err: "search-pathspec-not-at-tip:" + word(p) };
           }
-          const args = ["grep", "-l", "-I"].concat(flags);
+          // HIMMEL-4637: -z, so a non-ASCII path is its real name (git quotes it
+          // otherwise) and a newline in a name cannot split one hit in two.
+          const args = ["grep", "-l", "-z", "-I"].concat(flags);
           for (const p of pats) args.push("-e", p);
           args.push(e.FULL_SHA, "--");
           let out = "";
           try { out = gitRun(args.concat(pos)); }
           catch (x) { if (x && x.status === 1) out = ""; else return { err: "search-failed" }; }
           const pre = e.FULL_SHA + ":";
-          const hits = [...new Set(out.split("\n").filter(Boolean)
+          const hits = [...new Set(out.split(String.fromCharCode(0)).filter(Boolean)
               .map((l) => l.startsWith(pre) ? l.slice(pre.length) : l))];
           // Text files the pathspec spans at the tip; no pathspec = the tree.
           let scope = 2;
           if (pos.length) {
-              try { scope = gitRun(["grep", "-l", "-I", "-e", "", e.FULL_SHA, "--"].concat(pos))
-                  .split("\n").filter(Boolean).length; }
+              try { scope = gitRun(["grep", "-l", "-z", "-I", "-e", "", e.FULL_SHA, "--"].concat(pos))
+                  .split(String.fromCharCode(0)).filter(Boolean).length; }
               catch (x) { if (x && x.status === 1) scope = 0; else return { err: "search-failed" }; }
           }
           return { hits, scope };
@@ -874,6 +912,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
           for (const p of paths) {
               if (!safePath(p)) return "site-refused:" + word(p);
               if (!inTree(e.FULL_SHA, p) && !inTree(findingHead, p)) return "site-not-at-tip:" + word(p);
+              if (!isBlob(e.FULL_SHA, p) && !isBlob(findingHead, p)) return "site-not-a-file:" + word(p);
           }
           if (wantFile && paths.indexOf(wantFile) < 0) return "sites-omit-finding-file:" + word(wantFile);
           return "";
@@ -941,6 +980,17 @@ if [ -z "$verdict" ]; then
     echo "clear-cr-marker: could not read the CR ledger at $ledger — refusing (cannot certify the review)." >&2
     audit "REFUSED reason=ledger-unreadable branch=$branch sha=$tip"
     exit 14
+fi
+if [ -n "$check_sweeps" ]; then
+    # An entry with a fault tail (<id>@<head>(<verdict>):<fault>) is a finding
+    # whose candidate record the gate would refuse; entries with no candidate
+    # record carry no tail and are not this mode's business.
+    bad=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const m of (JSON.parse(s).missingSweep||[]))if(m.indexOf("):")>=0)console.log(m)})' 2>/dev/null)
+    if [ -n "$bad" ]; then
+        echo "clear-cr-marker: --check-sweeps: the gate would refuse: $(printf '%s' "$bad" | tr '\n' ' ')" >&2
+        exit 14
+    fi
+    exit 0
 fi
 responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).responders)))' 2>/dev/null)
 non_claude_responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).nonClaudeResponders)))' 2>/dev/null)

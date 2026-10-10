@@ -223,4 +223,24 @@ check "$(wc -l <"$git_dir/cr-class-sweeps/feat/t16" | tr -d ' ')" "2" "T17 sweep
 ( cd "$repo" && printf 'SWEEP [codex-1@abc1234] class=x :: sites=a, b\n' | bash "$SCRIPT" aggregate --branch t18 ) 2>/dev/null
 check "$?" "2" "T18 rc (SWEEP line in aggregate mode)"
 
+# 19. HIMMEL-4641: sweep mode runs the gate's own record check at write time. A
+# record the gate would refuse (a site absent at the tip) is refused rc=2 with
+# nothing written; the same record naming real files lands. Needs a branch with
+# a tip, an agreed finding for the record's id, and the two files.
+(
+  cd "$repo" || exit 1
+  git checkout -q -b feat/t19
+  printf 'echo a\n' > a.sh; printf 'echo b\n' > b.sh
+  git add a.sh b.sh && git commit -q -m "t19 sites"
+)
+t19_head=$(git -C "$repo" rev-parse --verify refs/heads/feat/t19)
+printf '{"kind":"finding","head":"%s","branch":"feat/t19","model":"codex","finding_id":"t19-1","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}\n' "$t19_head" >> "$git_dir/cr-critic-scores.jsonl"
+( cd "$repo" && printf 'SWEEP [t19-1@%s] class=x :: sites=a.sh:1, nope.sh:2\n' "${t19_head:0:12}" | bash "$SCRIPT" sweep --branch feat/t19 ) 2>"$tmp/err19.txt"
+check "$?" "2" "T19 rc (record the gate would refuse)"
+[ ! -e "$git_dir/cr-class-sweeps/feat/t19" ] || { echo "FAIL: T19 refused record was written"; fail=1; }
+grep -q 'site-not-at-tip:nope.sh' "$tmp/err19.txt" || { echo "FAIL: T19 refusal does not name the fault"; fail=1; }
+( cd "$repo" && printf 'SWEEP [t19-1@%s] class=x :: sites=a.sh:1, b.sh:2\n' "${t19_head:0:12}" | bash "$SCRIPT" sweep --branch feat/t19 )
+check "$?" "0" "T19 rc (record the gate accepts)"
+check "$(wc -l <"$git_dir/cr-class-sweeps/feat/t19" | tr -d ' ')" "1" "T19 accepted record landed"
+
 [ "$fail" -eq 0 ] && echo "PASS test-write-verdicts" || exit 1
