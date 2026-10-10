@@ -392,7 +392,8 @@ EOF
     [ -z "$_td_bad" ] || return 1
     # Directive words, encoding declarations (coding: / coding=) and C
     # preprocessor lines change meaning although they start with #.
-    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*((#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=])|#[[:space:]]*(define|include|undef|ifn?def|if|else|elif|endif|line|error|import)([^[:alnum:]_]|$))' || true)"
+    # Build constraints, type/format/lint pragmas and editor modelines too.
+    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*((#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=]|go:|\+build|@ts-|type:|fmt:|isort|pylint|mypy|pyright|yapf|-\*-|vim?:|<reference|sourceMappingURL)|#[[:space:]]*(define|include|undef|ifn?def|if|else|elif|endif|line|error|import)([^[:alnum:]_]|$))' || true)"
     [ -z "$_td_dir" ] || return 1
     return 0
 }

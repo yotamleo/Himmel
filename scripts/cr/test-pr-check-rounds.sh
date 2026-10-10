@@ -1873,7 +1873,7 @@ assert_has "$t3b_out" "delta round 4 on t3conc" "the restarted pair is still the
 # HIMMEL-5109: a judge NO-GO on a test- or comment-only descendant of the last
 # reviewed head is bound to that head and buys the one round; a descendant
 # that changes code does not. A layer-decision without its keyword is named.
-for td_case in td-testpath td-comment td-code td-mode td-coding td-define; do
+for td_case in td-testpath td-comment td-code td-mode td-coding td-define td-gobuild; do
     three_rounds "$td_case" clean
     td_r3="$cap_r3_head"
     case "$td_case" in
@@ -1883,6 +1883,7 @@ for td_case in td-testpath td-comment td-code td-mode td-coding td-define; do
         td-mode) printf '# a clarifying comment\n' >> "$repo/$td_case.txt"; chmod +x "$repo/$td_case.txt" ;;
         td-coding) printf '# coding: latin-1\n' >> "$repo/$td_case.txt" ;;
         td-define) printf '#define LIMIT 1\n' >> "$repo/$td_case.txt" ;;
+        td-gobuild) printf '//go:build linux\n' >> "$repo/$td_case.txt" ;;
     esac
     git -C "$repo" commit -q -am "$td_case judged head"
     td_judged="$(git -C "$repo" rev-parse "$td_case")"
@@ -1891,7 +1892,7 @@ for td_case in td-testpath td-comment td-code td-mode td-coding td-define; do
     printf 'class: option-parsing\n\nthe fix does not hold\n' > "$jev/judge-evidence.md"
     judge "$td_case-1" NO-GO "$td_judged"
     td_out="$(start_round "$td_fix" clean "$td_case")"; td_rc=$?
-    if [ "$td_case" = td-code ] || [ "$td_case" = td-mode ] || [ "$td_case" = td-coding ] || [ "$td_case" = td-define ]; then
+    if [ "$td_case" = td-code ] || [ "$td_case" = td-mode ] || [ "$td_case" = td-coding ] || [ "$td_case" = td-define ] || [ "$td_case" = td-gobuild ]; then
         assert_eq "$td_rc" "8" "$td_case: a NO-GO on a descendant that changes behaviour buys no round"
     else
         assert_eq "$td_rc" "0" "$td_case: a NO-GO on a trivial descendant is bound to the reviewed head"
