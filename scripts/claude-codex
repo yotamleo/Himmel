@@ -577,7 +577,8 @@ export ANTHROPIC_DEFAULT_OPUS_MODEL="$CODEX_MODEL"
 # The client-side classifier cannot be pinned to a Claude model here: its Sonnet default
 # is not served by this codex-only proxy, so it falls back to $CODEX_MODEL, which over-reads
 # the user deny rules (HIMMEL-5077); the eval jail (scripts/eval/lane-quality/pilot-4869/
-# sandbox.sh) compensates with narrow allow rules until this switch goes.
+# sandbox.sh) compensates with narrow allow rules until this switch goes
+# (pinning the classifier model: HIMMEL-5164).
 export CLAUDE_CODE_AUTO_MODE_SERVER=0
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CODEX_CONTEXT_WINDOW"
 # HIMMEL-1887: AUTO_COMPACT_WINDOW sets the compaction THRESHOLD; it does not
