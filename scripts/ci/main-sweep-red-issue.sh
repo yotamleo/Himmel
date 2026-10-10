@@ -156,22 +156,31 @@ fi
 # into the issue body (main-red-closed-run) before closing; a red run with no
 # open issue reads the newest closed issue and stands down when that issue's
 # newest recorded run (closed-run, or the last red run for a hand close) is newer.
+# gh lists closed issues by CREATION order, not closure or marker order, so the
+# newest-created report is not necessarily the one holding the highest marker:
+# compare the most recent closed reports (bounded at 20) and take the maximum.
 if [ -z "$num" ] && [ -s "$TMP/failed" ]; then
-  if ! cnum="$(gh issue list --label "$LABEL" --state closed --limit 1 \
-      --json number --jq '.[0].number // empty' 2>/dev/null)"; then
+  if ! cnums="$(gh issue list --label "$LABEL" --state closed --limit 20 \
+      --json number --jq '.[].number' 2>/dev/null)"; then
     echo "main-sweep-red-issue: could not query closed issues (gh lookup failed) -- not creating, to avoid a stale report. Retrying next sweep." >&2
     exit 1
   fi
-  if [ -n "$cnum" ]; then
+  closed_run=0
+  closed_num=""
+  for cnum in $cnums; do
     if ! cbody="$(gh issue view "$cnum" --json body --jq .body 2>/dev/null)"; then
       echo "main-sweep-red-issue: could not read closed issue #$cnum (gh failed) -- not creating." >&2
       exit 1
     fi
-    closed_run="$(printf '%s\n' "$cbody" | sed -n 's/^<!-- main-red-\(closed-run\|run\): \([0-9][0-9]*\) -->[[:space:]]*$/\2/p' | sort -n | tail -n 1)"
-    if [ -n "$closed_run" ] && [ "$closed_run" -gt "$RUN_ID" ]; then
-      echo "main-sweep-red-issue: closed #$cnum was last written by run $closed_run, newer than $RUN_ID -- ignoring this older red run."
-      exit 0
+    crun="$(printf '%s\n' "$cbody" | sed -n 's/^<!-- main-red-\(closed-run\|run\): \([0-9][0-9]*\) -->[[:space:]]*$/\2/p' | sort -n | tail -n 1)"
+    if [ -n "$crun" ] && [ "$crun" -gt "$closed_run" ]; then
+      closed_run="$crun"
+      closed_num="$cnum"
     fi
+  done
+  if [ "$closed_run" -gt "$RUN_ID" ]; then
+    echo "main-sweep-red-issue: closed #$closed_num was last written by run $closed_run, newer than $RUN_ID -- ignoring this older red run."
+    exit 0
   fi
 fi
 

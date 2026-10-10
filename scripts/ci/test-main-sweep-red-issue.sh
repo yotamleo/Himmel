@@ -59,7 +59,8 @@ case "$*" in
   "issue list"*"--state closed"*) [ -e "$STUB/closed_list_fail" ] && exit 1; cat "$STUB/closed_issue" 2>/dev/null ;;
   "issue list"*)            [ -e "$STUB/list_fail" ] && exit 1; cat "$STUB/open_issue" 2>/dev/null ;;
   "issue view"*)
-    if [ -e "$STUB/closed_issue" ] && [ "$3" = "$(cat "$STUB/closed_issue")" ]; then cat "$STUB/closed_body" 2>/dev/null
+    if [ -e "$STUB/closed_body_$3" ]; then cat "$STUB/closed_body_$3"
+    elif [ -e "$STUB/closed_issue" ] && [ "$3" = "$(head -n 1 "$STUB/closed_issue")" ]; then cat "$STUB/closed_body" 2>/dev/null
     else cat "$STUB/issue_body" 2>/dev/null; fi ;;
   "issue create"*|"issue edit"*|"issue comment"*|"issue close"*|"label create"*) : ;;
   *) echo "stub gh: unhandled: $*" >&2; exit 99 ;;
@@ -400,6 +401,24 @@ sweep
 has "main-red-closed-run: 900" "$out" "the close records the closing run id in the body"
 has "gh issue edit 7" "$log" "the close edits the body"
 has "gh issue close 7" "$log" "the close still closes"
+
+# A closed-issue listing is by CREATION order, so the newest-created report need
+# not hold the newest marker. #9 (newest created) is old; #6 holds run 950.
+newcase closed-two-order-differs
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '9\n6\n' > "$STUB/closed_issue"
+printf 'b\n<!-- main-red-run: 700 -->\n<!-- main-red-closed-run: 750 -->\n' > "$STUB/closed_body_9"
+printf 'b\n<!-- main-red-run: 800 -->\n<!-- main-red-closed-run: 950 -->\n' > "$STUB/closed_body_6"
+sweep
+hasnt "gh issue create" "$log" "the highest marker across closed reports wins, not the newest-created"
+
+newcase closed-two-all-older
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '9\n6\n' > "$STUB/closed_issue"
+printf 'b\n<!-- main-red-closed-run: 750 -->\n' > "$STUB/closed_body_9"
+printf 'b\n<!-- main-red-closed-run: 800 -->\n' > "$STUB/closed_body_6"
+sweep
+has "gh issue create" "$log" "every closed report older than this run still opens the issue"
 
 # 19. HIMMEL-5129: a re-run of the SAME run id (ordering guard is strict -gt)
 # must refresh the open issue, not be ignored as older.
