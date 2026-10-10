@@ -698,6 +698,9 @@ done
 # ponytail: whole-file, not added-lines — any edit to a file that already spells
 # a ledger path runs the registry lint (0s); upgrade path: diff-hunk matching if
 # a --selector-miss or cost review shows the widening matters.
+# Rows match case-insensitively (HIMMEL-5132: the uninstall rule's suite reads
+# the name in any case); the ledger rows widen with it, which only over-selects
+# a 0 s suite.
 content_rules() {
     cat <<'EOF'
 HIMMEL_UNINSTALL_[^A-Za-z]{0,3}REAL_HOME|scripts/test-uninstall-real-home-callers.sh
@@ -716,10 +719,18 @@ while IFS= read -r f; do
             git show "${rev}:${f}" >> "$work/content" || io_fail "reading ${f} at ${rev} for the content rules"
         fi
     done
+    # HIMMEL-5132: also match the text as the shell sees it, continuations
+    # joined and every quote and backslash deleted, so a name split by quotes or
+    # a continuation (`HIMMEL""_UNINSTALL_...`) still reaches its row. This is
+    # the normalisation test-uninstall-real-home-callers.sh's sets_var applies.
+    sed -e ':a' -e '/\\$/N' -e 's/\\\n//' -e 'ta' "$work/content" \
+        | sed -e "s/\\\$\\([\"']\\)/\\1/g" -e "s/[\"'\\\\]//g" > "$work/content.norm" \
+        || io_fail "normalising ${f} for the content rules"
+    cat "$work/content.norm" >> "$work/content" || io_fail "appending the normalised text of ${f}"
     while IFS='|' read -r re rule_suite; do
         [ -n "$re" ] || continue
         cgrep_rc=0
-        grep -Eq -- "$re" "$work/content" || cgrep_rc=$?
+        grep -Eiq -- "$re" "$work/content" || cgrep_rc=$?
         if [ "$cgrep_rc" -gt 1 ]; then
             echo "impacted-suites: content-rule grep failed (rc=$cgrep_rc) on ${f} — cannot tell which suites are impacted" >&2
             exit 2
@@ -831,6 +842,17 @@ marketplace/plugins/lean-skills/skills/* marketplace/plugins/lean-skills/hooks/t
 marketplace/plugins/handover/templates/*-next-session.md marketplace/plugins/handover/scripts/test-skill-e2e.sh
 marketplace/plugins/*/hooks/hooks.json scripts/codex/test-codex-hook-parity.sh
 templates/luna-second-brain/scripts/* templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/.gitignore templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/.gitattributes templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/.pre-commit-config.yaml templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/.gitleaks.toml templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/.env.example templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/.vault-template.json templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/README.md templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/_CLAUDE.md templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/index.md templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/log.md templates/luna-second-brain/scripts/test-vault-git.sh
+templates/luna-second-brain/Welcome.md templates/luna-second-brain/scripts/test-vault-git.sh
 EOF
 }
 scan_roots > "$work/scan-roots" || io_fail "writing the scan-roots map"
