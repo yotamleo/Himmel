@@ -101,6 +101,9 @@ changed=$(tr '\0' '\n' < "$tools/changed.z")
 trust_re=$(grep -vE '^[[:space:]]*(#|$)' "$tools/scripts/ci/ci-trust-paths.txt" 2>/dev/null) || trust_re=""
 [ -n "$trust_re" ] || verdict_full "trust-list-empty" "$base_sha" "$selector_blob"
 # grep: 0 = a trust path changed, 1 = none did, anything else = broken list.
+# HIMMEL-5174: create the output first in a checked step. A redirect that cannot
+# open its target is also rc 1, which the case below reads as "no trust path".
+: > "$tools/hits.z" || verdict_full "trust-match-failed" "$base_sha" "$selector_blob"
 grep -z -E -f <(printf '%s\n' "$trust_re") "$tools/changed.z" > "$tools/hits.z"; grc=$?
 hits=$(tr '\0' '\n' < "$tools/hits.z")
 case $grc in

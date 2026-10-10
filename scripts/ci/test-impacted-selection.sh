@@ -239,6 +239,24 @@ for name in 'scripts/ci/we"ird.sh' 'scripts/ci/back\slash.sh' $'scripts/ci/ta\tb
 done
 g checkout -q "$BASE" 2>/dev/null
 
+# --- IS10b ------------------------------------------------------------------
+# HIMMEL-5174 (judge j2330a item 4): the trust-path grep's output file that cannot
+# open is rc 1, which read as "no trust path" and let a trust-path PR go impacted.
+# A mktemp shim makes the work dir with a directory already at hits.z.
+SHIM_MK="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$SB" "$SUITE_LOCK_SANDBOX" "$SHIM_MK"' EXIT
+# shellcheck disable=SC2016  # the shim body keeps its $vars literal
+printf '#!/usr/bin/env bash\nd="$(%s "$@")" || exit $?\nmkdir "$d/hits.z" || exit 1\nprintf "%%s\\n" "$d"\n' "$(command -v mktemp)" > "$SHIM_MK/mktemp"
+chmod +x "$SHIM_MK/mktemp"
+out=$(cd "$SB" && PATH="$SHIM_MK:$PATH" bash "$SEL" "$BASE" "$H_TRUST" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode full' && grepq "$out" '^reason trust-match-failed'; then
+  pass "IS10b: a trust-match output that cannot open fails CLOSED (full sweep)"
+else fail "IS10b: rc=$rc out: $out"; fi
+out=$(cd "$SB" && PATH="$SHIM_MK:$PATH" bash "$SEL" "$BASE" "$H_CODE" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode full' && grepq "$out" '^reason trust-match-failed'; then
+  pass "IS10b: the same open failure on a non-trust PR is full too, never impacted"
+else fail "IS10b (non-trust): rc=$rc out: $out"; fi
+
 # --- IS11 -------------------------------------------------------------------
 out=$(sel "$BASE" "$H_ADD"); rc=$?
 if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \

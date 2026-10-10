@@ -718,13 +718,11 @@ while [ -s "$front" ]; do
         if grep -Fxq -- "$hit" "$seen"; then continue; fi
         printf '%s\n' "$hit" >> "$seen" || io_fail "growing the source closure"
         printf '%s\n' "$hit" >> "$work/next" || io_fail "growing the source closure"
-        # ponytail: a closure helper gets its basename needle only, no stem needle
-        # (add_stem_needle). A sourced file is named with its extension in the
-        # `source` line that put it here, so a suite that names only its stem is not
-        # running it; the stem rule exists for scripts a suite INVOKES by name
-        # (`guard_rc <hook>`), and a changed hook still gets one above. Unmeasured
-        # widening; upgrade path is a --selector-miss row naming such a suite.
+        # HIMMEL-5174: the closure hit is the SOURCER, not the sourced file, and a
+        # suite may invoke it by its stem alone (`guard_rc <hook>`, the hook sourcing
+        # a changed lib), so it gets the stem needle too.
         add_needle "$(file_literal "$hit")"
+        add_stem_needle "$hit"
     done < "$work/src.out"
     cp "$work/next" "$front" || io_fail "advancing the source closure"
 done
@@ -1062,7 +1060,7 @@ if [ "$selector_miss" -eq 1 ]; then
 fi
 
 if [ "$check" -eq 0 ]; then
-    cat "$impacted"
+    cat "$impacted" || io_fail "listing the impacted suites"
     exit 0
 fi
 
