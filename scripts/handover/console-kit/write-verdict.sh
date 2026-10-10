@@ -78,6 +78,18 @@
 # between check and rename; a separate-uid verdict store is the upgrade path
 # (HIMMEL-3578, the GO signer's twin).
 #
+# HIMMEL-5109: a judge often rules on a head that follows the last reviewed one
+# by a test-only or comment-only commit. `--bind-reviewed <sha>` (NO-GO only)
+# checks, with review-round.sh's own `trivial-descendant` verb run in the cwd's
+# repo, that <head> is a strict descendant of <sha> and the delta changes only
+# test paths or comment lines, then writes the NO-GO for <head> as usual and
+# records <sha> in a signed `reviewed-head:` annotation; any other delta exits 2,
+# nothing written. The verdict line keeps naming the judged head, so every veto
+# reader (go_trust_verdict, the GO-over-NO-GO scan, the scope round) still keys
+# on it; the round gate binds such a NO-GO to the reviewed head at read time.
+# A `layer-decision:` evidence line without its text|os|classifier|accept
+# keyword draws a stderr warning (review-round.sh would silently ignore it).
+#
 # Exit codes:
 #   0  written (the path on stdout)
 #   2  usage / validation
@@ -92,7 +104,7 @@ case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; e
 . "$_ah_d/../../cr/anchor-handoff.sh" || exit 2
 
 usage() {
-    echo "usage: write-verdict.sh <qid> <GO|NO-GO> <head> --pr <n> --evidence-file <path> [--judge <name>] [--branch <name>]" >&2
+    echo "usage: write-verdict.sh <qid> <GO|NO-GO> <head> --pr <n> --evidence-file <path> [--judge <name>] [--branch <name>] [--bind-reviewed <sha>]" >&2
     exit 2
 }
 seg_ok() {
@@ -102,9 +114,13 @@ seg_ok() {
 [ "$#" -ge 3 ] || usage
 QID=$1 ANSWER=$2 HEAD=$3
 shift 3
-EVIDENCE="" NAME=judge PR="" BRANCH=""
+EVIDENCE="" NAME=judge PR="" BRANCH="" BIND=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --bind-reviewed)
+            [ "$#" -ge 2 ] || usage
+            [ -n "$2" ] || { echo "write-verdict: --bind-reviewed needs the full 40-char lowercase hex sha (got an empty value)" >&2; exit 2; }
+            BIND=$2; shift 2 ;;
         --pr) [ "$#" -ge 2 ] || usage; PR=$2; shift 2 ;;
         --branch) [ "$#" -ge 2 ] || usage; BRANCH=$2; shift 2 ;;
         --evidence-file) [ "$#" -ge 2 ] || usage; EVIDENCE=$2; shift 2 ;;
@@ -119,6 +135,23 @@ case "$HEAD" in *[!0123456789abcdef]*) HEAD_OK=0 ;; *) HEAD_OK=1 ;; esac
 if [ "$HEAD_OK" -ne 1 ] || [ "${#HEAD}" -ne 40 ]; then
     echo "write-verdict: head must be the full 40-char lowercase hex sha (got '$HEAD')" >&2
     exit 2
+fi
+# HIMMEL-5109: --bind-reviewed binds a NO-GO the judge ruled on a later head to
+# the last reviewed head; the delta check itself runs once the repo is known.
+if [ -n "$BIND" ]; then
+    case "$BIND" in *[!0123456789abcdef]*) BIND_OK=0 ;; *) BIND_OK=1 ;; esac
+    if [ "$BIND_OK" -ne 1 ] || [ "${#BIND}" -ne 40 ]; then
+        echo "write-verdict: --bind-reviewed must be the full 40-char lowercase hex sha (got '$BIND')" >&2
+        exit 2
+    fi
+    if [ "$ANSWER" != NO-GO ]; then
+        echo "write-verdict: --bind-reviewed binds a NO-GO only (a GO is never moved to another head)" >&2
+        exit 2
+    fi
+    if [ "$BIND" = "$HEAD" ]; then
+        echo "write-verdict: --bind-reviewed names the judged head itself; give the earlier reviewed head" >&2
+        exit 2
+    fi
 fi
 [ -n "$EVIDENCE" ] || { echo "write-verdict: --evidence-file <path> is required" >&2; exit 2; }
 # HIMMEL-4928: the verdict names its PR, as go.sh's PR argument is spelled
@@ -202,6 +235,13 @@ if [ "$ANSWER" = NO-GO ]; then
         exit 2
     fi
 fi
+# HIMMEL-5109: review-round.sh honours a layer-decision line only as
+# `layer-decision: text|os|classifier|accept <reason>`; one without the keyword
+# is silently dropped and the repeated-class stop stays. Warn at write time
+# (not refuse: a NO-GO only narrows, HIMMEL-4714) with the same two patterns.
+if awk '/^layer-decision:/ && (!/^layer-decision: (text|os|classifier|accept)[ \t]+[^ \t]/ || /\r$/) { bad = 1 } END { exit !bad }' "$EVIDENCE"; then
+    echo "write-verdict: warning - a layer-decision line lacks a layer keyword; review-round.sh will not honour it. Write: layer-decision: text|os|classifier|accept <reason> (HIMMEL-5109)" >&2
+fi
 case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
     ''|0|false|off|no) ;;
     *)
@@ -231,6 +271,22 @@ ANCHOR="$(cd "$HERE/../../.." && pwd)"
 ROOT=$(go_resolve_root "$ANCHOR") || { echo "write-verdict: cannot resolve the handover root go.sh reads" >&2; exit 3; }
 SCOPE=$(go_verdict_scope "$ANCHOR") || { echo "write-verdict: cannot resolve this repo's <user>/<bucket> verdict scope" >&2; exit 3; }
 [ -d "$ROOT" ] || { echo "write-verdict: handover root '$ROOT' is not a directory" >&2; exit 3; }
+
+# HIMMEL-5109: the judged head must be a strict descendant of the reviewed head
+# whose delta is test-path-only or comment-only - review-round.sh's own rule,
+# asked through its read-only verb so the writer and the gate cannot disagree.
+# It runs in the caller's cwd (the repo under review); the absolute script path
+# is never handed off to the anchor. The verdict line stays on the judged head
+# (moving it to the reviewed head would strip the judged head of its veto); the
+# reviewed head is only annotated.
+REVIEWED=""
+if [ -n "$BIND" ]; then
+    if ! bash "$ANCHOR/scripts/cr/review-round.sh" trivial-descendant "$BIND" "$HEAD" >/dev/null 2>&1; then
+        echo "write-verdict: --bind-reviewed refused - $HEAD is not a strict descendant of $BIND whose delta changes only test paths or comment lines (run from the repo under review); nothing written" >&2
+        exit 2
+    fi
+    REVIEWED=$BIND
+fi
 
 # Walk <root>/<user>/<bucket>/verdicts/<qid>, refusing a symlink at any step.
 dir=$ROOT
@@ -337,6 +393,7 @@ if ! {
     printf 'pr: %s\n' "$PR" &&
     { [ -z "$BRANCH" ] || printf 'branch: %s\n' "$BRANCH"; } &&
     printf '\n' &&
+    { [ -z "$REVIEWED" ] || printf 'reviewed-head: %s\nbound-by: write-verdict --bind-reviewed; the delta from the reviewed head is test-path-only or comment-only\n\n' "$REVIEWED"; } &&
     cat "$EVIDENCE" &&
     # HIMMEL-4984: the body ends in a newline, so the mac line is a line of its own.
     { [ -z "$(tail -c 1 "$EVIDENCE")" ] || printf '\n'; }
