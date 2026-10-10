@@ -224,6 +224,23 @@ test("an allow-rule issues no confirm code for a rule with a lone surrogate (HIM
   }
 });
 
+test("an allow-rule issues no confirm code for a rule containing U+FFFD (HIMMEL-5127)", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-ar-fffd-"));
+  const reg = join(root, "rules.json");
+  // The executor refuses U+FFFD (jq may produce it from a lone surrogate), so the prompt must not offer it.
+  await writeFile(reg, '{"fixture-one":"Bash(a\\ufffdb)"}');
+  const prev = process.env.BREAK_GLASS_ALLOW_REGISTRY;
+  process.env.BREAK_GLASS_ALLOW_REGISTRY = reg;
+  try {
+    const h = harness();
+    await issue(root, h, "/allow-rule fixture-one");
+    expect(h.replies[0]).toContain("no reviewed rule");
+    expect(h.replies[0]).not.toMatch(/\/confirm [0-9a-f]{8}/);
+  } finally {
+    if (prev === undefined) delete process.env.BREAK_GLASS_ALLOW_REGISTRY; else process.env.BREAK_GLASS_ALLOW_REGISTRY = prev;
+  }
+});
+
 test("a mutating op issues a code and runs nothing; the matching /confirm runs it once", async () => {
   for (const text of BREAK_GLASS.filter((op) => op !== "station-status").map((op) => ({
     "revert-main": "/revert-main 2202", "repin-hooks": "/repin-hooks", "launch-leg": "/launch-leg N7 --hook-bypass",

@@ -713,7 +713,7 @@ function allowRuleText(id: string): string | null {
     rule = (JSON.parse(readFileSync(reg, "utf8")) as Record<string, unknown>)[id];
   } catch { rule = undefined; }
   // eslint-disable-next-line no-control-regex
-  if (typeof rule !== "string" || rule === "" || /[\u0000-\u001f\u007f-\u009f]/.test(rule) || !rule.isWellFormed()) return null;
+  if (typeof rule !== "string" || rule === "" || /[\u0000-\u001f\u007f-\u009f]/.test(rule) || !rule.isWellFormed() || rule.includes("\ufffd")) return null;
   return `${RULE_SHOWN_PREFIX}${rule}`;
 }
 
