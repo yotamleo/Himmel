@@ -418,6 +418,18 @@ if [ -n "$r1" ] && [ "$r1" != "$r2" ] && [ "$r1" = "$r3" ]; then
 else
   fail "F16: relative origin ids: parent a [$r1] parent b [$r2] a's worktree [$r3]"
 fi
+# --separate-git-dir: the common dir is not the checkout, so a relative origin
+# resolves against the checkout (the first worktree), never the git dir.
+mkdir -p "$sb/rs" "$sb/rt" "$sb/gd"
+git init -q --separate-git-dir "$sb/gd/s.git" "$sb/rs/co" 2>/dev/null
+git init -q --separate-git-dir "$sb/gd/t.git" "$sb/rt/co" 2>/dev/null
+git -C "$sb/rs/co" remote add origin ../r.git; git -C "$sb/rt/co" remote add origin ../r.git
+s1=$(_flake_repo_id "$sb/rs/co" 2>&1); s2=$(_flake_repo_id "$sb/rt/co" 2>&1)
+if [ -n "$s1" ] && [ "$s1" != "$s2" ]; then
+  pass "F16: --separate-git-dir checkouts with ../r.git from two parents are two ids"
+else
+  fail "F16: separate-git-dir relative origin ids collide: [$s1] [$s2]"
+fi
 q1=$(_flake_repo_id "$sb/q1" 2>&1); q2=$(_flake_repo_id "$sb/q2" 2>&1); q3=$(_flake_repo_id "$sb/q3" 2>&1)
 q4=$(_flake_repo_id "$sb/q4" 2>&1); q5=$(_flake_repo_id "$sb/q5" 2>&1); q6=$(_flake_repo_id "$sb/q6" 2>&1)
 if [ "$q1" = "$i3" ] && [ "$q2" = "$i2" ] && [ "$q3" = "$q4" ]; then

@@ -69,7 +69,15 @@ _flake_repo_id() {
     case "${_common:-}" in
       */.git) _base=${_common%/.git} ;;
       '') _base=$(cd "$1" 2>/dev/null && pwd) ;;
-      *) _base=$_common ;;
+      *)
+        # a separate git dir: the main checkout is this top-level, but only when
+        # <dir> is that checkout; a linked worktree of such a repo cannot name it
+        # (ponytail: resolved against the git dir there, revisit if a fleet repo
+        # uses --separate-git-dir with linked worktrees)
+        if [ "$(git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null)" = "$_common" ]; then
+          _base=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)
+        fi
+        [ -n "${_base:-}" ] || _base=$_common ;;
     esac
     printf 'origin-%s' "$(_flake_norm_url "$_url" "$_base" | cksum | cut -d' ' -f1)"
   else
