@@ -252,7 +252,10 @@ printf 'The job running on runner X has exceeded the maximum execution time of 2
 sweep
 if [ "$rc" -eq 0 ]; then ok "timed-out cancelled run exits 0"; else bad "timed-out cancelled run exits $rc: $out"; fi
 has "gh issue create" "$log" "a cancelled run with a timed-out shard and failed aggregator opens the issue"
-has "failed: shell-unit (ubuntu-latest)" "$out" "the failed aggregator is reported"
+has "failed: lint" "$out" "the timed-out job is reported"
+# HIMMEL-5143: the only shard here is cancelled with no timeout note, so the
+# aggregate's failure is its cancellation, not a verdict (was asserted reported).
+hasnt "failed: shell-unit" "$out" "an aggregate failed only by a cancelled shard is not reported"
 has "failed: lint" "$out" "a timed-out non-shard job is reported failed"
 hasnt "failed: doc-invariants" "$out" "a plain cancelled job (no timeout note) is not reported failed"
 
@@ -458,6 +461,8 @@ printf '7\n' > "$STUB/open_issue"
 printf 'old body\n<!-- main-red-run: 1000 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
 sweep
 hasnt "gh issue edit" "$log" "open guard compares numerically: run 1000 is newer than 900"
+if [ "$rc" -eq 0 ]; then ok "wide-open-newer stands down with exit 0"; else bad "wide-open-newer exit=$rc; out: $out"; fi
+has "ignoring this older run" "$out" "wide-open-newer says it stood down"
 
 newcase wide-open-sort
 printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
@@ -465,6 +470,8 @@ printf '7\n' > "$STUB/open_issue"
 printf 'old body\n<!-- main-red-run: 1000 -->\n<!-- main-red-failed: lint -->\n\n<!-- main-red-closed-run: 99 -->\n' > "$STUB/issue_body"
 sweep
 hasnt "gh issue edit" "$log" "open guard takes the numeric max of its markers (1000 over 99)"
+if [ "$rc" -eq 0 ]; then ok "wide-open-sort stands down with exit 0"; else bad "wide-open-sort exit=$rc; out: $out"; fi
+has "ignoring this older run" "$out" "wide-open-sort says it stood down"
 
 newcase wide-closed-newer
 printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
@@ -472,6 +479,8 @@ printf '6\n' > "$STUB/closed_issue"
 printf 'b\n<!-- main-red-closed-run: 1000 -->\n' > "$STUB/closed_body"
 sweep
 hasnt "gh issue create" "$log" "closed guard compares numerically: run 1000 is newer than 900"
+if [ "$rc" -eq 0 ]; then ok "wide-closed-newer stands down with exit 0"; else bad "wide-closed-newer exit=$rc; out: $out"; fi
+has "ignoring this older red run" "$out" "wide-closed-newer says it stood down"
 
 newcase wide-closed-sort
 printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
@@ -479,6 +488,8 @@ printf '6\n' > "$STUB/closed_issue"
 printf 'b\n<!-- main-red-run: 1000 -->\n<!-- main-red-closed-run: 99 -->\n' > "$STUB/closed_body"
 sweep
 hasnt "gh issue create" "$log" "closed guard takes the numeric max of one report's markers"
+if [ "$rc" -eq 0 ]; then ok "wide-closed-sort stands down with exit 0"; else bad "wide-closed-sort exit=$rc; out: $out"; fi
+has "ignoring this older red run" "$out" "wide-closed-sort says it stood down"
 
 newcase wide-closed-max
 printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
@@ -487,6 +498,8 @@ printf 'b\n<!-- main-red-closed-run: 1000 -->\n' > "$STUB/closed_body_9"
 printf 'b\n<!-- main-red-closed-run: 99 -->\n' > "$STUB/closed_body_6"
 sweep
 hasnt "gh issue create" "$log" "the running maximum across closed reports is numeric (1000 survives 99)"
+if [ "$rc" -eq 0 ]; then ok "wide-closed-max stands down with exit 0"; else bad "wide-closed-max exit=$rc; out: $out"; fi
+has "ignoring this older red run" "$out" "wide-closed-max says it stood down"
 
 # A closed report stamped by this very run id: strict -gt, so the red run files.
 newcase closed-equal-red
@@ -527,6 +540,51 @@ sweep
 edit_ln="$(grep -n '^gh issue edit 7' "$STUB/gh.log" | head -n 1 | cut -d: -f1)"
 close_ln="$(grep -n '^gh issue close 7' "$STUB/gh.log" | head -n 1 | cut -d: -f1)"
 if [ -n "$edit_ln" ] && [ -n "$close_ln" ] && [ "$edit_ln" -lt "$close_ln" ]; then ok "the closing-run stamp edit precedes the close"; else bad "edit line '$edit_ln' not before close line '$close_ln'"; fi
+
+# 21. HIMMEL-5143. Job lists below are copied from the real Himmel runs
+# 38014176513 (push, every shard cancelled, aggregate "failure") and 38031316100
+# (workflow_dispatch, all green, aggregate named "(dispatch verify)").
+FIX="$ROOT/scripts/ci/test-main-sweep-red-fixtures"
+PUSH_FIX="$FIX/run-38014176513-push-cancelled-shards.tsv"
+DISPATCH_FIX="$FIX/run-38031316100-dispatch-green.tsv"
+
+# (b) an aggregate that failed only because every shard was cancelled is not red.
+newcase cancelled-shards-not-red
+cp "$PUSH_FIX" "$STUB/jobs.tsv"
+sweep
+hasnt "gh issue create" "$log" "an aggregate failed only by cancelled shards opens no report"
+hasnt "failed: shell-unit" "$out" "a cancelled-shard aggregate failure is not recorded as failed"
+
+# ... but a finished red shard keeps the aggregate failure real.
+newcase red-shard-aggregate-red
+sed 's/^cancelled\(\tshell-unit-shard (ubuntu-latest, 3)\)$/failure\1/' "$PUSH_FIX" > "$STUB/jobs.tsv"
+sweep
+has "gh issue create" "$log" "a failed shard + failed aggregate is still red"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when a shard really failed"
+
+# ... and so does a shard killed by timeout-minutes (cancelled + annotation).
+newcase timed-out-shard-aggregate-red
+awk -F'\t' -v OFS='\t' '$2=="shell-unit-shard (ubuntu-latest, 3)"{print $1,$2,"4242";next}{print}' "$PUSH_FIX" > "$STUB/jobs.tsv"
+printf 'The job running on runner X has exceeded the maximum execution time of 30 minutes.\n' > "$STUB/ann-4242"
+sweep
+has "gh issue create" "$log" "a timed-out shard keeps the aggregate failure red"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when a shard timed out"
+
+# (a) a report recorded from the push aggregate closes on a green dispatch run.
+newcase push-aggregate-closes-on-dispatch
+cp "$DISPATCH_FIX" "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: shell-unit (ubuntu-latest) -->\n' > "$STUB/issue_body"
+sweep
+has "gh issue close 7" "$log" "a report recorded from the push aggregate closes on a green dispatch run"
+
+# The dispatch aggregate failing is the same job as the push aggregate failing.
+newcase dispatch-aggregate-red-name
+sed 's/^success\(\tshell-unit-shard (ubuntu-latest, 3)\)$/failure\1/; s/^success\(\tshell-unit (dispatch verify) (ubuntu-latest)\)$/failure\1/' "$DISPATCH_FIX" > "$STUB/jobs.tsv"
+sweep
+has "failed: shell-unit (ubuntu-latest)" "$out" "a dispatch aggregate failure is recorded under the event-independent name"
+hasnt "dispatch verify" "$out" "the report never names the event-dependent aggregate"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
