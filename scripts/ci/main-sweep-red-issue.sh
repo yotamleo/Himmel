@@ -143,7 +143,9 @@ if [ -n "$num" ]; then
   # later one). The issue records the newest run that wrote it; an older run
   # must not close or overwrite a newer verdict. A body with no marker (opened
   # by hand, or by a pre-marker version) is treated as run 0.
-  seen_run="$(printf '%s\n' "$body" | sed -n 's/^<!-- main-red-run: \([0-9][0-9]*\) -->[[:space:]]*$/\1/p' | head -n 1)"
+  # A close that stamped main-red-closed-run but then failed to close leaves the
+  # issue open with that marker: it is the newest run that wrote the issue too.
+  seen_run="$(printf '%s\n' "$body" | sed -n 's/^<!-- main-red-\(closed-run\|run\): \([0-9][0-9]*\) -->[[:space:]]*$/\2/p' | sort -n | tail -n 1)"
   if [ -n "$seen_run" ] && [ "$seen_run" -gt "$RUN_ID" ]; then
     echo "main-sweep-red-issue: #$num was last written by run $seen_run, newer than $RUN_ID -- ignoring this older run."
     exit 0
@@ -159,6 +161,8 @@ fi
 # gh lists closed issues by CREATION order, not closure or marker order, so the
 # newest-created report is not necessarily the one holding the highest marker:
 # compare the most recent closed reports (bounded at 20) and take the maximum.
+# ponytail: a report created before the newest 20 that was reopened and closed
+# again is not seen, upgrade path: page closed reports if reports pile up past 20.
 if [ -z "$num" ] && [ -s "$TMP/failed" ]; then
   if ! cnums="$(gh issue list --label "$LABEL" --state closed --limit 20 \
       --json number --jq '.[].number' 2>/dev/null)"; then

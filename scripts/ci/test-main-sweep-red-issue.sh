@@ -420,6 +420,15 @@ printf 'b\n<!-- main-red-closed-run: 800 -->\n' > "$STUB/closed_body_6"
 sweep
 has "gh issue create" "$log" "every closed report older than this run still opens the issue"
 
+# The close stamped its run id but then failed to close: the issue is still
+# open and carries the closed-run marker, which the open-issue guard must honour.
+newcase open-stamped-newer
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: lint -->\n\n<!-- main-red-closed-run: 950 -->\n' > "$STUB/issue_body"
+sweep
+hasnt "gh issue edit" "$log" "an older red run does not overwrite an open issue stamped by a newer green close"
+
 # 19. HIMMEL-5129: a re-run of the SAME run id (ordering guard is strict -gt)
 # must refresh the open issue, not be ignored as older.
 newcase order-equal-red
