@@ -1898,6 +1898,9 @@ names_base() {
 
 raw_mention() {
     local t="$1" any="$2" u script_path vars_list base v env_s=0
+    # The pattern ops below re-decode the whole string in a UTF-8 locale
+    # (quadratic on a large heredoc, HIMMEL-4729); every tested char is ASCII.
+    local LC_ALL=C
     local re='^(.*)\$\{[^}]*\}(.*)$'
     local env_re='(^|[^[:alnum:]_-])env([^[:alnum:]_-].*)?(^|[^[:alnum:]_-])-(-s|[[:alnum:]]*S)'
     t=${t//\\$'\r\n'/}
