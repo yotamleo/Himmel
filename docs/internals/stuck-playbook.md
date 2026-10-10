@@ -210,11 +210,21 @@ head>`). The PR's own green rollup is not the question here: main is.
    `Fixes-main-red: run=<red run id>`, or `Fixes-main-red: suite=<name>` where
    `<name>` (4+ chars of `[A-Za-z0-9._-]`) is a **failed job** of that run (the
    whole job name or its matrix base name, e.g. `shell-unit-shard`; never a
-   fragment), or a
-   `test-*.sh` suite printed on a `##[error]` line of its failed log. It is
+   fragment), or any `.sh` script named on a `##[error]` line of its failed
+   log. A declaration is read up to the first whitespace, so **a job whose name
+   contains spaces cannot be declared by `suite=`: declare `run=<red run id>`
+   instead** (HIMMEL-5135). It is
    verified against the run, never trusted: a wrong run id or an unrelated name
    is refused with the same exit 22. Trailers belong in the FIRST commit; a
    late declaration costs a new commit, never `--amend`.
+   **Or the console writes a fix-GO** (HIMMEL-5134), when a commit line is not
+   an option: `bash <anchor>/scripts/handover/console-kit/go.sh --fix-main-red
+   <red run id> <pr> <full head sha>`, from the console (a leg cannot; it needs
+   the same ready-check PASS as any GO). The signed file names ONE red run, one
+   PR and one head, and the gate accepts it only while that run is still
+   main's latest completed red run: after another sweep goes red, or the PR
+   head moves, write a new one. It replaces only this declaration; the
+   ordinary GO (and a trust-reviewed GO on a trust path) is still required.
 3. **Your PR is unrelated:** do not merge. Report `MAIN-RED <job> <case>` to the
    console (or confirm one is open), and merge after the fix lands. Main stays
    "red" until the next cron sweep or a manual
@@ -226,9 +236,7 @@ head>`). The PR's own green rollup is not the question here: main is.
 
 Decided case: when the window holds **no** completed non-cancelled run at all
 (new repo, or the workflow never ran on main), nothing red was observed and the
-merge proceeds with an audit line `main-red=no-completed-run`. A console-written
-fix-GO is not implemented (follow-up); the commit declaration is the one way
-through.
+merge proceeds with an audit line `main-red=no-completed-run`.
 
 ---
 

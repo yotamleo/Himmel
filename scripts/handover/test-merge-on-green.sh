@@ -3984,6 +3984,83 @@ assert_audit_has "5115-j: audited" "REFUSED reason=main-red"
 STUB_RUN_LIST_JSON="$MOG_RUN_RED" run_mog 22 "5115-k: dry-run on red main → exit 22" -- --dry-run
 rm -f "$MOG_RUN_LOG"
 
+# ── HIMMEL-5134 — console-written fix-GO is the second way through the gate ───
+# go.sh --fix-main-red <run> <pr> <head> writes a signed file naming ONE red
+# run; the gate accepts it only when that run is the CURRENT red run, for this
+# PR and head, and never without the signature.
+MOG_FX_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/mog-fx.XXXXXX") || { echo "FAIL: 5134 setup: mktemp" >&2; exit 1; }
+MOG_FX_ROOT=$(cd "$MOG_FX_ROOT" && pwd)
+mog5134_run() {  # <expect rc> <label> [--] [run_mog args]: red main, PR 77 at GO_SHA, root MOG_FX_ROOT
+    HANDOVER_DIR="$MOG_FX_ROOT" STUB_SHA="$GO_SHA" STUB_RUN_LIST_JSON="${MOG_RUN_FX:-$MOG_RUN_RED}" run_mog "$@"
+}
+# 5134-a (RED) — red main, nothing declared, no fix-GO: refused, as before.
+mog5134_run 22 "5134-a: red main, no declaration, no fix-GO → exit 22"
+
+# 5134-b — a fix-GO for the red run, this PR and this head: merged, audited.
+go_write "$MOG_FX_ROOT" --fix-main-red 37964772913 77 "$GO_SHA"
+mog5134_run 0 "5134-b: fix-GO for the current red run → merged"
+assert_audit_has "5134-b: audited as the declared fix, via the fix-GO" "via=fix-go:run=37964772913"
+assert_merge_has "5134-b: merge pins the certified head" "--match-head-commit $GO_SHA"
+
+# 5134-c — stale: main moved to a newer red run; the fix-GO names the old one.
+MOG_RUN_FX='[{"conclusion":"failure","createdAt":"2026-10-10T07:00:00Z","databaseId":37999999999,"event":"schedule","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed"},{"conclusion":"failure","createdAt":"2026-10-09T17:13:47Z","databaseId":37964772913,"event":"push","headSha":"f343c0e266336aee395f2612d8f62ca3b927528f","status":"completed"}]' \
+    mog5134_run 22 "5134-c: stale fix-GO (main has a newer red run) → exit 22"
+assert_err_has "5134-c: stderr names the CURRENT red run" "37999999999"
+no_merge_call "5134-c: no merge call"
+# ... and a fix-GO written for the new run is accepted.
+go_write "$MOG_FX_ROOT" --fix-main-red 37999999999 77 "$GO_SHA"
+MOG_RUN_FX='[{"conclusion":"failure","createdAt":"2026-10-10T07:00:00Z","databaseId":37999999999,"event":"schedule","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed"}]' \
+    mog5134_run 0 "5134-c2: a fix-GO for the new red run → merged"
+
+# 5134-d — forged: the run line edited after signing (mac no longer matches).
+go_write "$MOG_FX_ROOT" --fix-main-red 37964000000 77 "$GO_SHA"
+sed -i.bak 's/^fix-main-red-run=.*/fix-main-red-run=37964772913/' "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37964000000"
+cp "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37964000000" "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37964772913"
+rm -f "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37964772913.bak" "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37964000000"
+rm -f "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37999999999"
+mog5134_run 22 "5134-d: fix-GO edited to the red run id (mac signs another) → exit 22"
+assert_audit_has "5134-d: audited as a red-main refusal" "REFUSED reason=main-red"
+
+# 5134-e — unsigned: a hand-written file with the right fields and no mac.
+printf 'pr=77\nhead=%s\nfix-main-red-run=37964772913\nby=leg\nat=2026-10-10T00:00:00Z\n' "$GO_SHA" \
+    > "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37964772913"
+mog5134_run 22 "5134-e: unsigned fix-GO → exit 22"
+
+# 5134-f — a fix-GO for a different PR (78) does not unblock PR 77, even
+# renamed onto PR 77's path (the mac binds the PR number).
+go_write "$MOG_FX_ROOT" --fix-main-red 37964772913 78 "$GO_SHA"
+cp "$MOG_FX_ROOT/.locks/go/fix-main-red.78.$GO_SHA.37964772913" "$MOG_FX_ROOT/.locks/go/fix-main-red.77.$GO_SHA.37964772913"
+mog5134_run 22 "5134-f: a fix-GO signed for PR 78 → exit 22"
+
+# 5134-g — green main: a fix-GO has no effect (and is not audited as a fix).
+go_write "$MOG_FX_ROOT" --fix-main-red 37964772913 77 "$GO_SHA"
+MOG_RUN_FX='[{"conclusion":"success","createdAt":"2026-10-10T07:00:00Z","databaseId":37999999999,"event":"schedule","headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed"}]' \
+    mog5134_run 0 "5134-g: green main with a fix-GO → merged"
+assert_audit_lacks "5134-g: not audited as a main-red fix" "main-red-declared"
+
+# 5134-h — a fix-GO for another head does not unblock this one.
+rm -f "$MOG_FX_ROOT/.locks/go/"fix-main-red.77.*
+go_write "$MOG_FX_ROOT" --fix-main-red 37964772913 77 "$GO_OLD"
+mog5134_run 22 "5134-h: fix-GO for an older head → exit 22"
+rm -rf "$MOG_FX_ROOT"
+
+# ── HIMMEL-5135 — suite= declaration: say what is accepted ────────────────────
+# The refusal text names what the matcher takes (a failed job name without
+# spaces, or any .sh script named on an ##[error] line) and the way out for the
+# rest (a job name with spaces needs run=<id>); it no longer says test-*.sh.
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" run_mog 22 "5135-a: red main, undeclared → exit 22 with the accepted shapes"
+assert_err_has "5135-a: refusal says any .sh script" "any .sh script"
+assert_err_has "5135-a: refusal says a spaced job name needs run=<id>" "with spaces needs run=<id>"
+assert_err_lacks "5135-a: refusal no longer claims only test-*.sh" "test-*.sh"
+# 5135-b — a non-test- .sh named on an ##[error] line IS accepted, as stated.
+MOG_RUN_LOG4="$(mktemp "${TMPDIR:-/tmp}/mog-runlog4.XXXXXX")" || { echo "FAIL: 5135 setup: mktemp" >&2; exit 1; }
+printf '%s\t%s\t%s\n' \
+    'lint (ubuntu-latest)' 'UNKNOWN STEP' '2026-10-09T17:54:35.0819579Z ##[error]scripts/ci/check-foo.sh exited 1' > "$MOG_RUN_LOG4"
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG4" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=check-foo.sh')" \
+    run_mog 0 "5135-b: a non-test- .sh named on an error line → merged"
+rm -f "$MOG_RUN_LOG4"
+
 echo
 echo "merge-on-green: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
