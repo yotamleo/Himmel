@@ -1794,6 +1794,46 @@ for v in \
     'git grep -e run -- scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-5102 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# Round 2 (judge j2328a): an unknown global option before the subcommand, an
+# abbreviated --exec, a redirect before the run verb, a glob in the verb slot,
+# and the policy rows (fail closed whenever a program is run, no writer named).
+for v in \
+    'git -P rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -p rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --paginate rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --bare rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --literal-pathspecs rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --no-replace-objects rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --no-optional-locks rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P bisect run scripts/cr/pr-check-env.sh' \
+    'git -p bisect run scripts/cr/pr-check-env.sh' \
+    'git --paginate bisect run scripts/cr/pr-check-env.sh' \
+    'git --bare bisect run scripts/cr/pr-check-env.sh' \
+    'git rebase --ex scripts/cr/pr-check-env.sh' \
+    'git rebase --exe scripts/cr/pr-check-env.sh' \
+    'git rebase --ex=scripts/cr/pr-check-env.sh' \
+    'git rebase --exe=scripts/cr/pr-check-env.sh' \
+    'git bisect 2>&1 run scripts/cr/pr-check-env.sh' \
+    'git bisect >/dev/null run scripts/cr/pr-check-env.sh' \
+    'git bisect </dev/null run scripts/cr/pr-check-env.sh' \
+    'git bisect r[u]n scripts/cr/pr-check-env.sh' \
+    'git bisect "run" scripts/cr/pr-check-env.sh' \
+    'git rebase -kx scripts/cr/pr-check-env.sh' \
+    'git -c k=v rebase -x scripts/cr/pr-check-env.sh main' \
+    'git bisect start; git bisect run scripts/cr/pr-check-env.sh' \
+    'git bisect run make' \
+    'git rebase -x "npm test" main'; do
+    run "HIMMEL-5102 round2 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git rebase -s ort main' \
+    'git rebase -X theirs main' \
+    'git rebase -Xsubtree=x main' \
+    'git rebase -Sx main' \
+    'git rebase -C1 main' \
+    'git rebase -rx main'; do
+    run "HIMMEL-5102 round2 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo

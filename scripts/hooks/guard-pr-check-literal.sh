@@ -875,7 +875,7 @@ short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
 }
 git_mentions_only() { # git_mentions_only <command-word index>
     local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0 es
-    local bsub='' bidx=0 xc xch
+    local bsub='' bnext=0 xc xch
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -894,6 +894,14 @@ git_mentions_only() { # git_mentions_only <command-word index>
             # the subcommand is unknowable, so only a positively identified
             # literal one may take the relaxed reading.
             if [ -z "$sub" ]; then sub='*'; dir=0; fi
+            # HIMMEL-5102: a glob in the bisect verb slot (`r[u]n`) or an
+            # expanded word after rebase may be the run verb or an exec flag.
+            case "$bsub" in
+                bisect) [ "$bnext" = 0 ] || { bnext=0; PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; } ;;
+                rebase) case "$w" in
+                        -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1 ;;
+                    esac ;;
+            esac
             xp=1; j=$((j + 1)); continue
         fi
         # After --, option-shaped words are literal pathspec operands.
@@ -906,7 +914,8 @@ git_mentions_only() { # git_mentions_only <command-word index>
         # runner: git aliases/config and helper options can execute operands.
         case "$w" in
             --oneline | --extended | --extended-regexp) ;;
-            -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
+            -c* | --config* | --exec* | --ex | --exe | --ex=* | --exe=* | \
+                --upload* | --receive* | ext::* | \
                 --o* | --ext*) PR_GIT_UNSAFE=1; bad=1 ;;
             *) if short_cluster_has_O "$w" "$es"; then PR_GIT_UNSAFE=1; bad=1; fi ;;
         esac
@@ -917,7 +926,8 @@ git_mentions_only() { # git_mentions_only <command-word index>
             --oneline | --on* | --output-indicator-* | --extended | --extended-regexp) ;;
             # Only the prefixes of --output and --open-files-in-pager (--ou* would
             # also hit --ours); a bare --o* also hit --others and --objects.
-            --exec* | --upload* | --receive* | ext::* | --ext* | --op* | \
+            --exec* | --ex | --exe | --ex=* | --exe=* | \
+                --upload* | --receive* | ext::* | --ext* | --op* | \
                 --ou | --out | --outp | --outpu | --output | \
                 --ou=* | --out=* | --outp=* | --outpu=* | --output=*) PR_GIT_EXEC=1 ;;
             -c* | --config*)
@@ -950,7 +960,12 @@ git_mentions_only() { # git_mentions_only <command-word index>
         # run an arbitrary program, so a guarded script they name is never a
         # pathspec mention. bsub is set only for a positively identified builtin.
         case "$bsub" in
-            bisect) [ "$j" -ne "$bidx" ] || [ "$w" != run ] || { PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; } ;;
+            # bnext: this is the first plain word after `bisect` (redirect
+            # targets are skipped at the loop top), i.e. the verb.
+            bisect) [ "$bnext" = 0 ] || {
+                    bnext=0
+                    [ "$w" != run ] || { PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; }
+                } ;;
             rebase)
                 # -x takes the rest of the word as its command; -s/-X/-C/-S take
                 # theirs as a value, so a later x there is text.
@@ -961,11 +976,16 @@ git_mentions_only() { # git_mentions_only <command-word index>
                             xch=${xc:0:1}; xc=${xc:1}
                             case "$xch" in
                                 x) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; break ;;
-                                s|X|C|S) break ;;
+                                s|X|C|S|r) break ;;
                             esac
                         done ;;
                 esac ;;
         esac
+        # An unknown global option (`-P`, `--bare`, ...) leaves sub='*', so the
+        # builtin arm below never sees the subcommand; arm it from the word.
+        if [ -z "$bsub" ] && [ "$sub" = '*' ]; then
+            case "$w" in bisect | rebase) bsub=$w; bnext=1 ;; esac
+        fi
         if [ "$dir" = 1 ]; then
             dir=0
             [ "${ST_Q[j]}" = 0 ] || sub='*'
@@ -994,7 +1014,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     reflog | remote | reset | rev-list | rev-parse | revert | \
                     shortlog | stash | status | tag | worktree)
                     bad=1; nsub=1
-                    case "$w" in bisect | rebase) bsub=$w; bidx=$((j + 1)) ;; esac ;;
+                    case "$w" in bisect | rebase) bsub=$w; bnext=1 ;; esac ;;
                 *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
             esac
             # A quoted word is not positively identified either.
