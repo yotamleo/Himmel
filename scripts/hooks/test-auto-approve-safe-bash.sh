@@ -1597,6 +1597,37 @@ assert "U+3000 before find / never ALLOW"      PASS  "$(decide "$(j_bash "${ID}f
 assert "true; U+2029 find / never ALLOW"       PASS  "$(decide "$(j_bash "true; ${PS}find / -name x")")"
 assert "impacted-suites literal FF never ALLOW" PASS "$(decide "$(j_bash "bash scripts/cr/impacted-suites.sh${FF}")")"
 
+# --- HIMMEL-5088: CR is a word byte to bash, so `find / <CR>-maxdepth 1` walks
+# the whole tree (the CR word is a path operand, not an option) -> DENY. The
+# other whole-disk walkers on / must never ALLOW: PASS (a prompt), not DENY.
+CR=$'\r'
+assert "find / CR-maxdepth DENY"               DENY  "$(decide "$(j_bash "find / ${CR}-maxdepth 1")")"
+assert "find / CR-maxdepth after -name DENY"   DENY  "$(decide "$(j_bash "find / -name x ${CR}-maxdepth 1")")"
+assert "ctl: find / -maxdepth 1 stays ALLOW"   ALLOW "$(decide "$(j_bash "find / -maxdepth 1")")"
+assert "ctl: find . CR-maxdepth stays ALLOW"   ALLOW "$(decide "$(j_bash "find . -name x ${CR}-maxdepth 1")")"
+assert "du / never ALLOW"                      PASS  "$(decide "$(j_bash "du /")")"
+assert "du -sh / never ALLOW"                  PASS  "$(decide "$(j_bash "du -sh /")")"
+assert "ls -R / never ALLOW"                   PASS  "$(decide "$(j_bash "ls -R /")")"
+assert "ls -laR / never ALLOW"                 PASS  "$(decide "$(j_bash "ls -laR /")")"
+assert "ls --recursive / never ALLOW"          PASS  "$(decide "$(j_bash "ls --recursive /")")"
+assert "grep -r x / never ALLOW"               PASS  "$(decide "$(j_bash "grep -r x /")")"
+assert "grep -rn x / never ALLOW"              PASS  "$(decide "$(j_bash "grep -rn x /")")"
+assert "grep -e x -R / never ALLOW"            PASS  "$(decide "$(j_bash "grep -e x -R /")")"
+assert "grep -d recurse x / never ALLOW"       PASS  "$(decide "$(j_bash "grep -d recurse x /")")"
+assert "rg x / never ALLOW"                    PASS  "$(decide "$(j_bash "rg x /")")"
+assert "tree / never ALLOW"                    PASS  "$(decide "$(j_bash "tree /")")"
+assert "du /. never ALLOW"                     PASS  "$(decide "$(j_bash "du /.")")"
+assert "ls -R /tmp/.. never ALLOW"             PASS  "$(decide "$(j_bash "ls -R /tmp/..")")"
+assert "ctl: du -sh . stays ALLOW"             ALLOW "$(decide "$(j_bash "du -sh .")")"
+assert "ctl: du -sh ~ stays ALLOW"             ALLOW "$(decide "$(j_bash "du -sh ~")")"
+assert "ctl: ls / stays ALLOW"                 ALLOW "$(decide "$(j_bash "ls /")")"
+assert "ctl: ls -R src stays ALLOW"            ALLOW "$(decide "$(j_bash "ls -R src")")"
+assert "ctl: grep -rn / src stays ALLOW"       ALLOW "$(decide "$(j_bash "grep -rn / src")")"
+assert "ctl: grep x / (no -r) stays ALLOW"     ALLOW "$(decide "$(j_bash "grep x /")")"
+assert "ctl: rg x src stays ALLOW"             ALLOW "$(decide "$(j_bash "rg x src")")"
+assert "ctl: tree -L 1 / stays ALLOW"          ALLOW "$(decide "$(j_bash "tree -L 1 /")")"
+assert "ctl: tree src stays ALLOW"             ALLOW "$(decide "$(j_bash "tree src")")"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

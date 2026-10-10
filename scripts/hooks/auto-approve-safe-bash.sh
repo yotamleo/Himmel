@@ -403,11 +403,21 @@ tokenize_seg_words() {
             # HIMMEL-5034: split on bash's IFS word separators (space, tab,
             # newline); FF, VT and U+2028 are word bytes to bash, so a root
             # walk needs a real separator.
-            # ponytail: also splits on CR where bash does not (safe direction:
-            # a bash word still starts with its first sub-token, so a leading
-            # flag stays visible); revisit when any flag check relies on a
-            # word's END or suffix rather than its prefix (HIMMEL-3886).
-            " "|$'\t'|$'\n'|$'\r')
+            # ponytail: splits on CR where bash does not, so a CR-separated
+            # `find / <CR>-maxdepth 1` read as a bounded find (HIMMEL-5088:
+            # the old "safe direction" claim was false for -maxdepth, whose
+            # presence is a SAFE signal). The root-walk checks tokenize with
+            # TOK_CR_WORD=1 (CR is a word byte, as in bash); every other
+            # reader keeps the CR split so CRLF inputs keep their verdict.
+            # Revisit when a flag check that gates ALLOW reads a word's END
+            # or suffix (HIMMEL-3886).
+            $'\r')
+                if [ "${TOK_CR_WORD:-0}" = 1 ]; then
+                    word+="$c"; have=1
+                elif [ "$have" -eq 1 ]; then
+                    RB_TOKENS+=("$word"); word=""; have=0
+                fi ;;
+            " "|$'\t'|$'\n')
                 if [ "$have" -eq 1 ]; then
                     RB_TOKENS+=("$word"); word=""; have=0
                 fi ;;
@@ -752,7 +762,7 @@ brace_word_is_rootwalk() {
 }
 
 segment_is_rootwalk_find() {
-    resolve_seg_binary "$1"
+    TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
     [ "$RB_STATUS" = bin ] || return 1
     case "$RB_BIN" in
         find|find.exe|*/find|*/find.exe) ;;
@@ -873,6 +883,59 @@ is_redirect_word() {
     [[ "$pre" =~ ^([0-9]*|&)$ ]]
 }
 
+# HIMMEL-5088: du / ls -R / grep -r / rg / tree on the filesystem root walk the
+# whole disk just like `find /`. Verdict: PASS (never ALLOW), not DENY -- a
+# bounded walk (`tree -L 1 /`) and an attended prompt are legitimate, and only
+# find carries the unattended-orphan history behind HIMMEL-2121's deny.
+# Tokenized with CR as a word byte (bash's view). Only a real root counts, not
+# ~ / $HOME (`du -sh ~` stays ALLOW).
+segment_walks_root() {
+    local base j total tok raw have_e=0 rec=0 level=0 root=0
+    local -a a ops
+    TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
+    [ "$RB_STATUS" = bin ] || return 1
+    base="${RB_BIN##*/}"
+    case "$base" in
+        du|rg|ripgrep|ag|tree) rec=1 ;;
+        ls|grep|egrep|fgrep) ;;
+        *) return 1 ;;
+    esac
+    a=("${RB_TOKENS[@]}"); total=${#a[@]}; ops=()
+    for ((j = RB_IDX + 1; j < total; j++)); do
+        raw="${a[$j]}"
+        shell_word_value "$raw" || continue
+        tok="$SW_VALUE"
+        case "$tok" in
+            --recursive|--dereference-recursive|--directories=recurse|recurse)
+                case "$base" in ls|grep|egrep|fgrep) rec=1 ;; esac ;;
+            --level|--level=*) level=1 ;;
+            --regexp|--regexp=*|--file|--file=*) have_e=1 ;;
+            --*) ;;
+            -*)
+                case "$base" in
+                    ls)               case "$tok" in *R*) rec=1 ;; esac ;;
+                    grep|egrep|fgrep) case "$tok" in *[rR]*) rec=1 ;; esac
+                                      case "$tok" in *[ef]*) have_e=1 ;; esac ;;
+                    tree)             case "$tok" in *L*) level=1 ;; esac ;;
+                esac ;;
+            *) is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
+        esac
+    done
+    case "$base" in
+        grep|egrep|fgrep|rg|ripgrep|ag)
+            # the first positional is the pattern unless -e/-f supplied it
+            if [ "$have_e" -eq 0 ] && [ "${#ops[@]}" -gt 0 ]; then ops=("${ops[@]:1}"); fi ;;
+    esac
+    [ "$rec" -eq 1 ] || return 1
+    if [ "$level" -eq 1 ] && [ "$base" = tree ]; then return 1; fi
+    for tok in ${ops[@]+"${ops[@]}"}; do
+        case "$tok" in '~'*|'$'*|'%'*) continue ;; esac
+        path_textually_resolves_to_root "$tok" && root=1
+        is_root_anchor "$tok" && root=1
+    done
+    [ "$root" -eq 1 ]
+}
+
 segment_is_safe() {
     resolve_seg_binary "$1"
     # HIMMEL-4780: the JIRA_PROJECT_KEY= prefix is approvable on node only.
@@ -885,6 +948,9 @@ segment_is_safe() {
     esac
     local -a a=("${RB_TOKENS[@]}")
     local n=${#a[@]} i="$RB_IDX" bin="$RB_BIN"
+
+    # HIMMEL-5088: a whole-filesystem walker never ALLOWs (it falls to a prompt).
+    if segment_walks_root "$1"; then return 1; fi
 
     if is_safe_bin "$bin"; then
         local k
@@ -1710,7 +1776,8 @@ esac
 # but bash splits words only on space, tab and newline, so a raw FF or VT
 # makes them see different words than the shell runs. No allow for those
 # bytes. CR is left to tokenize_seg_words' ponytail note (CRLF inputs must
-# keep their verdict, test-crlf-boundary.sh).
+# keep their verdict, test-crlf-boundary.sh; the root-walk checks read CR as a
+# word byte, HIMMEL-5088).
 # HIMMEL-4967: abstain AFTER the root-walk DENY below, never before it -- an
 # early exit would downgrade that deny to no opinion.
 abstain=0
