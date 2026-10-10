@@ -41,7 +41,11 @@ SETTINGS="$ROOT/.claude/settings.json"
 SCALE_MAX_X10=${HOOK_LATENCY_SCALE_MAX_X10:-45}
 SCALE_MAX="$((SCALE_MAX_X10 / 10)).$((SCALE_MAX_X10 % 10))"
 # Every member run is bounded, so a hung member fails this test, not the CI shard.
+# The bound is a GNU timeout/gtimeout resolved once (stock macOS ships neither);
+# without one the member runs unbounded rather than as command-not-found.
 MEMBER_TIMEOUT=${HOOK_LATENCY_MEMBER_TIMEOUT:-60}
+# shellcheck source=../lib/timeout-bin.sh
+. "$ROOT/scripts/lib/timeout-bin.sh"
 P95_BUDGET_MS=${HOOK_LATENCY_P95_BUDGET_MS:-600}
 RUNS=3
 
@@ -124,7 +128,7 @@ run_ms() {  # run_ms <member> <payload file> -- wall ms into MS
     env -i PATH="$PATH" HOME="$SANDBOX/home" TMPDIR="${TMPDIR:-/tmp}" \
         LANG="$UTF8_LOCALE" LC_ALL="$UTF8_LOCALE" CLAUDE_PROJECT_DIR="$ROOT" \
         HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_RELAY=1 \
-        timeout "$MEMBER_TIMEOUT" bash "$ROOT/$1" < "$2" > /dev/null 2>&1
+        ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$MEMBER_TIMEOUT"} bash "$ROOT/$1" < "$2" > /dev/null 2>&1
     rc=$?
     t1=${EPOCHREALTIME//[!0-9]/}
     MS=$(( (t1 - t0) / 1000 ))
