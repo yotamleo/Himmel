@@ -1873,7 +1873,7 @@ assert_has "$t3b_out" "delta round 4 on t3conc" "the restarted pair is still the
 # HIMMEL-5109: a judge NO-GO on a test- or comment-only descendant of the last
 # reviewed head is bound to that head and buys the one round; a descendant
 # that changes code does not. A layer-decision without its keyword is named.
-for td_case in td-testpath td-comment td-code td-mode td-coding td-define td-gobuild; do
+for td_case in td-testpath td-comment td-code td-mode td-coding td-define td-gobuild td-rustattr td-psreq td-cssid; do
     three_rounds "$td_case" clean
     td_r3="$cap_r3_head"
     case "$td_case" in
@@ -1884,6 +1884,9 @@ for td_case in td-testpath td-comment td-code td-mode td-coding td-define td-gob
         td-coding) printf '# coding: latin-1\n' >> "$repo/$td_case.txt" ;;
         td-define) printf '#define LIMIT 1\n' >> "$repo/$td_case.txt" ;;
         td-gobuild) printf '//go:build linux\n' >> "$repo/$td_case.txt" ;;
+        td-rustattr) printf '#[cfg(test)]\n' >> "$repo/$td_case.txt" ;;
+        td-psreq) printf '#Requires -Version 7\n' >> "$repo/$td_case.txt" ;;
+        td-cssid) printf '#main { color: red }\n' >> "$repo/$td_case.txt" ;;
     esac
     git -C "$repo" commit -q -am "$td_case judged head"
     td_judged="$(git -C "$repo" rev-parse "$td_case")"
@@ -1892,7 +1895,7 @@ for td_case in td-testpath td-comment td-code td-mode td-coding td-define td-gob
     printf 'class: option-parsing\n\nthe fix does not hold\n' > "$jev/judge-evidence.md"
     judge "$td_case-1" NO-GO "$td_judged"
     td_out="$(start_round "$td_fix" clean "$td_case")"; td_rc=$?
-    if [ "$td_case" = td-code ] || [ "$td_case" = td-mode ] || [ "$td_case" = td-coding ] || [ "$td_case" = td-define ] || [ "$td_case" = td-gobuild ]; then
+    if [ "$td_case" = td-code ] || [ "$td_case" = td-mode ] || [ "$td_case" = td-coding ] || [ "$td_case" = td-define ] || [ "$td_case" = td-gobuild ] || [ "$td_case" = td-rustattr ] || [ "$td_case" = td-psreq ] || [ "$td_case" = td-cssid ]; then
         assert_eq "$td_rc" "8" "$td_case: a NO-GO on a descendant that changes behaviour buys no round"
     else
         assert_eq "$td_rc" "0" "$td_case: a NO-GO on a trivial descendant is bound to the reviewed head"
@@ -1915,6 +1918,24 @@ judge tm-2 NO-GO "$tm_fix"
 tm_out="$(start_round "$tm_next" clean td-malformed)"; tm_rc=$?
 assert_eq "$tm_rc" "8" "a layer-decision without its keyword does not lift the class stop"
 assert_has "$tm_out" "lacks a layer keyword" "the refusal names the malformed layer-decision"
+
+# HIMMEL-5109 class veto: a repeated NO-GO class on a comment-only descendant
+# is still vetoed (the alt binding reaches judge_class_check).
+printf 'class: option-parsing\n\nfirst\n' > "$jev/judge-evidence.md"
+three_rounds jcl clean
+jcl_r3="$cap_r3_head"
+fix_commit jcl
+jcl_f1="$cap_fix_head"
+judge jcl-1 NO-GO "$jcl_r3"
+(start_round "$jcl_f1" clean jcl >/dev/null) || fail "JCL setup"
+printf '# a note\n' >> "$repo/jcl.txt"; git -C "$repo" commit -q -am "jcl comment"
+jcl_j="$(git -C "$repo" rev-parse jcl)"
+printf 'fix two\n' >> "$repo/jcl.txt"; git -C "$repo" commit -q -am "jcl fix2"
+jcl_f2="$(git -C "$repo" rev-parse jcl)"
+judge jcl-2 NO-GO "$jcl_j"
+jo="$(start_round "$jcl_f2" clean jcl)"; jrc=$?
+assert_eq "$jrc" "8" "JCL repeated class on a comment-only descendant NO-GO is vetoed"
+assert_has "$jo" "repeated NO-GO class option-parsing" "JCL names the class"
 
 # HIMMEL-5128: a delta round whose panel left no critic rows still advanced
 # .head to the unreviewed pair head, so a later judge NO-GO for the last

@@ -363,10 +363,13 @@ test_path_p() {
 # descendant of <from> and <from>..<to> changes only test paths (the
 # judge_scope_record rule) or only comment lines. A judge often reviews a head
 # after such a commit, which never got its own panel round.
-# ponytail: the comment test is a line-prefix heuristic (# and // lines, no
-# directive words); a #/ // line inside a multiline string or heredoc still
-# passes. It only moves which head a signed NO-GO binds to, the delta round
-# still reviews from..to; upgrade path is a per-language comment parser.
+# ponytail: the comment test is a line-prefix heuristic, not per-language: a
+# line is a comment when it starts with "# " / "##" / a bare "#" or with "//"
+# and carries no directive word, so "#[cfg(test)]", CSS "#id" and "#Requires"
+# are refused; but a "# " or "//" line inside a multiline string or heredoc,
+# or a "//" line in a language where it is not a comment, still passes. It
+# only moves which head a signed NO-GO binds to, the delta round still reviews
+# from..to; upgrade path is a per-language comment parser.
 trivial_descendant() {
     [ "$1" != "$2" ] || return 1
     git merge-base --is-ancestor "$1" "$2" 2>/dev/null || return 1
@@ -388,7 +391,7 @@ EOF
     # Every added or removed line must be a comment or blank.
     _td_lines="$(git diff --no-renames --no-color -U0 "$1" "$2" 2>/dev/null | sed -n -e '/^+++ /d' -e '/^--- /d' -e '/^[-+]/p')" || return 1
     [ -n "$_td_lines" ] || return 1
-    _td_bad="$(printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#[^!]|#$|//)' || true)"
+    _td_bad="$(printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#([[:space:]#]|$)|//)' || true)"
     [ -z "$_td_bad" ] || return 1
     # Directive words, encoding declarations (coding: / coding=) and C
     # preprocessor lines change meaning although they start with #.
@@ -745,7 +748,7 @@ delta_check() {
     fi
     if ! delta_to="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" || [ -z "$delta_to" ]; then
         if [ -n "$delta_used" ]; then
-            delta_refuse ""
+            delta_refuse "review-round: --head $head_sha does not resolve to a commit"
             return 8
         fi
         echo "review-round: --head $head_sha does not resolve to a commit" >&2
