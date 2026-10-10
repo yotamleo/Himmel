@@ -734,23 +734,25 @@ function recorderState(sessionId) {
   return Date.now() - mtimeMs > RECORDER_MAX_LIFE_MS ? 'unvouched' : 'running';
 }
 
-// One stderr notice per session (an exclusive-create flag file beside the
-// marker), so a fail-open session is loud once and not on every hook call.
-function noticeUnvouchedOnce(sessionId, scriptPath) {
+// One notice per session (an exclusive-create flag file beside the marker), so
+// a fail-open session is loud once and not on every hook call. Returns the text
+// the FIRST caller must surface, or null when it was already taken. The caller
+// puts it in a systemMessage: exit-0 stderr is shown to nobody, and the flag is
+// consumed here, so only a caller that can surface it should call this
+// (verifyProjectHookIntegrity reports `unvouched: true` and takes nothing).
+function takeUnvouchedNotice(sessionId, scriptPath) {
   const recordPath = integrityRecordPath(sessionId);
-  if (!recordPath) return;
+  if (!recordPath) return null;
   try {
     fs.writeFileSync(recordPath.replace(/\.json$/, RECORDER_NOTICE_SUFFIX), 'notified\n', { flag: 'wx' });
   } catch (_e) {
-    return; // already notified (or unwritable: stay quiet rather than spam)
+    return null; // already notified (or unwritable: stay quiet rather than spam)
   }
-  process.stderr.write(
-    `run-hook-with-bash: NOTICE ${path.basename(scriptPath)} ran UNVERIFIED — record-hook-integrity.sh did not `
+  return `himmel hook-integrity: NOTICE ${path.basename(scriptPath)} ran UNVERIFIED — record-hook-integrity.sh did not `
     + 'publish a verified integrity record for this session (killed by its timeout, or failed), so nothing '
     + 'vouches for any hook script this session (HIMMEL-5171). Start a new session to restore verification, or '
     + 'from another terminal re-run the recorder with this session\'s id: '
-    + `printf '{"session_id":"${sessionId}"}' | CLAUDE_PROJECT_DIR=<project> bash <project>/scripts/hooks/record-hook-integrity.sh\n`,
-  );
+    + `printf '{"session_id":"${sessionId}"}' | CLAUDE_PROJECT_DIR=<project> bash <project>/scripts/hooks/record-hook-integrity.sh`;
 }
 
 // ------------------------------------------------------------ bootstrap (§4)
@@ -1508,10 +1510,7 @@ function verifyOneFile(scriptPath, sessionId, strict) {
   let pins = recordPins(record);
   if (!pins) {
     const rstate = recorderState(sessionId);
-    if (rstate === 'unvouched') {
-      noticeUnvouchedOnce(sessionId, scriptPath);
-      return { ok: true };
-    }
+    if (rstate === 'unvouched') return { ok: true, unvouched: true };
     if (rstate !== 'done') return { ok: true };
     // The recorder publishes before it marks itself done, so a record that
     // landed between our first read and the marker read is here now.
@@ -1717,5 +1716,6 @@ module.exports = {
   reclaimIfDead,
   releaseRecordLock,
   sourcedClosure,
+  takeUnvouchedNotice,
   verifyProjectHookIntegrity,
 };

@@ -295,17 +295,32 @@ fi
 gone_dir g6; rm -f "$T/g6/$SID.json"; printf 'started\n' > "$T/g6/$SID.recorder"
 touch -t 202001010000 "$T/g6/$SID.recorder"
 gone_run g6 "$T/g6"; rc=$?
-if [ "$rc" -eq 0 ] && grep -q 'HIMMEL-5171' "$T/g6.err"; then
-  ok "HIMMEL-5171: a 'started' marker older than any recorder can live (killed recorder) fails open with a notice"
+# The notice is a systemMessage on stdout (exit-0 stderr is shown to nobody),
+# merged into the hook's own JSON.
+if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g6.out" >/dev/null 2>&1 \
+   && jq -e '.hookSpecificOutput.permissionDecision' "$T/g6.out" >/dev/null 2>&1; then
+  ok "HIMMEL-5171: a 'started' marker older than any recorder can live (killed recorder) fails open with a systemMessage notice"
 else
-  bad "HIMMEL-5171 stale started: expected rc=0 + notice, got rc=$rc err=$(cat "$T/g6.err")"
+  bad "HIMMEL-5171 stale started: expected rc=0 + systemMessage notice, got rc=$rc out=$(cat "$T/g6.out") err=$(cat "$T/g6.err")"
 fi
 # The notice is once per session: a second hook call stays silent.
 gone_run g6 "$T/g6"; rc=$?
-if [ "$rc" -eq 0 ] && ! grep -q 'HIMMEL-5171' "$T/g6.err"; then
-  ok "HIMMEL-5171: the fail-open notice is printed once per session"
+if [ "$rc" -eq 0 ] && ! grep -q 'HIMMEL-5171' "$T/g6.out" "$T/g6.err"; then
+  ok "HIMMEL-5171: the fail-open notice is shown once per session"
 else
-  bad "HIMMEL-5171 notice once: expected rc=0 and no notice, got rc=$rc err=$(cat "$T/g6.err")"
+  bad "HIMMEL-5171 notice once: expected rc=0 and no notice, got rc=$rc out=$(cat "$T/g6.out") err=$(cat "$T/g6.err")"
+fi
+# The chain path (every PreToolUse call) surfaces it too, merged with the
+# member's own decision.
+gone_dir g8; rm -f "$T/g8/$SID.json"; printf 'started\n' > "$T/g8/$SID.recorder"
+touch -t 202001010000 "$T/g8/$SID.recorder"
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g8" \
+  node "$LAUNCHER" --chain "$GUARD" >"$T/g8.out" 2>"$T/g8.err"
+rc=$?
+if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g8.out" >/dev/null 2>&1; then
+  ok "HIMMEL-5171: the chain path surfaces the fail-open notice as a systemMessage"
+else
+  bad "HIMMEL-5171 chain notice: expected rc=0 + systemMessage, got rc=$rc out=$(cat "$T/g8.out") err=$(cat "$T/g8.err")"
 fi
 # The deny a deleted-after-verified-publish record earns names the recovery.
 if grep -q 'record-hook-integrity.sh' "$T/g1.err" && grep -q "$SID.recorder" "$T/g1.err"; then

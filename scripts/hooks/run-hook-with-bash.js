@@ -19,6 +19,7 @@ const {
   gitBlobSha1,
   hookIntegrityDir,
   loadIntegrityRecord,
+  takeUnvouchedNotice,
   verifyProjectHookIntegrity,
 } = require('./hook-integrity.js');
 
@@ -670,6 +671,10 @@ function runChain(members, lifecycle = false) {
   }
 
   const emitters = [];
+  // HIMMEL-5171: the once-per-session "this session ran UNVERIFIED" notice,
+  // taken by the first member the launcher could not vouch for and surfaced as
+  // a systemMessage below (exit-0 stderr reaches nobody).
+  let unvouchedNotice = null;
   // Everything a non-denying member said, flushed to OUR stderr after the
   // chain. Held rather than streamed so a later member's deny reaches the
   // model on its own, verbatim.
@@ -696,6 +701,9 @@ function runChain(members, lifecycle = false) {
     if (!integrity.ok) {
       denyIntegrityMismatch(member, integrity.relPath, integrity.reason);
       return skipOnNonGatingEvent(hookInput, member, integrity) ? 0 : 2;
+    }
+    if (integrity.unvouched && unvouchedNotice === null) {
+      unvouchedNotice = takeUnvouchedNotice(sessionId, member);
     }
     const basename = path.basename(member);
     const mustRun = MUST_RUN_CHAIN_MEMBERS.has(basename);
@@ -858,6 +866,14 @@ function runChain(members, lifecycle = false) {
 
   if (held.length) process.stderr.write(held.join(''));
 
+  if (unvouchedNotice) {
+    const output = { systemMessage: unvouchedNotice };
+    if (emitters.length === 0) {
+      process.stdout.write(`${JSON.stringify(output)}\n`);
+      return carriedStatus;
+    }
+    emitters.push({ source: 'hook-integrity', output, raw: `${JSON.stringify(output)}\n` });
+  }
   if (emitters.length === 0) return carriedStatus;
   if (emitters.length === 1) {
     process.stdout.write(emitters[0].raw);
@@ -915,10 +931,31 @@ function main() {
     process.stderr.write('run-hook-with-bash: no usable Bash interpreter found; refusing to run hook\n');
     process.exit(2);
   }
-  const result = spawnSync(bash, hookArgs, { input, stdio: ['pipe', 'inherit', 'inherit'], env: process.env, windowsHide: true });   // HIMMEL-2043
+  // HIMMEL-5171: a session no recorder vouched for says so once, in a
+  // systemMessage. The child's stdout is captured only on that one call, so the
+  // hook's own JSON can carry it; plain-text output is passed through untouched.
+  const notice = integrity.unvouched ? takeUnvouchedNotice(sessionId, hookScript) : null;
+  const result = spawnSync(bash, hookArgs, {
+    input,
+    stdio: ['pipe', notice ? 'pipe' : 'inherit', 'inherit'],
+    env: process.env,
+    windowsHide: true,   // HIMMEL-2043
+    ...(notice ? { encoding: 'utf8' } : {}),
+  });
   if (result.error && !isRecoverableEpipe(result)) {
     process.stderr.write(`run-hook-with-bash: failed to start ${bash}: ${result.error.message}\n`);
     process.exit(2);
+  }
+  if (notice) {
+    const out = typeof result.stdout === 'string' ? result.stdout : '';
+    const parsed = out.trim() ? parseJsonObject(out) : {};
+    if (parsed) {
+      parsed.systemMessage = typeof parsed.systemMessage === 'string' && parsed.systemMessage
+        ? `${parsed.systemMessage}\n${notice}` : notice;
+      process.stdout.write(`${JSON.stringify(parsed)}\n`);
+    } else {
+      process.stdout.write(out);
+    }
   }
   process.exit(typeof result.status === 'number' ? result.status : 2);
 }
