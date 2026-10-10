@@ -670,6 +670,58 @@ wait_exit "$WPID"
 check "(x5) a tick line with no vault= field is still a valid sample" "running" "$rc"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# --- (y) HIMMEL-5163: cloud= wakes on a class move TO STALL only -- never on a
+# change of the ticket list, never on a move back to ok/skip, and its absence (an
+# older tick.sh) is still a valid sample. RED control (console-wait.sh before this
+# change): the STALL move below never woke ("running"). -----------------------
+cloud_line() { sed "s#  *denials=none# cloud=$1 denials=none#" "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"; }
+reset_stub
+cloud_line ok
+I="$(new_inbox y)"
+start "$I" "$WORK/y.out" --legs "N1.md"
+wait_hb "$I" || fail "(y) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+cloud_line STALL:HIMMEL-5077,HIMMEL-4655,HIMMEL-4686
+wait_exit "$WPID"
+check "(y) a cloud move to STALL ends the wait" "0" "$rc"
+check "(y) the wake names cloud" "WAKE tick changed=cloud bank=PROCEED" "$(head -n1 "$WORK/y.out")"
+
+reset_stub
+tick_line "N1:FRESH" "ok"
+cloud_line STALL:HIMMEL-5077,HIMMEL-4655,HIMMEL-4686
+I="$(new_inbox y2)"
+start "$I" "$WORK/y2.out" --legs "N1.md"
+wait_hb "$I" || fail "(y2) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+cloud_line STALL:HIMMEL-4686
+wait_exit "$WPID"
+check "(y2) a STALL ticket-list change alone does not wake" "running" "$rc"
+tick_line "N1:FRESH" "ok"
+cloud_line ok
+wait_exit "$WPID"
+check "(y2) a cloud move back to ok alone does not wake" "running" "$rc"
+check "(y2) the saved key still moved to cloud=ok" "yes" "$(grep -q 'cloud=ok' "$I.wait.state" && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+reset_stub
+cloud_line ok
+I="$(new_inbox y3)"
+start "$I" "$WORK/y3.out" --legs "N1.md"
+wait_hb "$I" || fail "(y3) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+cloud_line skip
+wait_exit "$WPID"
+check "(y3) a cloud move to skip does not wake" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+reset_stub
+I="$(new_inbox y4)"
+start "$I" "$WORK/y4.out" --legs "N1.md"
+wait_hb "$I" || fail "(y4) no baseline heartbeat"
+wait_exit "$WPID"
+check "(y4) a tick line with no cloud= field is still a valid sample" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
 # --- (m3748) a leg-set change made through --legs-from is a silent baseline --
 # HIMMEL-3748: with --legs-from the argv never changes, so the waiter folds the
 # manifest's leg list into its args hash each sample. A dispatch (manifest add)

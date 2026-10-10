@@ -24,6 +24,10 @@
 //                (HIMMEL-4969): ~/.himmel or ~/.cache state, a test VM
 //                (himmel-ops:vm, vmsdk, VBoxManage), a LIVE ledger, arming a
 //                cadence (at/systemd)
+//   VERIFY-LOCAL (HIMMEL-5163) a merged PR cites the ticket key, or touches a
+//                file it names, after the ticket was created: it may already be
+//                fixed on main, so a local leg verifies it first (a cloud session
+//                cannot tell, and spends credit on a no-op)
 //   CLOUD-OK     everything else
 import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -72,7 +76,30 @@ export function askLines(description) {
 
 const overlaps = (a, b) => a === b || (b.endsWith('/') && a.startsWith(b)) || (a.endsWith('/') && b.startsWith(a));
 
-// classifyTicket(ticket, {trust, held, heldUnknown}) -> {class, reason, files, asks}. Pure.
+const STALE_DAYS = 14;
+
+// fixedBy(ticket, files, ctx) -> [{number, why, mergedAt}]: merged PRs that cite the key
+// (not a longer one: HIMMEL-46860) or touch a named file, merged after the ticket was
+// created. Jira's `get` carries no creation date, so without ticket.created (console spec)
+// the cutoff is the last STALE_DAYS days. ponytail: a PR that merely lists the key as a
+// deferral also matches, which only costs a local verify; narrow when it becomes noise.
+export function fixedBy(t, files, ctx) {
+  const parsed = Date.parse(t.created ?? '');
+  const cutoff = Number.isNaN(parsed) ? (ctx.now ?? Date.now()) - STALE_DAYS * 86400e3 : parsed;
+  const cites = new RegExp(`${t.key}(?!\\d)`);
+  const out = [];
+  for (const pr of ctx.merged ?? []) {
+    const at = Date.parse(pr.mergedAt ?? '');
+    if (Number.isNaN(at) || at < cutoff) continue;
+    const paths = (pr.files ?? []).map((f) => (typeof f === 'string' ? f : f.path)).filter(Boolean);
+    const hit = files.find((f) => paths.some((p) => overlaps(p, f)));
+    if (cites.test(`${pr.title ?? ''}\n${pr.body ?? ''}`)) out.push({ number: pr.number, why: `cites ${t.key}`, mergedAt: pr.mergedAt });
+    else if (hit) out.push({ number: pr.number, why: `touches ${hit}`, mergedAt: pr.mergedAt });
+  }
+  return out;
+}
+
+// classifyTicket(ticket, {trust, held, heldUnknown, merged, mergedUnknown, now}) -> {class, reason, files, asks, prs?}. Pure.
 // held is [{file, why}]; ticket.files (console-supplied) overrides text extraction.
 export function classifyTicket(t, ctx) {
   const files = (t.files?.length ? t.files : extractFiles(`${t.title}\n${t.description}`)).map((f) => posix.normalize(f));
@@ -93,6 +120,9 @@ export function classifyTicket(t, ctx) {
   if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state, the state repo, qmd models, semantic graphify, ~/.himmel state, test VMs, live ledgers and cadence arming stay on the station (the cloud has AST-only graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
   if (asks > MAX_ASKS) return v('LOCAL-NATIVE', `${asks} asks (more than ${MAX_ASKS}) — cloud sessions drop second asks`);
   if (ctx.heldUnknown) return v('BLOCKED', 'open-PR file list unavailable (gh failed) — cannot prove the files are free');
+  if (ctx.mergedUnknown) return v('BLOCKED', 'merged-PR list unavailable (gh failed) — cannot prove the ticket is not already fixed');
+  const fixed = fixedBy(t, files, ctx);
+  if (fixed.length) return { ...v('VERIFY-LOCAL', `may already be fixed on main — ${fixed.map((f) => `PR ${f.number} (${f.why}, merged ${String(f.mergedAt).slice(0, 10)})`).join('; ')}; verify locally before any cloud session`), prs: fixed.map((f) => f.number) };
   return v('CLOUD-OK', `${files.length} file(s), ${asks} ask(s), no hook, trust path or run-time need, none held`);
 }
 
@@ -181,6 +211,19 @@ function openPrFiles() {
   return out;
 }
 
+// One shared list of PRs merged since STALE_DAYS ago (the file-overlap rule) plus one
+// search per ticket (PRs citing the key, any age), through the same gh the open-PR list
+// uses. Deduplicated by number.
+function mergedPrs(keys) {
+  const gh = process.env.CLOUD_ROUTE_GH_CMD || 'gh';
+  const run = (extra) => JSON.parse(execFileSync(gh, ['pr', 'list', '--repo', REPO_SLUG, '--state', 'merged', '--json', 'number,title,body,mergedAt,files', ...extra], { encoding: 'utf8', timeout: 60000 }) || '[]');
+  const since = new Date(Date.now() - STALE_DAYS * 86400e3).toISOString().slice(0, 10);
+  const all = new Map();
+  for (const pr of run(['--limit', '200', '--search', `merged:>=${since}`])) all.set(pr.number, pr);
+  for (const k of keys) for (const pr of run(['--limit', '30', '--search', `${k} in:title,body`])) all.set(pr.number, pr);
+  return [...all.values()];
+}
+
 function main(argv) {
   const opt = { bucket: null, console: null, held: null, spec: null, classifyOnly: false };
   const keys = [];
@@ -201,14 +244,17 @@ function main(argv) {
   const held = opt.held ? readFileSync(opt.held, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean).map((file) => ({ file, why: 'console held list' })) : [];
   let heldUnknown = false;
   try { held.push(...openPrFiles()); } catch (e) { heldUnknown = true; process.stderr.write(`cloud-route: gh failed, open-PR files unknown — ${e.message.split('\n')[0]}\n`); }
-  const ctx = { trust: loadTrust(), held, heldUnknown };
+  let merged = [];
+  let mergedUnknown = false;
+  try { merged = mergedPrs(keys); } catch (e) { mergedUnknown = true; process.stderr.write(`cloud-route: gh failed, merged PRs unknown — ${e.message.split('\n')[0]}\n`); }
+  const ctx = { trust: loadTrust(), held, heldUnknown, merged, mergedUnknown };
   const date = new Date().toISOString().slice(0, 10);
   const launches = [];
   if (!opt.classifyOnly) mkdirSync(opt.bucket, { recursive: true });
 
   for (const key of keys) {
     const s = spec[key] ?? {};
-    const t = { ...fetchTicket(key), ...(s.files ? { files: s.files } : {}) };
+    const t = { ...fetchTicket(key), ...(s.files ? { files: s.files } : {}), ...(s.created ? { created: s.created } : {}) };
     const v = classifyTicket(t, ctx);
     process.stdout.write(`${key}\t${v.class}\t${v.reason}\n`);
     if (v.class === 'CLOUD-OK') held.push(...v.files.map((file) => ({ file, why: `routed ${key} this run` })));

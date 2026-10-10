@@ -722,6 +722,35 @@ contains 'bank lift: unparseable show output reads unavailable' "$(bl_html "$BL"
 html="$(BOARD_BANK_LIFT="$W/no-such-lift" mrun >/dev/null; cat "$M/board.html")"
 contains 'bank lift: a failing show reads unavailable, never fatal' "$html" 'data-bank-lift="?"'
 
+# --- cloud sessions panel (HIMMEL-5163): each cloud-sessions.tsv row with the state
+# cloud-liveness.mjs derives, the same derivation as tick.sh's cloud= field. Real
+# fixtures: the 2026-10-10 launch rows against the trimmed real `gh pr list` JSON for
+# PRs 2314 / 2306 / 1982 (fixtures/cloud-liveness-prs.json). RED control (pre-change
+# board.mjs): no "Cloud sessions" section is rendered.
+printf '%s\n' '#!/bin/sh' "cat '$HERE/fixtures/cloud-liveness-prs.json'" > "$W/bin/cloud-gh"
+printf '%s\n' '#!/bin/sh' "printf '%s\n' 'aaaa	refs/heads/main'" > "$W/bin/cloud-git"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$W/bin/cloud-gh-down"
+chmod +x "$W/bin/cloud-gh" "$W/bin/cloud-git" "$W/bin/cloud-gh-down"
+cloud_html() {
+    TZ=UTC CLOUD_LIVENESS_NOW='2026-10-10T16:30:00Z' CLOUD_LIVENESS_GH_CMD="$W/bin/$1" CLOUD_LIVENESS_GIT_CMD="$W/bin/cloud-git" mrun >/dev/null
+    cat "$M/board.html"
+}
+html="$(cloud_html cloud-gh)"
+lacks 'cloud: no cloud-sessions.tsv renders no cloud panel (HIMMEL-5163)' "$html" 'Cloud sessions'
+printf '%s\t%s\t%s\t%s\n' \
+    '2026-10-10T15:56:20' HIMMEL-5077 session_012yMgxSaSskpLb4qrfXBhk1 'claude --teleport session_012yMgxSaSskpLb4qrfXBhk1' \
+    '2026-10-10T15:56:43' HIMMEL-4657 session_01BCqPMDHjUE9Z52yEy3J3Uf 'claude --teleport session_01BCqPMDHjUE9Z52yEy3J3Uf' \
+    '2026-10-10T15:56:54' HIMMEL-4686 session_0173H75dC4x9nZ7JdeLqYoMc 'claude --teleport session_0173H75dC4x9nZ7JdeLqYoMc' \
+    > "$M/cloud-sessions.tsv"
+html="$(cloud_html cloud-gh)"
+contains 'cloud: the panel is rendered (HIMMEL-5163)' "$html" '<h2>Cloud sessions</h2>'
+contains 'cloud: an open PR with CLOUD-DONE and no shepherd is unshepherded, PR named (HIMMEL-5163)' "$html" 'data-cloud-ticket="HIMMEL-5077" data-state="unshepherded" data-stall="yes"><b>HIMMEL-5077</b> unshepherded · PR #2314'
+contains 'cloud: a merged cloud PR reads merged, not a stall (HIMMEL-5163)' "$html" 'data-cloud-ticket="HIMMEL-4657" data-state="merged" data-stall="no"><b>HIMMEL-4657</b> merged · PR #2306'
+contains 'cloud: a session with no branch or PR reads no-branch (HIMMEL-5163)' "$html" 'data-cloud-ticket="HIMMEL-4686" data-state="no-branch" data-stall="yes"'
+html="$(cloud_html cloud-gh-down)"
+contains 'cloud: an unreadable forge says so, never fatal (HIMMEL-5163)' "$html" 'data-cloud-panel="unavailable"'
+rm -f "$M/cloud-sessions.tsv"
+
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
 contains 'no --doc is a usage error (rc 2)' "rc=$rc" 'rc=2'

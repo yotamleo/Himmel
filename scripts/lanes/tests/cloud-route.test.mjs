@@ -239,6 +239,7 @@ case "$key" in
   *) exit 1;;
 esac`);
   const gh = stub(dir, 'gh', `
+if [ "$1 $2" = "pr list" ] && printf '%s ' "$@" | grep -q -- '--state merged'; then echo '[]'; exit 0; fi
 if [ "$1 $2" = "pr list" ]; then echo 77; exit 0; fi
 if [ "$1 $2" = "pr diff" ]; then echo scripts/held/file.sh; exit 0; fi
 exit 1`);
@@ -319,4 +320,56 @@ test('brief makes every Jira step conditional on the Atlassian tools, with a PR-
   assert.match(b, /if the Atlassian MCP tools are listed, transition HIMMEL-9001 to `In Progress`;/);
   assert.match(b, /if the Atlassian MCP tools are listed, comment on HIMMEL-9001 with the PR URL/);
   assert.match(b, /a `## Jira steps not done` section listing each Jira step you skipped/);
+});
+
+// HIMMEL-5163: a ticket already fixed on main routes to a local verify, never to the cloud.
+// Fixture: real merged PR 1982 (trimmed to its title, merge time, file list and the body line
+// that cites HIMMEL-4686), whose files are the ones HIMMEL-4686's HLS allowlist work sits in.
+const PR1982 = {
+  number: 1982, title: 'fix(pipeline): [HIMMEL-4677] Scrapling-first for YouTube and X media, cookies demoted to fallback',
+  body: 'Deferred as v1.0.2c hardening/polish (the Playwright/gallery-dl fallback still covers each miss):\n- HLS segment-host allowlist → HIMMEL-4686\n- removed video without `videoDetails` → HIMMEL-4688',
+  mergedAt: '2026-10-06T23:25:17Z',
+  files: ['marketplace/plugins/obsidian-triage/tools/x-media-fetch.py', 'marketplace/plugins/obsidian-triage/tools/x-scrapling-media.py', 'docs/tooling-catalog.md'].map((path) => ({ path })),
+};
+const T4686 = { key: 'HIMMEL-4686', type: 'Task', status: 'To Do', title: 'x-media-fetch: HLS segment-host allowlist', description: 'Edit marketplace/plugins/obsidian-triage/tools/x-media-fetch.py.', created: '2026-10-06T21:00:00Z' };
+
+test('VERIFY-LOCAL: a merged PR cites the ticket key after its creation (HIMMEL-4686 / PR 1982)', () => {
+  const v = classifyTicket(T4686, ctx({ merged: [PR1982] }));
+  assert.equal(v.class, 'VERIFY-LOCAL');
+  assert.deepEqual(v.prs, [1982]);
+  assert.match(v.reason, /1982/);
+});
+
+test('VERIFY-LOCAL: a merged PR touching a named file after the ticket was created, key not cited', () => {
+  const pr = { ...PR1982, body: 'unrelated', title: 'fix: [HIMMEL-4704] hls hosts' };
+  const v = classifyTicket(T4686, ctx({ merged: [pr] }));
+  assert.equal(v.class, 'VERIFY-LOCAL');
+  assert.deepEqual(v.prs, [1982]);
+});
+
+test('CLOUD-OK: a PR merged BEFORE the ticket existed does not count, nor does a longer key (HIMMEL-46860)', () => {
+  const old = { ...PR1982, mergedAt: '2026-10-05T00:00:00Z' };
+  assert.equal(classifyTicket(T4686, ctx({ merged: [old] })).class, 'CLOUD-OK');
+  const longer = { ...PR1982, files: [], body: 'Deferred → HIMMEL-46860', title: 'x' };
+  assert.equal(classifyTicket(T4686, ctx({ merged: [longer] })).class, 'CLOUD-OK');
+});
+
+test('BLOCKED: merged-PR list unavailable, so the ticket cannot be proven unfixed', () => {
+  assert.equal(classifyTicket(T4686, ctx({ mergedUnknown: true })).class, 'BLOCKED');
+});
+
+test('CLI: a ticket whose files a merged PR touched prints VERIFY-LOCAL with the PR number and writes no brief', () => {
+  const { dir, bucket, jira } = setup();
+  const gh = stub(dir, 'gh3', `
+if [ "$1 $2" = "pr list" ] && printf '%s ' "$@" | grep -q -- '--state merged'; then
+  echo '[{"number":1982,"title":"fix: x","body":"","mergedAt":"2099-01-01T00:00:00Z","files":[{"path":"scripts/lanes/example.sh"}]}]'; exit 0
+fi
+if [ "$1 $2" = "pr list" ]; then exit 0; fi
+exit 1`);
+  const r = spawnSync(process.execPath, [CLI, '--bucket', bucket, '--console', 'AD', 'HIMMEL-9001'], {
+    encoding: 'utf8', env: { ...process.env, CLOUD_ROUTE_JIRA_CMD: jira, CLOUD_ROUTE_GH_CMD: gh },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /HIMMEL-9001\tVERIFY-LOCAL\t.*1982/);
+  assert.ok(!existsSync(join(bucket, 'cloud-brief-HIMMEL-9001.md')));
 });

@@ -202,7 +202,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip vault=skip denials=none ciq=unknown plan-index=skip or=skip fails=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip vault=skip cloud=skip denials=none ciq=unknown plan-index=skip or=skip fails=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -2053,6 +2053,53 @@ GIT_COMMITTER_DATE="$(date -d '3 hours ago' +%s) +0000" gv4911 commit -q -m lag 
 contains 'an unpushed commit past the threshold reads vault=PUSH-LAG:<age> (HIMMEL-4911)' "$(t4911 "$v4911")" ' vault=PUSH-LAG:3h'
 mkdir -p "$W/vault4911bad/.git"; echo garbage > "$W/vault4911bad/.git/HEAD"
 contains 'a corrupt vault reads vault=unknown and the tick still runs (HIMMEL-4911)' "$(t4911 "$W/vault4911bad")" ' vault=unknown'
+
+# --- HIMMEL-5163: cloud=<ok|STALL:<ticket>[,...]|skip> -- cloud-sessions.tsv against the
+# forge. Fixtures are REAL: the tsv rows are the 2026-10-10 launch rows, the PR JSON is the
+# trimmed `gh pr list` output for PR 2314 (HIMMEL-5077: open, one commit, CLOUD-DONE, no
+# shepherd), PR 2306 (HIMMEL-4657: merged) and PR 1982. 4655 and 4686 produced no branch.
+# RED control (pre-change tick.sh): the line carries no cloud= field at all.
+c5163="$W/cloud5163"
+mkdir -p "$c5163"
+cp "$W/handover/console.md" "$c5163/console.md" 2>/dev/null || printf '%s\n' '# console' > "$c5163/console.md"
+printf '%s\n' '#!/bin/sh' "cat '$HERE/fixtures/cloud-liveness-prs.json'" > "$c5163/gh"
+printf '%s\n' '#!/bin/sh' "printf '%s\n' 'aaaa	refs/heads/main' 'bbbb	refs/heads/claude/agui-sse-hardening-fwa0t2'" > "$c5163/git"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$c5163/gh-down"
+chmod +x "$c5163/gh" "$c5163/git" "$c5163/gh-down"
+t5163() {
+    TZ=UTC TOKEN='' CLOUD_LIVENESS_NOW='2026-10-10T16:30:00Z' CLOUD_LIVENESS_GH_CMD="$c5163/${GHSTUB5163:-gh}" \
+        CLOUD_LIVENESS_GIT_CMD="$c5163/git" bash "$SUT" --doc "$c5163/console.md" "$@" 2>/dev/null
+}
+cloud_of() { sed -nE 's/.* cloud=([^ ]*).*/\1/p'; }
+contains 'no cloud-sessions.tsv reads cloud=skip (HIMMEL-5163)' "$(t5163)" ' cloud=skip'
+printf '%s\t%s\t%s\t%s\n' \
+    '2026-10-10T15:56:20' HIMMEL-5077 session_012yMgxSaSskpLb4qrfXBhk1 'claude --teleport session_012yMgxSaSskpLb4qrfXBhk1' \
+    '2026-10-10T15:56:32' HIMMEL-4655 session_01JJVL8oEQVV6M19v4kobvRV 'claude --teleport session_01JJVL8oEQVV6M19v4kobvRV' \
+    '2026-10-10T15:56:43' HIMMEL-4657 session_01BCqPMDHjUE9Z52yEy3J3Uf 'claude --teleport session_01BCqPMDHjUE9Z52yEy3J3Uf' \
+    '2026-10-10T15:56:54' HIMMEL-4686 session_0173H75dC4x9nZ7JdeLqYoMc 'claude --teleport session_0173H75dC4x9nZ7JdeLqYoMc' \
+    > "$c5163/cloud-sessions.tsv"
+equals5163="STALL:HIMMEL-5077,HIMMEL-4655,HIMMEL-4686"
+contains 'no-branch + CLOUD-DONE-without-shepherd sessions read cloud=STALL (merged 4657 is not a stall) (HIMMEL-5163)' "$(t5163 | cloud_of)" "$equals5163"
+not_contains 'a merged cloud PR is never a stall (HIMMEL-5163)' "$(t5163 | cloud_of)" 'HIMMEL-4657'
+printf '%s\n' '# HIMMEL-5077 shepherd' '- 16:00 LIVE — shepherding PR 2314' > "$c5163/HIMMEL-5077-N9-shepherd-2026-10-10.md"
+contains 'a live leg doc naming the PR clears the unshepherded stall (HIMMEL-5163)' "$(t5163 | cloud_of)" 'STALL:HIMMEL-4655,HIMMEL-4686'
+printf '%s\n' '# HIMMEL-5077 shepherd' '- 16:00 LIVE — shepherding PR 2314' '- 16:20 WRAPPED — done' > "$c5163/HIMMEL-5077-N9-shepherd-2026-10-10.md"
+contains 'a WRAPPED leg doc is not a live shepherd (HIMMEL-5163)' "$(t5163 | cloud_of)" "$equals5163"
+contains 'an unreadable forge reads cloud=skip, never a failed tick (HIMMEL-5163)' "$(GHSTUB5163=gh-down t5163 | cloud_of)" 'skip'
+contains '--verbose labels the cloud field (HIMMEL-5163)' "$(t5163 --verbose)" "cloud: $equals5163"
+# An open PR with no CLOUD-DONE: the real 2314 JSON minus its CLOUD-DONE comment, carrying
+# the cloud brief's mandated `cloud-pilot:` body line (the PR's own last commit is 14:05Z).
+printf '%s\n' \
+    "const p = JSON.parse(require('fs').readFileSync('$HERE/fixtures/cloud-liveness-prs.json', 'utf8')).filter((x) => x.number === 2314);" \
+    "p[0].comments = p[0].comments.filter((c) => !/^CLOUD-DONE/.test(c.body));" \
+    "p[0].body += '\ncloud-pilot: HIMMEL-5077 (console c)';" \
+    "process.stdout.write(JSON.stringify(p));" > "$c5163/silent.js"
+printf '%s\n' '#!/bin/sh' "node '$c5163/silent.js'" > "$c5163/gh-silent"
+chmod +x "$c5163/gh-silent"
+printf '%s\t%s\t%s\t%s\n' '2026-10-10T15:56:20' HIMMEL-5077 session_012yMgxSaSskpLb4qrfXBhk1 'claude --teleport session_012yMgxSaSskpLb4qrfXBhk1' > "$c5163/cloud-sessions.tsv"
+GHSTUB5163=gh-silent
+contains 'an open PR with no CLOUD-DONE and no commit for an hour reads STALL (HIMMEL-5163)' "$(t5163 | cloud_of)" 'STALL:HIMMEL-5077'
+contains 'the same PR under a raised quiet threshold is working, not a stall (HIMMEL-5163)' "$(CLOUD_LIVENESS_PR_MIN=9999 t5163 | cloud_of)" 'ok'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
