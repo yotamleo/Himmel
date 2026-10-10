@@ -475,6 +475,10 @@ op_allow_rule() {
         return 26
     fi
     tgt="${BREAK_GLASS_ALLOW_TARGET:-$PRIMARY/.claude/settings.local.json}"
+    if [ -L "$tgt" ]; then
+        echo "ERR break-glass: $tgt is a symlink; left alone" >&2
+        return 27
+    fi
     if [ -e "$tgt" ] && ! jq -s -e 'length == 1 and (.[0] | type == "object" and ((.permissions // {}) | type == "object") and ((.permissions // {}) | (if has("allow") then .allow else [] end) | type == "array"))' "$tgt" >/dev/null 2>&1; then
         echo "ERR break-glass: $tgt is not a settings object with an allow list; left alone" >&2
         return 27
@@ -485,6 +489,12 @@ op_allow_rule() {
     fi
     mkdir -p "${tgt%/*}" 2>/dev/null || { echo "ERR break-glass: cannot create ${tgt%/*}" >&2; return 27; }
     new="$(mktemp "$tgt.XXXXXX")" || { echo "ERR break-glass: cannot create a temp file beside $tgt" >&2; return 27; }
+    # The temp file takes the target's mode (mktemp is 0600) before the write.
+    if [ -e "$tgt" ] && ! cp -p "$tgt" "$new"; then
+        rm -f "$new"
+        echo "ERR break-glass: could not preserve the mode of $tgt; nothing written" >&2
+        return 27
+    fi
     if ! { if [ -e "$tgt" ]; then cat "$tgt"; else echo '{}'; fi; } \
         | jq --arg r "$rule" '.permissions.allow = ((.permissions.allow // []) + [$r])' > "$new" 2>/dev/null; then
         rm -f "$new"
