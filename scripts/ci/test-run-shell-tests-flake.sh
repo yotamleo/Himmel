@@ -74,6 +74,14 @@ if [ "$(ledger_rows "$sb")" = 1 ] && grepq "$(cat "$sb/ledger.jsonl")" -F '"suit
 else
   fail "F1: ledger: $(cat "$sb/ledger.jsonl" 2>&1)"
 fi
+# The ledgers.json registry (HIMMEL-4290) requires the v/ts/host/source/kind envelope.
+row=$(cat "$sb/ledger.jsonl" 2>/dev/null)
+if grepq "$row" -F '"v":1' && grepq "$row" -E '"host":"[^"]+"' \
+    && grepq "$row" -F '"source":"run-shell-tests"' && grepq "$row" -F '"kind":"flake"'; then
+  pass "F1: the row carries the registry envelope (v, host, source, kind)"
+else
+  fail "F1: envelope missing from row: $row"
+fi
 rm -rf "$sb"
 fi
 

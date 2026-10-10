@@ -210,6 +210,19 @@
       "schema_version": 1,
       "envelope": ["v", "ts", "host", "source", "kind"],
       "grandfathered": false
+    },
+    {
+      "id": "suite-flake-ledger",
+      "default_path": "~/.himmel/suite-flake-ledger.jsonl",
+      "override_env": "SUITE_FLAKE_LEDGER",
+      "writer": "scripts/ci/run-shell-tests.sh",
+      "readers": ["scripts/ci/run-shell-tests.sh"],
+      "format": "jsonl",
+      "rotation": "none",
+      "retention": "unbounded",
+      "schema_version": 1,
+      "envelope": ["v", "ts", "host", "source", "kind"],
+      "grandfathered": false
     }
   ]
 }

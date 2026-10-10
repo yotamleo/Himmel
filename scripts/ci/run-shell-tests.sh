@@ -3436,7 +3436,7 @@ _flake_json_str() {
 # and prints the repeat-flake line when the suite already flaked inside the
 # window. Never changes the run's verdict: a ledger that cannot be written WARNs.
 _flake_record() {
-  local _s _cases _now _cut _prior _row
+  local _s _cases _now _cut _prior _row _host
   _s=$(printf '%s' "$1" | _flake_json_str)
   _cases=$(grep -E '^[[:space:]]*(not ok|FAIL|\[FAIL\])' "$3" 2>/dev/null | head -n 3 | tr '\n' '|' | cut -c1-300 | _flake_json_str)
   _now=$(date +%s 2>/dev/null || echo 0)
@@ -3455,8 +3455,11 @@ _flake_record() {
       'index($0, s) && match($0, /"ts":[0-9]+/) { if (substr($0, RSTART + 5, RLENGTH - 5) + 0 >= min) n++ } END { print n + 0 }' \
       "$SUITE_FLAKE_LEDGER" 2>/dev/null) || _prior=0
   fi
-  _row=$(printf '{"suite":"%s","case":"%s","rc":%s,"sha":"%s","run":"%s","ts":%s}' \
-    "$_s" "$_cases" "$2" "$REPORT_HEAD" "$(printf '%s' "${GITHUB_RUN_ID:-}" | _flake_json_str)" "$_now")
+  _host=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo unknown)
+  # v/ts/host/source/kind is the scripts/observability/ledgers.json envelope.
+  _row=$(printf '{"v":1,"ts":%s,"host":"%s","source":"run-shell-tests","kind":"flake","suite":"%s","case":"%s","rc":%s,"sha":"%s","run":"%s"}' \
+    "$_now" "$(printf '%s' "${_host:-unknown}" | _flake_json_str)" "$_s" "$_cases" "$2" "$REPORT_HEAD" \
+    "$(printf '%s' "${GITHUB_RUN_ID:-}" | _flake_json_str)")
   mkdir -p "$(dirname "$SUITE_FLAKE_LEDGER")" 2>/dev/null
   if ! printf '%s\n' "$_row" >> "$SUITE_FLAKE_LEDGER" 2>/dev/null; then
     printf 'WARN: could not append the flake ledger row to %s\n' "$SUITE_FLAKE_LEDGER" >&2
