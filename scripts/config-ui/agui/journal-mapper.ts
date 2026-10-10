@@ -157,13 +157,18 @@ function resultText(content: unknown): string {
 }
 
 // The ledger rows a tool result confirms: one its output names (id, and head when the row has one), or a finding
-// row when the output carries no refusal. An amend always prints its confirmation, so none means not written.
+// row when the output carries no refusal. An amend always prints its confirmation, so none means not written. Each
+// confirmation line backs one row, so a repeated amend of one id counts only as many times as the ledger said so.
 function confirmedRows(rows: LedgerRow[], text: string): VerdictUpdate[] {
   if (!rows.length) return [];
   const said = [...text.matchAll(LEDGER_CONFIRMED)];
   const refused = LEDGER_REFUSED.test(text);
   return rows
-    .filter((r) => said.some(([, id, sha]) => id === r.id && (!r.head || r.head.startsWith(sha) || sha.startsWith(r.head))) || (!r.amend && !refused))
+    .filter((r) => {
+      const at = said.findIndex(([, id, sha]) => id === r.id && (!r.head || r.head.startsWith(sha) || sha.startsWith(r.head)));
+      if (at >= 0) said.splice(at, 1);
+      return at >= 0 || (!r.amend && !refused);
+    })
     .map(({ amend: _, ...v }) => v);
 }
 
@@ -340,12 +345,13 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
   }
 
   // A successful Edit of a staged verdict file: apply its replacement to the cached text, or drop the entry when
-  // the replacement cannot be followed, so a later --from-file shows nothing rather than something stale.
+  // the replacement cannot be followed, so a later --from-file shows nothing rather than something stale. A followed
+  // Edit that leaves no VERDICT line keeps its text, so a later Edit can put verdicts back.
   function followEdit({ path, old, next, all }: NonNullable<PendingCall["edit"]>) {
     const cached = verdictFiles.get(path);
     if (cached === undefined) return;
     const text = old && cached.includes(old) ? (all ? cached.split(old).join(next) : cached.replace(old, () => next)) : undefined;
-    if (text !== undefined && extractVerdicts(text).length) verdictFiles.set(path, text);
+    if (text !== undefined) verdictFiles.set(path, text);
     else verdictFiles.delete(path);
   }
 

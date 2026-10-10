@@ -157,6 +157,26 @@ describe("a /pr-check run", () => {
   });
 });
 
+describe("ledger confirmations and Edits, review follow-ups", () => {
+  test("one confirmation line backs one amend row of an id", () => {
+    const deltas = withExtra([
+      ...bash(1, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r; bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=agreed --reason r`, amended("codex-1")),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("an Edit that removes every VERDICT line is still followed by a later Edit", () => {
+    const deltas = withExtra([
+      ...tool(1, "Write", { file_path: "/tmp/scratch/v4.txt", content: "VERDICT [codex-1] = agreed\n" }),
+      ...tool(2, "Edit", { file_path: "/tmp/scratch/v4.txt", old_string: "VERDICT [codex-1] = agreed", new_string: "nothing" }),
+      ...tool(3, "Edit", { file_path: "/tmp/scratch/v4.txt", old_string: "nothing", new_string: "VERDICT [codex-1] = disproved" }),
+      ...bash(4, "bash scripts/cr/write-verdicts.sh aggregate --from-file /tmp/scratch/v4.txt"),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "disproved" }] });
+  });
+});
+
 describe("parsePanelReport", () => {
   test("text that is not a panel report gives null", () => {
     expect(parsePanelReport("README.md\nscripts")).toBeNull();
