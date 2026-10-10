@@ -223,5 +223,9 @@ else
   build_step qmd-index add "$ROOT --name himmel (BM25 only, no embed)" -- qmd_index
 fi
 
+# 11. Stamp the hash of this script so a session's `check-env.sh` can tell a
+# stale cached snapshot from the repo's current script (HIMMEL-5163).
+soft_step env-stamp record "scripts/cloud/check-env.sh --stamp" -- bash "$ROOT/scripts/cloud/check-env.sh" --stamp
+
 if [ "$failed" -ne 0 ]; then echo "setup-env: $failed step(s) failed" >&2; exit 1; fi
 echo "setup-env: done (dry-run=$DRY)" >&2

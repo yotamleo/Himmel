@@ -1,149 +1,130 @@
-# Cloud environment recipe
+# Cloud environment: from nothing to a working `claude --cloud` session
 
-The one claude.ai cloud environment that makes `claude --cloud` sessions on
-`yotamleo/Himmel` start with himmel working (HIMMEL-4429). It is the plugin
-profile of [`cloud-brief-template.md`](../handover/cloud-brief-template.md#one-time-operator-setup)
-written out field by field. What a session in it has, and why the local shepherd
-stays mandatory, is in that template. Platform reference:
-[cloud environments](https://code.claude.com/docs/en/cloud-environments).
+How an adopter gets `claude --cloud` sessions on **their own fork** of himmel
+starting with the harness working (HIMMEL-4429, HIMMEL-5163). The cloud lane
+runs small, well-scoped tickets on an Anthropic-managed VM and opens a PR; a
+local shepherd then reviews and merges it. What a session has, and why the
+shepherd is mandatory, is in
+[`cloud-brief-template.md`](../handover/cloud-brief-template.md). Platform
+reference: [cloud environments](https://code.claude.com/docs/en/cloud-environments).
 
-## Create it
+## Why this is a paste, not a command
 
-At [claude.ai/code](https://claude.ai/code), select the cloud icon above the
-message box, then **Cloud**, then **Add cloud environment** (or hover an existing
-one and select its settings icon). Fill in the dialog:
+Checked against the docs and the CLI on 2026-10-10 (HIMMEL-5163):
 
-| Field | Value |
+| Question | Answer | Source |
+|---|---|---|
+| Create or declare an environment from a repo file? | **No.** The dialog is the only path; the setup script is "entered in the Setup script field" of the environment settings dialog | [cloud-environments](https://code.claude.com/docs/en/cloud-environments) |
+| Create one from a command or API? | **No.** `/remote-env` "only sets the default: it doesn't start a session, and it can't add or edit environments". `claude --help` has no environment subcommand | same page; `claude --help` (2.1.296) |
+| Read an environment's script or variables back from the CLI? | **No.** `/remote-env` lists names and IDs only | same page |
+| Detect that the dialog differs from the repo? | **No platform mechanism.** A session sees `CLAUDE_CODE_REMOTE=true` and the variables you set | same page |
+
+The Managed Agents environments API (`POST /v1/environments`,
+`ant apply environment.yaml`) is a different product: API-key billed, its own
+sessions, no env-var or setup-script field, and nothing connects it to
+`claude --cloud`. It does not apply here.
+
+So himmel keeps the dialog's content in **one checked-in source** and checks the
+dialog against it:
+
+| File | Role |
 |---|---|
-| Name | `himmel` |
-| Network access | **Trusted** |
-| Environment variables | the block below |
-| Setup script | the block below |
+| `scripts/cloud/environment.env` | The environment variables and the setup-script `# rev:` |
+| `scripts/cloud/setup-env.sh` | The setup script itself; the dialog only clones the repo and runs it |
+| `scripts/cloud/check-env.sh` | `--print` renders the dialog's fields; with no argument a session checks itself |
 
-**Environment variables** (`.env` format, one per line):
+## Prerequisites
 
-```text
-JIRA_PROJECT_KEY=HIMMEL
-BASH_DEFAULT_TIMEOUT_MS=600000
-BASH_MAX_TIMEOUT_MS=600000
-```
+- A Claude subscription with Claude Code on the web (claude.ai/code), and the
+  `claude` CLI on your machine.
+- Your fork of himmel on GitHub, with the **Claude GitHub app** installed on it:
+  at claude.ai/code connect GitHub and grant the app access to the fork, or run
+  `/web-setup` in a local terminal. The platform's GitHub proxy then
+  authenticates `git` and `gh` inside the VM, so no token of yours enters it.
+- The fork's `origin` set on the checkout you run the commands below from.
 
-- Everyone who uses the environment can read these values, so **never put a
-  secret here**. The cloud has no Jira token on purpose: Jira goes through the
+## Create the environment
+
+1. From your fork's checkout, print the fields (it uses your `origin` as the
+   clone URL, so a fork gets its own URL):
+
+   ```bash
+   bash scripts/cloud/check-env.sh --print
+   ```
+
+2. At [claude.ai/code](https://claude.ai/code), select the cloud icon above the
+   message box, then **Cloud**, then **Add cloud environment**. Paste the
+   printed fields: **Name** `himmel`, **Network access** `Trusted`,
+   **Environment variables** (the printed block), **Setup script** (the printed
+   block).
+
+Notes on the fields:
+
+- Everyone who uses the environment can read the variables, so **never put a
+  secret there**. The cloud has no Jira token on purpose: Jira goes through the
   claude.ai Atlassian connector, not the local jira CLI.
-- Leave `GH_TOKEN` and `GITHUB_TOKEN` unset. The platform's GitHub proxy then
-  authenticates `git` and `gh` for the session, and your token never enters the
-  VM. A token set here would be readable by anyone using the environment.
-- The two timeouts must be set here. This field is the only place they reach
-  the Bash tool: a probe saw a value written to `/etc/profile.d` stay unset in
-  the session's shell, and this field set them (HIMMEL-4429).
-
-**Setup script:**
-
-```bash
-#!/bin/bash
-# rev: 5
-rm -rf /tmp/himmel-setup \
-  && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
-  && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh --with-plugins || true
-```
-
-- Keep the trailing `|| true`. A setup script that exits non-zero stops the
-  session from starting; a failed step should cost a tool, not the session.
-- It installs shellcheck, `at` and pre-commit, builds the Jira CLI dist, installs
-  the obsidian-triage tool deps, and installs the lean plugin profile
-  (himmel-ops, lean-skills) into the VM's `~/.claude`. A claude.ai plugin upload
-  does not do this: it never loads in a cloud session.
-- It also installs graphify and qmd and indexes the repo with each (HIMMEL-4726,
-  see [What the cloud has](#what-the-cloud-has-and-what-stays-local)). Both run
-  last, are bounded by `timeout`, and a failure costs only that tool.
-- The Jira dist builds inside `/tmp/himmel-setup`, not in the session's clone
-  (`/home/user/Himmel`), because the clone does not exist yet when the script
-  runs. Cloud sessions use the Atlassian connector for Jira anyway.
-
-## What the cloud has, and what stays local
-
-| The cloud has | How |
-|---|---|
-| Hooks | The repo's `.claude/settings.json`; plugin hooks through `--with-plugins` (probed, HIMMEL-4273) |
-| graphify | Installed at the in-repo pin (`scripts/lib/graphify-bin.sh`) with no backend extra. The setup builds the graph AST-only (`graphify update .`): it parses code locally and calls no model, so nothing is sent anywhere |
-| qmd, repo only | The pinned fork (`scripts/lib/qmd-bin.sh install`) and one collection, `himmel`, on the repo, rebuilt on every setup run so it never serves an older clone. BM25 only, see below. A ticket that names another collection (`-c luna`) routes LOCAL-NATIVE |
-| Jira | The claude.ai Atlassian MCP connector, not the local jira CLI |
-
-| Stays local | Why |
-|---|---|
-| luna and any other vault | Private vault data never leaves the station (`scripts/guardrails/egress-matrix.json`). qmd in the cloud never indexes or fetches a vault |
-| Handover state | It lives in the luna state repo, which the cloud cannot reach; a cloud session reports through its PR instead |
-| The console bridge | The console inbox and `SendMessage` reach local sessions only |
-| The hook-integrity bypass | It is a launching-shell variable on the station; a ticket that edits `scripts/hooks/` routes HOOK-BYPASS |
-
-The cached setup builds indexes in `/tmp/himmel-setup`, not the session's
-branch. Once inside the session's repo worktree, run
-`bash scripts/cloud/setup-env.sh` to rebuild both indexes against that checkout.
-This keeps the graph inside the fence's already-classified repo root; the
-unclassified cached `/tmp` graph stays denied. No vault path is registered.
-
-- **graphify**: query the session graph with
-  `graphify query "<question>" --graph graphify-out/graph.json`.
-  AST-only rebuilding takes about 25 s for this repo on a desktop CPU.
-  Never run a semantic `/graphify` extraction in
-  the cloud: it would send content to a model backend. `/cloud-route` routes a
-  ticket that needs one to LOCAL-NATIVE.
-- **qmd**: `bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel`
-  is bounded BM25 search. The wrapper resolves the installed bun-global tool
-  even when no qmd shim is on PATH. Vector search,
-  and the expansion and rerank of `qmd query`, need about 2 GB of models
-  (`qmd pull`) plus a CPU embed, which do not fit the ~5 minute cached setup, so
-  the setup skips them. `qmd query` may try to fetch those models on first use;
-  use `bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel` in the cloud.
-  `/cloud-route` still routes a ticket that needs `qmd query`, vector search or
-  an embed to LOCAL-NATIVE.
-
-## Network policy
-
-**Trusted** covers everything the setup script and a session reach: GitHub
-(`github.com`, `codeload.github.com`, `raw.githubusercontent.com`), npm
-(`registry.npmjs.org`), PyPI (`pypi.org`, `files.pythonhosted.org`) and the
-Ubuntu archives (`*.ubuntu.com`) for apt. Atlassian needs no entry: MCP connector
-traffic goes through Anthropic's servers, not the session's network. Pick
-**Custom** only if you need a host outside that list, and tick "Also include
-default list of common package managers" so the installs keep working.
+- Leave `GH_TOKEN` and `GITHUB_TOKEN` unset so the GitHub proxy authenticates.
+- The two Bash timeouts must be set in this field: it is the only place they
+  reach the Bash tool (HIMMEL-4429).
+- Keep the setup script's trailing `|| true`: a non-zero setup script stops the
+  session from starting, and a failed step should cost a tool, not the session.
+- The setup script installs shellcheck, `at` and pre-commit, builds the Jira CLI
+  dist, installs the obsidian-triage deps and the lean plugin profile
+  (himmel-ops, lean-skills; a claude.ai plugin upload never loads in a cloud
+  session), then graphify and qmd over the repo (HIMMEL-4726). Each build is
+  bounded by `timeout` and a failure costs only that tool. Its last step stamps
+  the script's hash for the self-check below.
+- **Network access** `Trusted` covers GitHub, npm, PyPI and the Ubuntu
+  archives, which is everything the setup and a session reach. Atlassian needs
+  no entry: connector traffic goes through Anthropic, not the VM's network.
+  Pick **Custom** only for a host outside that list, and tick "Also include
+  default list of common package managers".
 
 ## Make it the CLI default
 
 `claude --cloud` does not use the claude.ai selector. In a local terminal run
-`/remote-env` once and pick `himmel`. It saves `remote.defaultEnvironmentId` in
-your user settings, so every `claude --cloud` from this machine starts in this
-environment. Without it the CLI falls back to the Anthropic-hosted **Default**
-environment, which has no setup script.
+`/remote-env` once and pick `himmel`; it saves `remote.defaultEnvironmentId` in
+your user settings. Without it the CLI falls back to the Anthropic-hosted
+**Default** environment, which has no setup script.
 
-## Cache and refresh
+## First session
 
-- The setup script runs on the first session. If it finishes in about five
-  minutes, the platform snapshots the filesystem and later sessions start from
-  that snapshot without re-running it.
-- The snapshot is rebuilt when the setup script text or the allowed network hosts
-  change, and when it expires after about seven days. The plugins come from that
-  frozen `/tmp/himmel-setup` clone, so a plugin change on `main` reaches new
-  sessions only after a rebuild. To force one, bump the `# rev:` line.
-- A paused session that resumes does not re-run the setup script, and keeps the
-  environment variables it last read until its VM is restored or rebuilt. Start a
-  new session to pick up a change at once.
+```bash
+claude --cloud "reply with the word ready, change nothing"
+```
 
-## Check it
+The first session runs the setup script (about five minutes); watch it at the
+session URL the command prints. If it finishes inside about five minutes the
+platform snapshots the filesystem and later sessions start from the snapshot.
 
-Start one session in the environment and ask it to run:
+## Verify it
+
+In the session, run:
+
+```bash
+bash scripts/cloud/check-env.sh
+```
+
+Expect `env <NAME> ok` for each variable and `setup-script ok`, exit 0. A
+mismatch is named on its own line and exits 1:
+
+| Line | Meaning | Fix |
+|---|---|---|
+| `env <NAME> MISMATCH expected=... actual=...` | The dialog's variable differs from `environment.env` | Fix the dialog from `check-env.sh --print`, then start a **new** session (a resumed one keeps the values it last read) |
+| `setup-script STALE` | The cached snapshot ran an older `setup-env.sh` than this clone's | Bump `# rev:` in the dialog's setup script (and in `environment.env`) to rebuild the snapshot |
+| `setup-script MISSING` | No stamp: the setup never finished, or the dialog does not run `setup-env.sh` | Read `/tmp/himmel-setup-logs/` for the failed step, or re-paste the setup script |
+
+What the check cannot see: the bootstrap text in the dialog (the clone URL and
+flags) is not readable from inside the VM, so a changed URL shows only as a
+missing or stale stamp. The check is also not wired into a SessionStart hook
+yet: a cloud brief or the operator runs it by hand.
+
+Then the tool probe:
 
 ```bash
 echo CLAUDE_CODE_REMOTE=$CLAUDE_CODE_REMOTE BASH_DEFAULT_TIMEOUT_MS=$BASH_DEFAULT_TIMEOUT_MS
 shellcheck --version | sed -n 2p
 ls ~/.claude/plugins
-```
-
-Expect `CLAUDE_CODE_REMOTE=true`, `BASH_DEFAULT_TIMEOUT_MS=600000`, a shellcheck
-version, and a plugins directory. Then check graphify and qmd:
-
-```bash
 # Inside the session's repo worktree, not /tmp/himmel-setup:
 bash scripts/cloud/setup-env.sh
 graphify query "cloud route classification" --graph graphify-out/graph.json
@@ -151,7 +132,53 @@ bash scripts/lib/qmd-bounded.sh collection list
 bash scripts/lib/qmd-bounded.sh search "cloud environment" -c himmel
 ```
 
-Expect a `Graph: ... nodes` line, exactly one collection (`himmel`), and hits
-from `docs/`. If a tool is missing, the setup log under
-`/tmp/himmel-setup-logs/` names the step that failed. Then ask it to list its skills: the
+Expect `CLAUDE_CODE_REMOTE=true`, `BASH_DEFAULT_TIMEOUT_MS=600000`, a shellcheck
+version, a plugins directory, a `Graph: ... nodes` line, exactly one collection
+(`himmel`) and hits from `docs/`. Then ask the session to list its skills: the
 `himmel-ops:` and `lean-skills:` skills should be there.
+
+## What the cloud has, and what stays local
+
+| The cloud has | How |
+|---|---|
+| Hooks | The repo's `.claude/settings.json`; plugin hooks through the setup script's plugin step (probed, HIMMEL-4273) |
+| graphify | Pinned at `scripts/lib/graphify-bin.sh`, no backend extra, AST-only (`graphify update .`): it parses code locally and calls no model |
+| qmd, repo only | The pinned fork and one collection, `himmel`, rebuilt on every setup run. BM25 only; a ticket that needs `qmd query`, vector search or another collection routes LOCAL-NATIVE |
+| Jira | The claude.ai Atlassian MCP connector, enabled for the session |
+
+| Stays local | Why |
+|---|---|
+| luna and any other vault | Private vault data never leaves the station (`scripts/guardrails/egress-matrix.json`) |
+| Handover state | It lives in the state repo, which the cloud cannot reach; a cloud session reports through its PR |
+| A Jira token | Not in the environment on purpose; use the Atlassian connector |
+| Lane tickets (claudex, codex or another lane) | Cloud is Claude only; `/cloud-route` routes them LOCAL |
+| The console bridge and the hook-integrity bypass | Local launching-shell state; a ticket that edits `scripts/hooks/` routes HOOK-BYPASS |
+
+The cached graph and index live in `/tmp/himmel-setup`, a frozen clone. In the
+session's own worktree run `bash scripts/cloud/setup-env.sh` to rebuild both
+against that checkout. Never run a semantic `/graphify` extraction in the cloud:
+it would send content to a model backend.
+
+## How a cloud PR lands
+
+1. `/cloud-route` classifies a ticket CLOUD-OK, writes the brief and prints the
+   launch line; you run it (`claude --cloud "<brief>"`).
+2. The session works in a worktree, opens the PR and posts one top-level comment
+   whose first line is `CLOUD-DONE <session URL>`, then the head SHA and test
+   results. A block it cannot resolve is posted as `CLOUD-BLOCKED <session URL>`.
+3. A **local shepherd** takes it from there: `bash
+   scripts/handover/console-kit/shepherd.sh <pr>` runs the coverage lint, the
+   impacted suites, CI and the ready check; `/pr-check` and the CR gate run
+   locally, and the console merges on `GO`. The cloud session never merges and
+   stops pushing once the shepherd comments.
+4. The ticket stays `In Progress` until the merge closes it.
+
+## Cache and refresh
+
+- The snapshot is rebuilt when the setup script text or the allowed network
+  hosts change, and when it expires after about seven days. Plugins come from
+  the frozen `/tmp/himmel-setup` clone, so a change on `main` reaches new
+  sessions only after a rebuild: bump `# rev:` in `environment.env`, re-print and
+  re-paste the script.
+- A paused session that resumes does not re-run the setup script and keeps the
+  variables it last read. Start a new session to pick up a change.
