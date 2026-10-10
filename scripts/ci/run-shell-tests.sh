@@ -3434,10 +3434,13 @@ fi
 
 # _flake_norm_url / _flake_repo_id live in scripts/lib/flake-repo-id.sh, which the
 # reader (scripts/observability/suite-flake-summary.sh) sources too (HIMMEL-5147).
-# shellcheck source=scripts/lib/flake-repo-id.sh
-. "$REPO_ROOT/scripts/lib/flake-repo-id.sh"
+# A lib that cannot be read leaves the id empty and _flake_record then writes no
+# row (HIMMEL-5156): an empty "repo" would merge every repo's history.
 if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
-  SUITE_FLAKE_REPO_ID=$(_flake_repo_id "$REPO_ROOT")
+  # shellcheck source=scripts/lib/flake-repo-id.sh
+  if [ -r "$REPO_ROOT/scripts/lib/flake-repo-id.sh" ] && . "$REPO_ROOT/scripts/lib/flake-repo-id.sh"; then
+    SUITE_FLAKE_REPO_ID=$(_flake_repo_id "$REPO_ROOT")
+  fi
 fi
 # An override is reduced to a charset that is inert in JSON and in awk -v
 # (which would otherwise interpret a backslash and miss its own rows).
@@ -3466,6 +3469,10 @@ _flake_record() {
   _now=$(date +%s 2>/dev/null || echo 0)
   if [ -z "$SUITE_FLAKE_LEDGER" ]; then
     printf '[NOTE] %s — flake not recorded: no ledger path (set SUITE_FLAKE_LEDGER)\n' "$1"
+    return 0
+  fi
+  if [ -z "$_repo" ]; then
+    printf 'WARN: %s — flake not recorded: no repo id (scripts/lib/flake-repo-id.sh unreadable, set SUITE_FLAKE_REPO_ID)\n' "$1" >&2
     return 0
   fi
   if [ -L "$SUITE_FLAKE_LEDGER" ]; then

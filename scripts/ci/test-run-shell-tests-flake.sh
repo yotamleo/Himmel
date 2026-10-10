@@ -383,7 +383,9 @@ mk_url_repo "$sb/q3" "http://github.com:80/o/r.git"
 mk_url_repo "$sb/q4" "http://github.com/o/r"
 mk_url_repo "$sb/q5" "ssh://git@github.com:2222/o/r.git"
 mk_url_repo "$sb/q6" "https://github.com:22/o/r"
-p1=$(_flake_repo_id "$sb/p1" 2>&1); p2=$(_flake_repo_id "$sb/p2" 2>&1)
+# A relative origin is resolved against the checkout (HIMMEL-5156), so the case
+# row compares the normaliser's output for one shared base, not two directories.
+p1=$(_flake_norm_url "Repo/project" "$sb" 2>&1); p2=$(_flake_norm_url "repo/project" "$sb" 2>&1)
 p3=$(_flake_repo_id "$sb/p3" 2>&1); p4=$(_flake_repo_id "$sb/p4" 2>&1); p5=$(_flake_repo_id "$sb/p5" 2>&1)
 if [ -n "$p1" ] && [ "$p1" != "$p2" ]; then
   pass "F16: Repo/project and repo/project are distinct ids"
@@ -394,6 +396,43 @@ if [ -n "$p3" ] && [ "$p3" != "$p4" ] && [ "$p3" = "$p5" ]; then
   pass "F16: /srv/r and /srv/r.git are distinct ids; a trailing slash does not matter"
 else
   fail "F16: local path ids: /srv/r [$p3] /srv/r.git [$p4] /srv/r/ [$p5]"
+fi
+# HIMMEL-5156: file:// is a local path, not a network URL, so file:///srv/r.git
+# is the /srv/r.git directory (not /srv/r), and a relative origin is resolved
+# against the main checkout, so one repo's worktrees share an id and the same
+# relative text from two parents does not.
+mk_url_repo "$sb/f1" "file:///srv/r.git"
+mk_url_repo "$sb/f2" "file:///srv/r"
+f1=$(_flake_repo_id "$sb/f1" 2>&1); f2=$(_flake_repo_id "$sb/f2" 2>&1)
+if [ -n "$f1" ] && [ "$f1" != "$p3" ] && [ "$f1" = "$p4" ] && [ "$f2" = "$p3" ]; then
+  pass "F16: file:///srv/r.git is the /srv/r.git directory, distinct from /srv/r"
+else
+  fail "F16: file:// ids: file:///srv/r.git [$f1] /srv/r [$p3] /srv/r.git [$p4] file:///srv/r [$f2]"
+fi
+mk_url_repo "$sb/ra/co" "../r.git"; mk_url_repo "$sb/rb/co" "../r.git"
+gq -C "$sb/ra/co" commit -q --allow-empty -m x
+git -C "$sb/ra/co" worktree add -q "$sb/ra/co-wt" -b rwt 2>/dev/null
+r1=$(_flake_repo_id "$sb/ra/co" 2>&1); r2=$(_flake_repo_id "$sb/rb/co" 2>&1); r3=$(_flake_repo_id "$sb/ra/co-wt" 2>&1)
+if [ -n "$r1" ] && [ "$r1" != "$r2" ] && [ "$r1" = "$r3" ]; then
+  pass "F16: ../r.git from two parents is two ids; a worktree shares its checkout's id"
+else
+  fail "F16: relative origin ids: parent a [$r1] parent b [$r2] a's worktree [$r3]"
+fi
+# --separate-git-dir: the common dir is not the checkout, so a relative origin
+# resolves against the checkout (the first worktree), never the git dir.
+mkdir -p "$sb/rs" "$sb/rt" "$sb/gd"
+git init -q --separate-git-dir "$sb/gd/s.git" "$sb/rs/co" 2>/dev/null
+git init -q --separate-git-dir "$sb/gd/t.git" "$sb/rt/co" 2>/dev/null
+git -C "$sb/rs/co" remote add origin ../r.git; git -C "$sb/rt/co" remote add origin ../r.git
+s1=$(_flake_repo_id "$sb/rs/co" 2>&1); s2=$(_flake_repo_id "$sb/rt/co" 2>&1)
+case "$s1:$s2" in
+  origin-*:origin-*) s_ok=1 ;;
+  *) s_ok=0 ;;
+esac
+if [ "$s_ok" = 1 ] && [ "$s1" != "$s2" ]; then
+  pass "F16: --separate-git-dir checkouts with ../r.git from two parents are two ids"
+else
+  fail "F16: separate-git-dir relative origin ids collide: [$s1] [$s2]"
 fi
 q1=$(_flake_repo_id "$sb/q1" 2>&1); q2=$(_flake_repo_id "$sb/q2" 2>&1); q3=$(_flake_repo_id "$sb/q3" 2>&1)
 q4=$(_flake_repo_id "$sb/q4" 2>&1); q5=$(_flake_repo_id "$sb/q5" 2>&1); q6=$(_flake_repo_id "$sb/q6" 2>&1)
@@ -437,5 +476,50 @@ else
 fi
 rm -rf "$sb"
 fi
+
+# --- F18 ------------------------------------------------------------------------
+# HIMMEL-5156: a runner that cannot read the id lib fails closed — it writes no
+# ledger row (never "repo":""), names the lib, and the run's verdict is unchanged.
+echo "== F18: a missing id lib writes no ledger row =="
+sb=$(mktemp -d "${TMPDIR:-/tmp}/rst-flake18.XXXXXX") || { fail "F18: mktemp failed"; sb=""; }
+if [ -n "$sb" ]; then
+mkdir -p "$sb/co/scripts/ci" "$sb/suites"
+cp "$RUNNER" "$sb/co/scripts/ci/run-shell-tests.sh"
+cp -R "$RUNNER_ROOT/scripts/lib" "$sb/co/scripts/lib"; rm -f "$sb/co/scripts/lib/flake-repo-id.sh"
+mk_flake_sandbox "$sb" "" 1
+mv "$sb/scripts/test-pass.sh" "$sb/scripts/test-flaky.sh" "$sb/suites/"
+out=$(cd "$sb" && env -u SUITE_TIER_MODE -u SUITE_FLAKE_REPO_ID SUITE_FLAKE_LEDGER="$sb/ledger.jsonl" bash "$sb/co/scripts/ci/run-shell-tests.sh" "$sb/suites" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -E '^ FLAKE: 1' && [ "$(ledger_rows "$sb")" = 0 ] \
+    && grepq "$out" -F 'flake-repo-id'; then
+  pass "F18: no lib, no row, the lib is named, the verdict is the same"
+else
+  fail "F18: rc=$rc rows=$(ledger_rows "$sb") ledger: $(cat "$sb/ledger.jsonl" 2>&1) out: $out"
+fi
+rm -rf "$sb"
+fi
+
+# --- F19 ------------------------------------------------------------------------
+# HIMMEL-5156 (j2305a follow-up 2): the lib is the one definition. F17 and R5 run
+# with the checkout's own plain-https origin, which a stale copy hashes the same
+# way, so only a structural check catches a re-added copy in either caller.
+echo "== F19: neither caller defines the id functions itself =="
+f19_re='^[[:space:]]*(function[[:space:]]+)?(_flake_norm_url|_flake_repo_id)[[:space:]]*(\(\))?[[:space:]]*(\{|$)'
+f19_ctl=$(mktemp) || exit 1
+printf '_flake_repo_id() {\n  :\n}\n' > "$f19_ctl"
+grep -Eq "$f19_re" "$f19_ctl"; f19_rc=$?
+rm -f "$f19_ctl"
+if [ "$f19_rc" -eq 0 ]; then
+  pass "F19: the matcher finds a definition (positive control)"
+else
+  fail "F19: the matcher missed a known definition, rc=$f19_rc"
+fi
+for f in scripts/ci/run-shell-tests.sh scripts/observability/suite-flake-summary.sh; do
+  grep -Eq "$f19_re" "$RUNNER_ROOT/$f"; f19_rc=$?
+  case "$f19_rc" in
+    0) fail "F19: $f defines _flake_norm_url or _flake_repo_id itself" ;;
+    1) pass "F19: $f defines neither id function" ;;
+    *) fail "F19: $f could not be read, grep rc=$f19_rc" ;;
+  esac
+done
 
 rst_tally
