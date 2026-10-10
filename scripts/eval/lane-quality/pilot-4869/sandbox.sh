@@ -133,7 +133,7 @@ else
     jq --arg lane "$LANE" --arg wt "$WT" --arg jwt "$JWT" --arg hook "$RUN/lq-allow-hook.sh" \
       'del(.enabledPlugins, .mcpServers, .enabledMcpjsonServers, .enableAllProjectMcpServers)
        | if $lane == "claudex" then
-           .hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher": "Bash", "hooks": [{"type": "command", "command": "bash \($hook) \($jwt) \($wt)"}]}])
+           .hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher": "Bash", "hooks": [{"type": "command", "command": "bash \([$hook, $jwt, $wt] | map(@sh) | join(" "))"}]}])
            | .autoMode.allow = ((.autoMode.allow // ["$defaults"]) + ["Editing or rewriting files inside the task'"'"'s own working directory (\($jwt)/lq-work) is routine work, not destruction: lq-work is a disposable eval copy"])
          else . end' \
       "$HOME/.claude/settings.json" >"$RUN/user-settings.json" || die "cannot filter the user settings"
