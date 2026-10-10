@@ -2014,6 +2014,13 @@ fk_out="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
 case "$fk_out" in *' or=skip fails='*' flakes=3/2@test-x.sh*2') pass 'flakes= follows fails= and is the last field without spare= (HIMMEL-5131)' ;; *) fail "flakes= position (out='$fk_out')" ;; esac
 contains 'verbose labels suite flakes (HIMMEL-5131)' "$(TOKEN='' bash "$SUT" --doc "$d4670" --verbose 2>/dev/null)" 'suite flakes: 3/2@test-x.sh*2'
 same 'a doc with no lock start reads no flakes= (HIMMEL-5131)' "$(flakes_of "$d4670_free")" ''
+# A suite name carrying Unicode whitespace plus a key=value must not forge a field:
+# board.mjs splits the line on a JS \s regex where the last key wins.
+fknbsp=$'test-x\xc2\xa0legs=9\xe2\x80\xa8fleet=9.sh'
+fkrow $((fk0 + 60)) "$fknbsp" tick-test-repo > "$SUITE_FLAKE_LEDGER"
+fk_out="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
+case "$fk_out" in *$'\xc2\xa0'*|*$'\xe2\x80\xa8'*) fail "flakes= carries Unicode whitespace from a suite name (out='$fk_out')" ;; *) pass 'flakes= strips Unicode whitespace from the top suite name (HIMMEL-5131)' ;; esac
+same 'a forged key in a suite name stays inside the flakes= value (HIMMEL-5131)' "$(flakes_of "$d4670")" '1/1@test-x_legs_9_fleet_9.sh*1'
 rm -f "$SUITE_FLAKE_LEDGER"; mkdir -p "$SUITE_FLAKE_LEDGER"
 same 'flakes=? when the ledger is unreadable (HIMMEL-5131)' "$(flakes_of "$d4670")" '?'
 rmdir "$SUITE_FLAKE_LEDGER"

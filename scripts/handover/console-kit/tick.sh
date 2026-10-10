@@ -1200,7 +1200,8 @@ if [ -n "$console_doc" ] && [ -n "${fails_start:-}" ] && command -v jq >/dev/nul
     case "$fk_since" in ''|*[!0-9]*) fk_since="" ;; esac
     if [ -n "$fk_since" ]; then
         fk_out="$(bash "$REPO/scripts/observability/suite-flake-summary.sh" --since "$fk_since" --format tick 2>/dev/null | head -n 1)" || fk_out=""
-        case "$fk_out" in ''|none) ;; *' '*) ;; *) flakes_tail=" flakes=$fk_out" ;; esac
+        # printable-ASCII whitelist: Unicode whitespace in a suite name must not forge a field
+        case "$fk_out" in ''|none) ;; *[!A-Za-z0-9._/+@*?-]*) ;; *) flakes_tail=" flakes=$fk_out" ;; esac
     fi
 fi
 

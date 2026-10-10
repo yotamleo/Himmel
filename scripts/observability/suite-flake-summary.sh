@@ -85,7 +85,7 @@ case "$format" in
     printf '%s\n' "$rows" | jq -s -r "
       if length == 0 then \"none\"
       else (group_by(.suite) | map({s: .[0].suite, n: length}) | sort_by(-.n, .s)) as \$g
-        | \"\(length)/\(\$g | length)@\(\$g[0].s | $clean | gsub(\" \"; \"_\"))*\(\$g[0].n)\"
+        | \"\(length)/\(\$g | length)@\(\$g[0].s | gsub(\"[^A-Za-z0-9._/+-]\"; \"_\"))*\(\$g[0].n)\"
       end" 2>/dev/null || echo '?'
     ;;
   counts)
