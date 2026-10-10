@@ -427,8 +427,9 @@ by design.
   sweep, so a matching job name proves nothing: EVERY failing case of your PR's
   job must appear among the base run's failing cases, and any extra failing case
   is your own red. Run
-  `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --pr-cases <f> --base-cases <f> --base-sha <merge-base> --main-base-sha <the base run's headSha> --latest-sha <the latest run's headSha> --pr-sha <the PR run's headSha, must be your HEAD>`
-  (every flag is required; when no run exists at the merge-base pass the
+  `bash scripts/handover/merge-forward-check.sh --pr <f> --main-base <f> --main-latest <f> --pr-cases <f> --base-cases <f> --base-sha <merge-base> --main-base-sha <the base run's headSha> --latest-sha <the latest run's headSha> --pr-sha <the PR run's headSha, must be your HEAD> --main-base-conclusion <c>`
+  (every flag is required; `<c>` is that run's `gh run view <id> --json conclusion`
+  value, or `none` when no run exists at the merge-base, in which case pass the
   merge-base itself as `--main-base-sha`, with `--main-base` the empty file;
   the job files carry no sha, so the script refuses a
   base run that is not your merge-base and a latest run that is not on
@@ -444,13 +445,15 @@ by design.
   or a latest run that is off origin/main or older than the base verdict, is unproven) = do NOT merge forward; fix it, or
   report `BLOCKED` / `MAIN-RED` per the rule above. If your merge-base has no
   completed main run — none at that commit (the usual case), or its run was
-  cancelled (0 jobs, only cancelled/skipped rows, or a run whose conclusion is
-  `cancelled`, whatever finished rows it kept: pass those as an empty file too) —
-  a bare check REFUSEs; add the all-or-none trio
-  `--base-cover <f> --base-cover-sha <sha> --base-cover-from <sha>`. The cover is
+  cancelled (conclusion `cancelled`, whatever finished rows it kept: its aggregator
+  row reads red only because the shards were cancelled, so the script takes the
+  conclusion, never the rows, as the verdict) —
+  a bare check REFUSEs; add the all-or-none group
+  `--base-cover <f> --base-cover-sha <sha> --base-cover-from <sha> --base-cover-conclusion <c>`. The cover is
   the next COMPLETED main run (cron or dispatch) on origin/main whose range
   (from, cover] contains your merge-base (`gh run list -w CI -b main`):
-  `--base-cover` its job file, `--base-cover-sha` its headSha, `--base-cover-from`
+  `--base-cover` its job file, `--base-cover-sha` its headSha, `--base-cover-conclusion`
+  its conclusion (a cancelled cover REFUSEs), `--base-cover-from`
   the previous completed run's headSha (a strict ancestor of the merge-base). No
   such run yet means wait for the next cron or dispatch run, never merge forward.
   `--base-cases` are then

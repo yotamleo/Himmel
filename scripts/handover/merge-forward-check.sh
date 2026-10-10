@@ -7,8 +7,9 @@
 #   merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file>
 #                          --pr-cases <file> --base-cases <file>
 #                          --base-sha <sha> --main-base-sha <sha> --latest-sha <sha>
-#                          --pr-sha <sha>
-#                          [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>]
+#                          --pr-sha <sha> --main-base-conclusion <conclusion>
+#                          [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>
+#                           --base-cover-conclusion <conclusion>]
 #
 # Each job file is one run's job list, one `<job name><TAB><conclusion>` per line
 # (e.g. from `gh run view <id> --json jobs`):
@@ -40,6 +41,10 @@
 # Exit 0 = ALLOW  1 = REFUSE  2 = usage / unreadable input
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
+# --main-base-conclusion / --base-cover-conclusion are the RUN's conclusion from
+# `gh run view <id> --json conclusion` (`none` when no run exists at the merge-base):
+# a cancelled run keeps the job rows that had finished, and its aggregator job fails
+# because its shards were cancelled, so the rows alone read as a real red.
 # HIMMEL-4260 / HIMMEL-5124: main CI runs on a cron and on dispatch, so most
 # merge-bases have NO run at their own commit (an empty --main-base file), and a
 # run that exists may be cancelled. Either way the base verdict comes from the
@@ -50,8 +55,8 @@
 # --base-cases are then the covering run's failing cases. Without the trio
 # (--base-cover, --base-cover-sha, --base-cover-from) a base with no completed run
 # REFUSEs: wait for the next cron or dispatch run. A run whose conclusion is
-# cancelled is cancelled whatever its job rows say (a cancelled run keeps the
-# jobs that had already finished): pass it as an empty file.
+# cancelled is cancelled whatever its job rows say, and --main-base-conclusion /
+# --base-cover-conclusion carry that, so the script no longer trusts the rows alone.
 # ponytail: the case lists are extracted from logs by the caller and taken as
 # given, so a wrong list can still mislead; upgrade path is parsing the failed
 # job logs here if that ever bites.
@@ -70,7 +75,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 git_env_scrub
 # a run with no job rows, or only cancelled/skipped rows and at least one cancelled, was cancelled (a superseded pending sweep has 0 jobs)
 is_cancelled() { awk -F'\t' 'NF {n++} NF && $2=="cancelled" {c++} NF && $2!="cancelled" && $2!="skipped" {o=1} END {exit !(n==0 || (!o && c))}' "$1"; }
-pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; psha=""; cover=""; csha=""; cfrom=""; bad=0
+pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; psha=""; cover=""; csha=""; cfrom=""; bconc=""; cconc=""; bad=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --pr) [ $# -ge 2 ] || { bad=1; break; }; pr="$2"; shift 2 ;;
@@ -85,18 +90,27 @@ while [ $# -gt 0 ]; do
     --base-cover) [ $# -ge 2 ] || { bad=1; break; }; cover="$2"; shift 2 ;;
     --base-cover-sha) [ $# -ge 2 ] || { bad=1; break; }; csha="$2"; shift 2 ;;
     --base-cover-from) [ $# -ge 2 ] || { bad=1; break; }; cfrom="$2"; shift 2 ;;
+    --main-base-conclusion) [ $# -ge 2 ] || { bad=1; break; }; bconc="$2"; shift 2 ;;
+    --base-cover-conclusion) [ $# -ge 2 ] || { bad=1; break; }; cconc="$2"; shift 2 ;;
     *) bad=1; break ;;
   esac
 done
 if [ "$bad" -eq 1 ] || [ ! -f "$pr" ] || [ ! -r "$pr" ] || [ ! -f "$base" ] || [ ! -r "$base" ] || [ ! -f "$latest" ] || [ ! -r "$latest" ] \
-   || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ] || [ -z "$psha" ]; then
-  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>] (all but the --base-cover trio required, shas non-empty)" >&2
+   || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ] || [ -z "$psha" ] || [ -z "$bconc" ] \
+   || ! [[ "$lsha" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> --main-base-conclusion <conclusion> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha> --base-cover-conclusion <conclusion>] (all but the --base-cover group required, shas non-empty, --latest-sha a full 40-hex sha)" >&2
   exit 2
 fi
-if [ -n "$cover$csha$cfrom" ] && { [ ! -f "$cover" ] || [ ! -r "$cover" ] || [ -z "$csha" ] || [ -z "$cfrom" ]; }; then
-  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>] (all but the --base-cover trio required, shas non-empty; the trio is all-or-none)" >&2
+if [ -n "$cover$csha$cfrom$cconc" ] && { [ ! -f "$cover" ] || [ ! -r "$cover" ] || [ -z "$csha" ] || [ -z "$cfrom" ] || [ -z "$cconc" ]; }; then
+  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> --main-base-conclusion <conclusion> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha> --base-cover-conclusion <conclusion>] (all but the --base-cover group required, shas non-empty; the group is all-or-none)" >&2
   exit 2
 fi
+for c in "$bconc" ${cconc:+"$cconc"}; do
+  case "$c" in
+    success|failure|cancelled|skipped|neutral|timed_out|startup_failure|action_required|stale|none) ;;
+    *) echo "usage: unknown run conclusion '$c' (want the \`gh run view --json conclusion\` value, or none when no run exists)" >&2; exit 2 ;;
+  esac
+done
 if [ "$bsha" != "$msha" ]; then
   echo "REFUSE — the --main-base run is for $msha, not the PR's merge-base $bsha: it proves nothing about the base. Report BLOCKED; do not merge forward."
   exit 1
@@ -153,12 +167,12 @@ fi
 
 base_note=""
 verdict="$bsha"
-if is_cancelled "$base"; then
+if is_cancelled "$base" || [ "$bconc" = cancelled ]; then
   if [ -z "$cover" ]; then
     echo "REFUSE — the merge-base at $bsha has no completed main run (none at that commit, or it was cancelled) and no completed run covering it was given (--base-cover, --base-cover-sha, --base-cover-from): it proves nothing about the base. Wait for the next cron or dispatch main run; do not merge forward."
     exit 1
   fi
-  if is_cancelled "$cover"; then
+  if is_cancelled "$cover" || [ "$cconc" = cancelled ]; then
     echo "REFUSE — the covering run at $csha was cancelled too: it proves nothing about the base. Use the next COMPLETED main run; do not merge forward."
     exit 1
   fi
@@ -220,5 +234,5 @@ if [ -n "$blocked" ]; then
   echo "REFUSE — red not proven inherited-and-fixed: $blocked$base_note. Report BLOCKED; do not merge forward."
   exit 1
 fi
-echo "ALLOW — every red job was red on the merge-base run with the same failing cases and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g')$base_note. One 'git merge $tip' (the origin/main tip just validated and fetched; never 'origin/main' again, it may have moved; merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
+echo "ALLOW — every red job was red on the merge-base run with the same failing cases and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g')$base_note. One 'git merge $tip' (the origin/main tip just fetched and checked as a descendant of the latest run, not itself tested: CI re-runs at the merged head; never 'origin/main' again, it may have moved; merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
 exit 0
