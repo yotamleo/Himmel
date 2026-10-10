@@ -183,7 +183,17 @@ pid_gone() { # <pid> <recorded start>
     [ "$alive_rc" -eq 1 ]
     return
   fi
+  proc_zombie "$1" && return 0
   [ -n "$2" ] && [ "$2" != "$cur" ]
+}
+
+# True when <pid> is a zombie (state Z): exited, not yet reaped. kill -0 and ps
+# lstart still answer for it, so under a non-reaping init (container PID 1, a
+# subreaper) a killed process would otherwise hold its slot indefinitely
+# (HIMMEL-5133). Unknown state (ps unavailable) is not a zombie: the slot stays.
+proc_zombie() {
+  case "$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')" in Z*) return 0 ;; esac
+  return 1
 }
 
 # True when the row's heartbeat is older than the TTL. A row with no heartbeat
@@ -223,14 +233,21 @@ tree_descendants() {
 # (a reused pid is never touched). A wedged worker must not outlive its slot:
 # returns 1 when that worker is still alive after the kill (SIGTERM ignored), so
 # the caller keeps the slot rather than admit a second dispatch beside it.
-# ponytail: a row with no worker_pid/worker_start (launch gap) cannot be
-# confirmed dead and is released on TTL alone; upgrade path is a wrapper-side
-# process-group record (HIMMEL-5119).
+# A row with no worker_pid (launch gap) targets its wrapper instead: releasing it
+# on TTL alone admitted a dispatch beside a live wrapper (HIMMEL-5133). The
+# wrapper's own trap takes its launched child down with it.
+# ponytail: a worker launched but not yet recorded is only reached through that
+# wrapper; upgrade path is a wrapper-side process-group record (HIMMEL-5119).
 kill_expired_worker() {
   local wpid wstart i kids k alive
   wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
   wstart="$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
-  case "$wpid" in ''|*[!0-9]*) return 0 ;; esac
+  case "$wpid" in
+    ''|*[!0-9]*)
+      wpid="$(jq -r '.pid // empty' "$1" 2>/dev/null)"
+      wstart="$(jq -r '.pid_start // empty' "$1" 2>/dev/null)"
+      case "$wpid" in ''|*[!0-9]*) return 0 ;; esac ;;
+  esac
   # Gone or reused: nothing to kill. Alive (or unknown) with no start time to
   # match against: its identity cannot be confirmed, so the slot stays held.
   pid_gone "$wpid" "$wstart" && return 0
@@ -244,7 +261,7 @@ kill_expired_worker() {
     alive=0
     pid_gone "$wpid" "$wstart" || alive=1
     for k in $kids; do
-      if kill -0 "$k" 2>/dev/null; then alive=1; fi
+      if kill -0 "$k" 2>/dev/null && ! proc_zombie "$k"; then alive=1; fi
     done
     [ "$alive" = 0 ] && return 0
     sleep 0.2

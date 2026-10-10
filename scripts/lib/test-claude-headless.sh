@@ -721,7 +721,7 @@ sed -n '/^steal_stale_reclaim_lock() {/,/^}/p' "$SUT" > "$STEAL_FN"
 check "36 steal function extracted" "1" "$(grep -c '^steal_stale_reclaim_lock' "$STEAL_FN")"
 sleep 60 & OWNER_PID=$!
 sleep 60 & THIRD_PID=$!
-steal_run() { # <tag> <third|none>
+steal_run() { # <tag> <third|third-mv|none> [function file]
   (
     RECLAIM_LOCK="$W/reclaim36-$1"
     STEAL_MODE="$2"
@@ -734,8 +734,18 @@ steal_run() { # <tag> <third|none>
           if [ "$STEAL_MODE" = third ]; then mkdir "$RECLAIM_LOCK"; printf '%s' "$THIRD_PID" > "$RECLAIM_LOCK/pid"; fi ;;
       esac
     }
+    # HIMMEL-5133: the third reclaimer lands exactly between a restore's check and
+    # its mv (no seam can sit there for an arbitrary restore shape). Fires only on
+    # an mv onto the marker slot, so a mkdir restore never reaches it.
+    # shellcheck disable=SC2329  # invoked by the sourced steal function
+    mv() {
+      if [ "$STEAL_MODE" = third-mv ] && [ "${2:-}" = "$RECLAIM_LOCK" ] && [ ! -e "$RECLAIM_LOCK" ]; then
+        mkdir "$RECLAIM_LOCK"; printf '%s' "$THIRD_PID" > "$RECLAIM_LOCK/pid"
+      fi
+      command mv "$@"
+    }
     # shellcheck disable=SC1090
-    . "$STEAL_FN"
+    . "${3:-$STEAL_FN}"
     steal_stale_reclaim_lock
   ) >/dev/null 2>&1
 }
@@ -747,6 +757,20 @@ check "36 third reclaimer's marker survives the restore race" "$THIRD_PID" "$(ca
 check "36 no marker nested inside the third reclaimer's slot" "1" "$(ls -A "$W/reclaim36-taken" 2>/dev/null | wc -l | tr -d ' ')"
 check "36 no .dead leftover after losing the race" "0" "$(ls -d "$W"/reclaim36-taken.dead.* 2>/dev/null | wc -l | tr -d ' ')"
 kill "$OWNER_PID" "$THIRD_PID" 2>/dev/null; wait "$OWNER_PID" "$THIRD_PID" 2>/dev/null
+# HIMMEL-5133: the seam above sits BEFORE the restore, so a check-then-mv restore
+# (the shape 5107 replaced) would still pass those rows: the third reclaimer's
+# mkdir lands before its check and the mv is skipped. The mv shadow lands it
+# after the check; the mutant must nest the marker, the real function must not.
+STEAL_MUT="$W/steal-mutant.sh"
+# shellcheck disable=SC2016  # the sed script is literal text, not an expansion
+sed 's|if mkdir "\$RECLAIM_LOCK" 2>/dev/null; then|if [ ! -e "$RECLAIM_LOCK" ] \&\& mv "$moved" "$RECLAIM_LOCK" 2>/dev/null; then|' "$STEAL_FN" > "$STEAL_MUT"
+# shellcheck disable=SC2016  # grep pattern is literal text
+check "36 mutant built (restore is check-then-mv)" "1" "$(grep -c 'mv "\$moved" "\$RECLAIM_LOCK"' "$STEAL_MUT")"
+steal_run mutant third-mv "$STEAL_MUT"
+check "36 mutant check-then-mv restore nests the marker (detected)" "2" "$(ls -A "$W/reclaim36-mutant" 2>/dev/null | wc -l | tr -d ' ')"
+steal_run realmv third-mv
+check "36 real restore, third lands between check and restore: marker not nested" "1" "$(ls -A "$W/reclaim36-realmv" 2>/dev/null | wc -l | tr -d ' ')"
+check "36 real restore never uses mv: the displaced owner's marker is restored" "$OWNER_PID" "$(cat "$W/reclaim36-realmv/pid" 2>/dev/null)"
 
 # 37 (HIMMEL-5119, codex-1): an expired row whose worker ignores SIGTERM keeps
 # its slot; admitting a second dispatch beside a live worker exceeds the cap.
@@ -787,6 +811,9 @@ check "39 row inside its own longer TTL: slot kept" "1" "$RC39"
 check "39 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb39.json" 2>/dev/null)"
 rm -f "$LIVE_DIR"/*.json
 kill "$LIVE39" "$WORKER39" 2>/dev/null; wait "$LIVE39" "$WORKER39" 2>/dev/null
+# HIMMEL-5133: dead = gone or a zombie (state Z: exited, not yet reaped).
+pid_state() { ps -o stat= -p "$1" 2>/dev/null | tr -d ' ' | cut -c1; }
+pid_dead() { case "$(pid_state "$1")" in ''|Z) echo dead ;; *) echo alive ;; esac; }
 # 41 (HIMMEL-5119, codex-1 round 3): the worker root dies on SIGTERM but a
 # descendant ignores it; a live descendant keeps the slot just like a live root.
 sleep 60 & LIVE41=$!
@@ -799,8 +826,82 @@ jq -n --arg p "$LIVE41" --arg s "$(proc_start "$LIVE41")" --arg w "$WORKER41" --
 HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact41.txt"; RC41=$?
 check "41 expired row, root dies but a descendant ignores SIGTERM: slot kept" "1" "$RC41"
 check "41 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb41.json" 2>/dev/null)"
+check "41 the worker root itself was killed" "dead" "$(pid_dead "$WORKER41")"
 rm -f "$LIVE_DIR"/*.json
 kill -KILL "$LIVE41" "$WORKER41" "$KID41" 2>/dev/null; wait "$LIVE41" "$WORKER41" 2>/dev/null
+
+# 42 (HIMMEL-5133): a zombie is dead. Under a non-reaping init (container PID 1, a
+# subreaper) a killed process stays a zombie: kill -0 succeeds and ps still prints
+# a start time, so the slot was held although nothing runs. A parent that sets
+# PR_SET_CHILD_SUBREAPER and never waits reproduces it: killed processes reparent
+# to it. Modes: root = the recorded worker is the zombie; kid = a descendant is.
+SUBREAPER_PY="$W/subreaper.py"
+cat > "$SUBREAPER_PY" <<'PYEOF'
+import ctypes, os, sys, time
+ctypes.CDLL(None).prctl(36, 1)  # PR_SET_CHILD_SUBREAPER
+pid = os.fork()
+if pid == 0:
+    os.execvp("bash", ["bash", "-c", sys.argv[2]])
+open(sys.argv[1], "w").write(str(pid))
+time.sleep(60)
+PYEOF
+if [ "$(uname -s)" = Linux ] && command -v python3 >/dev/null 2>&1; then
+  for MODE42 in kid root; do
+    PIDFILE42="$W/zs-$MODE42.pid"
+    if [ "$MODE42" = kid ]; then CMD42="bash -c 'sleep 60 & exec sleep 60' & wait"; else CMD42='exec sleep 60'; fi
+    python3 "$SUBREAPER_PY" "$PIDFILE42" "$CMD42" & ZS42=$!
+    N42=0; while [ ! -s "$PIDFILE42" ] && [ "$N42" -lt 50 ]; do sleep 0.1; N42=$((N42 + 1)); done
+    ZB42="$(cat "$PIDFILE42" 2>/dev/null)"
+    sleep 0.5
+    if [ "$MODE42" = kid ]; then
+      ZW42="$(pgrep -P "$ZB42" | head -n1)"; ZK42="$(pgrep -P "$ZW42" | head -n1)"
+    else
+      ZW42="$ZB42"; ZK42="$ZB42"
+    fi
+    sleep 60 & LIVE42=$!
+    jq -n --arg p "$LIVE42" --arg s "$(proc_start "$LIVE42")" --arg w "$ZW42" --arg ws "$(proc_start "$ZW42")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+      '{id:"hb42", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+        worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb}' > "$LIVE_DIR/hb42.json"
+    HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact42-$MODE42.txt"; RC42=$?
+    check "42 $MODE42: expired row whose killed process is a zombie: reaped, admission succeeds" "0" "$RC42"
+    check "42 $MODE42: row is marked interrupted" "interrupted" "$(jq -r '.status' "$LIVE_DIR/hb42.json" 2>/dev/null)"
+    check "42 $MODE42: fixture is a real zombie (state Z), not a vanished pid" "Z" "$(pid_state "$ZK42")"
+    rm -f "$LIVE_DIR"/*.json
+    kill -KILL "$ZS42" "$ZB42" "$ZW42" "$ZK42" "$LIVE42" 2>/dev/null; wait "$ZS42" "$LIVE42" 2>/dev/null
+  done
+else
+  SKIP=$((SKIP+1)); echo "skip - 42 (needs linux + python3 for a subreaper)"
+fi
+
+# 43 (HIMMEL-5133, judge j2281a): an expired row with no worker pid was released on
+# TTL alone while its wrapper was still alive: the slot opened beside a live
+# dispatch (one over the cap). The live wrapper (start time confirmed) is signalled
+# and the slot opens only once it is gone; one that ignores TERM, or whose start
+# time is unknown, keeps the slot.
+sleep 60 & LIVE43=$!
+jq -n --arg p "$LIVE43" --arg s "$(proc_start "$LIVE43")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb43", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s, launching:true, heartbeat:$hb}' > "$LIVE_DIR/hb43.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact43.txt"; RC43=$?
+check "43 expired no-worker row: never admitted beside its live wrapper" "ok" "$([ "$RC43" = 0 ] && [ "$(pid_dead "$LIVE43")" = alive ] && echo over-admit || echo ok)"
+check "43 expired no-worker row: wrapper terminated, slot released" "0" "$RC43"
+check "43 expired no-worker row: the wrapper is dead" "dead" "$(pid_dead "$LIVE43")"
+rm -f "$LIVE_DIR"/*.json
+( trap '' TERM; exec sleep 60 ) & LIVE43B=$!
+sleep 0.3
+jq -n --arg p "$LIVE43B" --arg s "$(proc_start "$LIVE43B")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb43b", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s, launching:true, heartbeat:$hb}' > "$LIVE_DIR/hb43b.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact43b.txt"; RC43B=$?
+check "43 expired no-worker row, wrapper ignores TERM: slot kept" "1" "$RC43B"
+check "43 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb43b.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+sleep 60 & LIVE43C=$!
+jq -n --arg p "$LIVE43C" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb43c", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:"", launching:true, heartbeat:$hb}' > "$LIVE_DIR/hb43c.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact43c.txt"; RC43C=$?
+check "43 expired no-worker row, wrapper start unknown: slot kept" "1" "$RC43C"
+check "43 that wrapper is left alone" "alive" "$(pid_dead "$LIVE43C")"
+rm -f "$LIVE_DIR"/*.json
+kill -KILL "$LIVE43" "$LIVE43B" "$LIVE43C" 2>/dev/null; wait "$LIVE43" "$LIVE43B" "$LIVE43C" 2>/dev/null
 
 HIMMEL_DISPATCH_ROW_TTL_SECS=3600 run_sut "$FAKE_OK" "$W/artifact40.txt" >/dev/null 2>&1
 check "40 dispatch row records its TTL" "3600" "$(jq -r '.ttl_secs' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
