@@ -163,10 +163,12 @@
 #       console-GO gate, before any mutation, on --dry-run too.
 #   22  main-red gate (HIMMEL-5115): the newest COMPLETED, non-cancelled run
 #       of the CI workflow on the default branch is red and the PR is not its
-#       declared fix (a commit-message line `Fixes-main-red: run=<id>` or
-#       `suite=<failed job or test-*.sh>`, verified against that run). Also
-#       when the run list, the PR's commits or the red run's failed log cannot
-#       be read. No completed run at all is allowed (audited). The message
+#       declared fix: a commit-message line `Fixes-main-red: run=<id>` or
+#       `suite=<a failed job name without spaces, or any .sh named on an
+#       ##[error] line of its log>` verified against that run (a job name with
+#       spaces needs run=<id>), or a console fix-GO for that run
+#       (go.sh --fix-main-red, HIMMEL-5134). Also when the run list, the PR's
+#       commits or the red run's failed log cannot be read. No completed run at all is allowed (audited). The message
 #       names the run and the commit range it covered. After the trust-path
 #       gate, before any mutation, on --dry-run too.
 #
@@ -886,7 +888,7 @@ trust_refuse() {
     audit "REFUSED reason=trust-path phase=$1 repo=$nwo pr=#$pr_num sha=$sha"
     exit 21
 }
-unset -f go_gate _go_gate_verify go_trust_gate go_trust_id_ok trust_path_check console_leg go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+unset -f go_gate _go_gate_verify go_trust_gate go_trust_id_ok trust_path_check console_leg go_mac go_key_file go_resolve_root _go_in_harness go_fixred_gate go_fixred_file 2>/dev/null || true
 # shellcheck source=scripts/lib/go-gate.sh
 # shellcheck disable=SC1091
 if ! . "$himmel_repo/scripts/lib/go-gate.sh" 2>/dev/null || ! declare -F trust_path_check >/dev/null 2>&1 \
@@ -941,8 +943,13 @@ esac
 #   - no completed non-cancelled run in the window at all → DECIDED: nothing
 #     red was observed, so proceed and audit `main-red=no-completed-run` —
 #     unless the list hit its --limit 50 cap, which proves nothing → exit 22.
-# A console-written fix-GO is not implemented here (it needs go.sh, owned by a
-# different leg); the commit declaration is the one way through.
+#   - a console-written FIX-GO (HIMMEL-5134, `go.sh --fix-main-red <run> <pr>
+#     <head>`) is the second way through: .locks/go/fix-main-red.<pr>.<head>.<run>,
+#     signed over repo, PR, head and run id (go-gate.sh's go_fixred_gate). It
+#     counts only when <run> is the CURRENT red run and the head is the one
+#     certified here, so a GO for an older red run, another PR or another head
+#     is no declaration; read for EVERY caller, not only a console leg.
+#     Audited `via=fix-go:run=<id>`. The ordinary console GO still applies.
 # Placed after the trust-path gate and before the marker clear / DRY_RUN, so a
 # refusal mutates nothing and a dry run reports it.
 main_red_refuse() {
@@ -975,11 +982,20 @@ if [ -z "$mr_run" ]; then
 elif [ "$mr_conc" != success ]; then
     mr_range="${mr_base:0:12}..${mr_head:0:12}"
     [ -n "$mr_base" ] || mr_range="(previous run outside the listed window)..${mr_head:0:12}"
-    mr_how="declare the fix with a commit-message line 'Fixes-main-red: run=$mr_run' (or 'suite=<failed job or test-*.sh>')"
-    mr_rc=0
-    mr_msgs=$("$GH" pr view "$pr_num" --repo "$nwo" --json commits --jq '.commits[] | .messageHeadline, .messageBody' 2>/dev/null) || mr_rc=$?
+    mr_how="declare the fix with a commit-message line 'Fixes-main-red: run=$mr_run' (or 'suite=<a failed job name without spaces, or any .sh script named on an ##[error] line of its log>'; a job name with spaces needs run=<id>), or have the console write a fix-GO: go.sh --fix-main-red $mr_run $pr_num $sha"
+    mr_ok="" mr_log="" mr_log_rc=-1 mr_msgs="" mr_rc=0
+    # HIMMEL-5134: the console's fix-GO, for the current red run only.
+    mr_root=""
+    if declare -F go_fixred_gate >/dev/null 2>&1 \
+            && . "$himmel_repo/scripts/lib/handover-path.sh" 2>/dev/null && declare -F go_resolve_root >/dev/null 2>&1; then
+        mr_root=$(go_resolve_root "$himmel_repo" 2>/dev/null) || mr_root=""
+    fi
+    if [ -n "$mr_root" ] && go_fixred_gate "$pr_num" "$sha" "$mr_root" "$nwo" "$mr_run" >/dev/null 2>&1; then
+        mr_ok="fix-go:run=$mr_run"
+    else
+        mr_msgs=$("$GH" pr view "$pr_num" --repo "$nwo" --json commits --jq '.commits[] | .messageHeadline, .messageBody' 2>/dev/null) || mr_rc=$?
+    fi
     [ "$mr_rc" -eq 0 ] || main_red_refuse "main's latest completed CI run $mr_run is $mr_conc (covers $mr_range) and the PR's commits are unreadable, so no fix declaration can be verified" "run=$mr_run conclusion=$mr_conc range=$mr_range phase=commits"
-    mr_ok="" mr_log="" mr_log_rc=-1
     while IFS= read -r mr_line; do
         mr_line=${mr_line%$'\r'}
         case "$mr_line" in "Fixes-main-red:"*) ;; *) continue ;; esac

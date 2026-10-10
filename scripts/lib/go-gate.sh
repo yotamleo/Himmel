@@ -116,6 +116,51 @@ go_trust_gate() {
     printf '%s\n' "$trust"
 }
 
+# go_fixred_file <go-root> <pr-num> <head-sha> <run-id> — HIMMEL-5134. Path of
+# the console-written fix-GO: the second way through merge-on-green.sh's
+# main-red gate (the first is a `Fixes-main-red:` commit line). One file per
+# (PR, head, red run), so a GO for an old run is a different file and a newer
+# red run finds none.
+go_fixred_file() {
+    printf '%s/.locks/go/fix-main-red.%s.%s.%s\n' "$1" "$2" "$3" "$4"
+}
+
+# go_fixred_gate <pr-num> <head-sha> <go-root> <nwo> <run-id> — HIMMEL-5134. rc 0
+# iff <go-root>/.locks/go/fix-main-red.<pr>.<sha>.<run> exists, carries
+# `head=<sha>` and `fix-main-red-run=<run-id>` exactly, and a `mac=` line equal
+# to HMAC under the GO key of "himmel-go-fixred-v1|<nwo>|<pr>|<sha>|<run>" — its
+# own domain tag, so no ordinary GO, trust GO or verdict mac verifies as one,
+# and the repo, PR, head and run id cannot be edited after signing. The caller
+# passes the CURRENT red run id: a fix-GO for a superseded run refuses. rc 2 =
+# refused, one-line reason on stdout. Pure read, one read of the file. It is NOT
+# a merge GO: the ordinary console-GO gate still applies.
+go_fixred_gate() {
+    local pr_num="$1" head_sha="$2" go_root="$3" nwo="$4" run_id="$5"
+    local go_file body="" want="" got=""
+    go_file=$(go_fixred_file "${go_root:-<unresolved handover root>}" "$pr_num" "$head_sha" "$run_id")
+    case "$run_id" in
+        ''|*[!0-9]*)
+            printf 'no valid red run id (got %s), so no fix-GO can be matched.\n' "'$run_id'"
+            return 2 ;;
+    esac
+    if [ -n "$go_root" ]; then body=$(cat "$go_file" 2>/dev/null) || body=""; fi
+    if [ -z "$go_root" ] || [ -z "$nwo" ] \
+            || ! grep -qxF "head=$head_sha" <<< "$body" \
+            || ! grep -qxF "fix-main-red-run=$run_id" <<< "$body"; then
+        printf 'PR #%s at %s has no fix-GO for red run %s (%s).\n' "$pr_num" "$head_sha" "$run_id" "$go_file"
+        return 2
+    fi
+    want=$(go_msg_mac himmel-go-fixred-v1 "$nwo|$pr_num|$head_sha|$run_id") || {
+        printf 'PR #%s at %s: cannot verify the fix-GO (%s) — no readable GO key, or openssl is missing.\n' "$pr_num" "$head_sha" "$go_file"
+        return 2
+    }
+    got=$(printf '%s\n' "$body" | sed -n 's/^mac=//p' | head -n 1)
+    if [ -z "$got" ] || [ "$got" != "$want" ]; then
+        printf 'PR #%s at %s: the fix-GO (%s) has no/invalid mac — not written by the console'"'"'s go.sh --fix-main-red.\n' "$pr_num" "$head_sha" "$go_file"
+        return 2
+    fi
+}
+
 # go_verdict_scope <anchor> — HIMMEL-4589. The `<user>/<bucket>` a trust verdict
 # for the repo at <anchor> may live under: <user> = user_slug (USER_SLUG from the
 # env, else the anchor's .env, else the forge login), <bucket> = the slugified

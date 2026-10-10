@@ -3426,17 +3426,40 @@ if [ -z "${SUITE_FLAKE_LEDGER:-}" ]; then
 fi
 
 # Repo id carried by every ledger row and matched by the repeat check
-# (HIMMEL-5121): SUITE_FLAKE_REPO_ID, else a cksum of the origin URL (never the
-# URL itself, which may embed a credential), else a cksum of the checkout path.
-# A row written before this field existed has no "repo" key, so it matches no
-# repo: after upgrading, the first flake of a suite in each repo is unmatched.
-if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
-  _repo_url=$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null)
-  if [ -n "$_repo_url" ]; then
-    SUITE_FLAKE_REPO_ID="origin-$(printf '%s' "$_repo_url" | cksum | cut -d' ' -f1)"
+# (HIMMEL-5121, HIMMEL-5144): SUITE_FLAKE_REPO_ID, else a cksum of the NORMALISED
+# origin URL (never the URL itself, which may embed a credential), else a cksum
+# of the git common dir, so every worktree of one repo shares an id. A row written
+# before this field existed has no "repo" key, so it matches no repo; rows written
+# under the earlier id schemes (raw URL, checkout path) stop matching too.
+
+# _flake_norm_url <url> — host/path with the scheme, user, trailing .git and
+# trailing slash dropped and the host lowercased, so the https, https+.git, ssh
+# and scp spellings of one origin agree.
+_flake_norm_url() {
+  local _u="$1" _h _r
+  case "$_u" in
+    *://*) _u=${_u#*://} ;;
+    *) case "${_u%%/*}" in *:*) _u="${_u%%:*}/${_u#*:}" ;; esac ;;
+  esac
+  case "${_u%%/*}" in *@*) _u=${_u#*@} ;; esac
+  _u=${_u%/}; _u=${_u%.git}; _u=${_u%/}
+  _h=${_u%%/*}; _r=${_u#"$_h"}
+  printf '%s%s' "$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]')" "$_r"
+}
+
+# _flake_repo_id <dir> — the default repo id for the checkout at <dir>.
+_flake_repo_id() {
+  local _url _common
+  _url=$(git -C "$1" config --get remote.origin.url 2>/dev/null)
+  if [ -n "$_url" ]; then
+    printf 'origin-%s' "$(_flake_norm_url "$_url" | cksum | cut -d' ' -f1)"
   else
-    SUITE_FLAKE_REPO_ID="dir-$(printf '%s' "$REPO_ROOT" | cksum | cut -d' ' -f1)"
+    _common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    printf 'dir-%s' "$(printf '%s' "${_common:-$1}" | cksum | cut -d' ' -f1)"
   fi
+}
+if [ -z "${SUITE_FLAKE_REPO_ID:-}" ]; then
+  SUITE_FLAKE_REPO_ID=$(_flake_repo_id "$REPO_ROOT")
 fi
 # An override is reduced to a charset that is inert in JSON and in awk -v
 # (which would otherwise interpret a backslash and miss its own rows).
@@ -3479,7 +3502,8 @@ _flake_record() {
       "$SUITE_FLAKE_LEDGER" 2>/dev/null) || _prior=0
   fi
   _host=$(hostname 2>/dev/null || uname -n 2>/dev/null || echo unknown)
-  # v/ts/host/source/kind is the scripts/observability/ledgers.json envelope.
+  # v/ts/host/source/kind is the scripts/observability/ledgers.json envelope; the
+  # rest is the payload: suite, repo (the id above), case, rc, sha, run.
   _row=$(printf '{"v":1,"ts":%s,"host":"%s","source":"run-shell-tests","kind":"flake","suite":"%s","repo":"%s","case":"%s","rc":%s,"sha":"%s","run":"%s"}' \
     "$_now" "$(printf '%s' "${_host:-unknown}" | _flake_json_str)" "$_s" "$_repo" "$_cases" "$2" "$REPORT_HEAD" \
     "$(printf '%s' "${GITHUB_RUN_ID:-}" | _flake_json_str)")

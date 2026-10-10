@@ -903,6 +903,35 @@ check "43 that wrapper is left alone" "alive" "$(pid_dead "$LIVE43C")"
 rm -f "$LIVE_DIR"/*.json
 kill -KILL "$LIVE43" "$LIVE43B" "$LIVE43C" 2>/dev/null; wait "$LIVE43" "$LIVE43B" "$LIVE43C" 2>/dev/null
 
+# 44 (HIMMEL-5139): a live multithreaded process whose main thread exited reads
+# state Zl, not a bare Z. A stat carrying the l flag is alive: the slot is held,
+# and an expired such worker is killed, never released as already dead. The ps
+# stub rewrites the state of a still-running pid to $FAKEZL_STAT and passes every
+# other ps call through. Every spelling a real leader-zombie takes is covered: Zl,
+# Z<l (negative nice) and ZNl (positive nice), so the check cannot narrow to Zl*.
+FAKEZL="$W/fakezl"; mkdir -p "$FAKEZL"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\nout="$(%s "$@")"\ncase "$*" in *stat=*) [ -n "$out" ] && out="$FAKEZL_STAT" ;; esac\nprintf "%%s\\n" "$out"\n' "$REAL_PS" > "$FAKEZL/ps"
+chmod +x "$FAKEZL/ps"
+for ZST in Zl 'Z<l' ZNl; do
+  export FAKEZL_STAT="$ZST"
+  sleep 60 & LIVE44=$!
+  jq -n --arg p "$LIVE44" --arg s "$(proc_start "$LIVE44")" '{id:"zl44", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s}' > "$LIVE_DIR/zl44.json"
+  PATH="$FAKEZL:$PATH" cap1_run "$W/artifact44.txt"; RC44=$?
+  check "44 live holder reading state $ZST: slot kept, not reaped as a zombie" "1" "$RC44"
+  check "44 that row stays dispatched ($ZST)" "dispatched" "$(jq -r '.status' "$LIVE_DIR/zl44.json" 2>/dev/null)"
+  rm -f "$LIVE_DIR"/*.json
+  jq -n --arg p "$LIVE44" --arg s "$(proc_start "$LIVE44")" --arg w "$LIVE44" --arg ws "$(proc_start "$LIVE44")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+    '{id:"zl44b", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+      worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb}' > "$LIVE_DIR/zl44b.json"
+  PATH="$FAKEZL:$PATH" HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact44b.txt"; RC44B=$?
+  check "44 expired $ZST worker is killed, never released as already dead" "dead" "$(pid_dead "$LIVE44")"
+  check "44 expired $ZST worker: slot released once it is gone" "0" "$RC44B"
+  rm -f "$LIVE_DIR"/*.json
+  kill -KILL "$LIVE44" 2>/dev/null; wait "$LIVE44" 2>/dev/null
+done
+unset FAKEZL_STAT
+
 HIMMEL_DISPATCH_ROW_TTL_SECS=3600 run_sut "$FAKE_OK" "$W/artifact40.txt" >/dev/null 2>&1
 check "40 dispatch row records its TTL" "3600" "$(jq -r '.ttl_secs' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
 rm -f "$LIVE_DIR"/*.json
