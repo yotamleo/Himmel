@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # scripts/ci/test-run-shell-tests.sh — hermetic test for run-shell-tests.sh.
 #
 # HIMMEL-2895 split this file's expensive case groups into siblings so the
