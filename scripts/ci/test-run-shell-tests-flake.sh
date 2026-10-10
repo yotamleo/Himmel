@@ -479,7 +479,7 @@ mk_url_repo "$sb/n5" "/host/r.git"
 n1=$(_flake_repo_id "$sb/n1" 2>&1); n2=$(_flake_repo_id "$sb/n2" 2>&1); n3=$(_flake_repo_id "$sb/n3" 2>&1)
 n4=$(_flake_repo_id "$sb/n4" 2>&1); n5=$(_flake_repo_id "$sb/n5" 2>&1)
 # an id is origin-<digits>: captured stderr from a failed lookup is not one
-_isid() { case "$1" in origin-[0-9]*) return 0 ;; *) return 1 ;; esac; }
+_isid() { case "$1" in origin-*[!0-9]*|origin-) return 1 ;; origin-[0-9]*) return 0 ;; *) return 1 ;; esac; }
 if _isid "$n1" && _isid "$n2" && [ "$n1" != "$f2" ] && [ "$n1" != "$n2" ] && [ "$n2" != "$f2" ]; then
   pass "F16: file:///srv/r%0A and %0A%0A are distinct from file:///srv/r and each other"
 else
