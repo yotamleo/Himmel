@@ -162,6 +162,15 @@ root's parent). Thresholds: TICK_VAULT_STALL_MIN (20), TICK_VAULT_PUSHLAG_MIN (6
 Sits between tracker= and denials=; console-wait.sh wakes on a class change to
 STALL/PUSH-LAG only.
 
+cloud=<ok|STALL:<ticket>[,<ticket>...]|skip> (HIMMEL-5163) is the liveness of the
+claude.ai cloud sessions in the bucket's cloud-sessions.tsv (next to --doc), from
+cloud-liveness.mjs: STALL = a session with no branch/PR N min after launch, an open
+PR with no CLOUD-DONE and no commit for M min, or a CLOUD-DONE no live leg doc names.
+skip = no tsv, no --doc, or the forge unreadable. ONE `gh pr list` (inside the gql
+budget) and one ls-remote, both timeout-bounded. Thresholds: CLOUD_LIVENESS_BRANCH_MIN
+(30), _PR_MIN (60), _DONE_MIN (15), _WINDOW_H (48). Sits after vault=;
+console-wait.sh wakes on a class change to STALL only. board.mjs lists each session.
+
 denials=<leg>:<n>[:SHIP-STEP|REPEAT|PAUSE-RISK] (HIMMEL-3724) is classifier
 denials seen by scripts/hooks/log-classifier-denial.sh in a trailing window
 (TICK_DENIALS_WINDOW_MIN minutes, default 30), grouped by the hook's own
@@ -1038,6 +1047,16 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     esac
 fi
 
+# HIMMEL-5163: cloud=<ok|STALL:<ticket>[,...]|skip>. cloud-liveness.mjs owns the derivation
+# (cloud-sessions.tsv next to the console doc against ONE `gh pr list --state all` and one
+# `git ls-remote`); a missing node or helper, a missing tsv, or an unreadable forge reads
+# skip, never a failed tick. The 60 s bound sits inside the waiter's tick timeout.
+cloud_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ] && [ -f "${console_doc%/*}/cloud-sessions.tsv" ] && command -v node >/dev/null 2>&1; then
+    cloud_summary="$(timeout -k 5 60 node "$HERE/cloud-liveness.mjs" --bucket "${console_doc%/*}" --repo "$pr_repo" 2>/dev/null)" || cloud_summary=skip  # gnu-ok: console kit is Linux-only
+    case "$cloud_summary" in ok|skip|STALL:*) ;; *) cloud_summary=skip ;; esac
+fi
+
 # HIMMEL-4911: the luna vault's commit health. vault-status.sh owns the derivation
 # (and is fail-soft); a missing or failing helper reads unknown, never a failed tick.
 vault_summary="$(HANDOVER_DIR="${HANDOVER_DIR:-$root}" bash "$HERE/vault-status.sh" 2>/dev/null)" || vault_summary=unknown
@@ -1521,6 +1540,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'leg failures: %s\n' "$fails_summary"
     [ -z "$flakes_tail" ] || printf 'suite flakes: %s\n' "${flakes_tail# flakes=}"
     printf 'vault: %s\n' "$vault_summary"
+    printf 'cloud: %s\n' "$cloud_summary"
     [ -z "$spare_tail" ] || printf 'spare: %s\n' "${spare_tail# spare=}"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
@@ -1532,13 +1552,13 @@ else
     # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
     # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) and `or=`
     # follow, and `fails=` (HIMMEL-4670) closes the line, before the optional `spare=`.
-    # `vault=` (HIMMEL-4911) sits between `tracker=` and `denials=`.
+    # `vault=` (HIMMEL-4911) sits between `tracker=` and `denials=`; `cloud=` (HIMMEL-5163) follows `vault=`.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$flakes_tail$spare_tail"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s cloud=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$cloud_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$flakes_tail$spare_tail"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$flakes_tail$spare_tail"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s cloud=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$cloud_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$flakes_tail$spare_tail"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then

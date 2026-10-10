@@ -53,6 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { gitClean } from '../../lanes/git-clean.mjs';
 import { readToolHealth } from '../../eval/leg-digest/tool-health.mjs';
 import { redact } from './redact.mjs';
+import { collect as collectCloud } from './cloud-liveness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -475,6 +476,18 @@ const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(
 const logRows = consoleResults.map((l) => `<li>${safe(l.slice(2), 200)}</li>`).join('\n');
 const panel = (title, body, empty) => `<section><h2>${title}</h2>${body ? `<ul>${body}</ul>` : `<p class="none">${empty}</p>`}</section>`;
 
+// Cloud sessions (HIMMEL-5163): each session in the bucket's cloud-sessions.tsv with the
+// state cloud-liveness.mjs derives -- the same derivation as tick.sh's cloud= field. No
+// tsv, no panel. Display-only like the bank-lift line: not in the fingerprint, never fatal.
+const cloudPanel = (() => {
+    if (!existsSync(join(bucket, 'cloud-sessions.tsv'))) return '';
+    let r = { skip: true };
+    try { r = collectCloud({ bucket, repo: prRepo, ...(process.env.CLOUD_LIVENESS_NOW ? { now: Date.parse(process.env.CLOUD_LIVENESS_NOW) } : {}) }); } catch { /* unreadable: the panel says so */ }
+    if (r.skip) return `<section data-cloud-panel="unavailable"><h2>Cloud sessions</h2><p class="none">unavailable — gh or the sessions file could not be read</p></section>`;
+    const rows = r.states.map((s) => `<li data-cloud-ticket="${esc(s.ticket)}" data-state="${esc(s.state)}" data-stall="${s.stall ? 'yes' : 'no'}"><b>${esc(s.ticket)}</b> ${esc(s.state)}${s.pr ? ` · PR #${esc(s.pr)}` : ''}${s.detail ? ` — ${safe(s.detail, 140)}` : ''}</li>`).join('\n');
+    return panel('Cloud sessions', rows, 'no cloud session launched in the last 48 hours');
+})();
+
 // Bank lift (HIMMEL-4877): one read-only line from the lift's `show` output -- the
 // same reason source as the doctor's C34 row. BOARD_BANK_LIFT overrides the script
 // (test seam, mirrors BOARD_LEGID/BOARD_SESSIONS). Never renders the account or any
@@ -684,6 +697,7 @@ ${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}${releases
 <h2>Legs</h2>
 ${legs.length ? `<ul>${legs.map(legCard).join('\n')}</ul>` : `<p class="none">${labelFailure ? 'leg labels unavailable' : 'no legs'}</p>`}
 </section>
+${cloudPanel}
 ${panel('Open PRs', prRows, openPrs ? 'none open' : 'gh unavailable')}
 ${panel('Merged in the last 24 hours', mergedRows, mergedPrs ? 'none' : 'gh unavailable')}
 ${panel('Console log — newest last', logRows, 'no Results yet')}
