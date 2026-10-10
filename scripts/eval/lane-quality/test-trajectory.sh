@@ -195,5 +195,16 @@ leg out-nonzero-silent "bash test-x.sh" "Exit code 1" "bash test-x.sh" "ok"
 check "a non-zero exit with silent output still fails" 'python3 "$TR" score "$TMP/out-nonzero-silent.jsonl" | jq -e ".red_before_green == true" >/dev/null'
 leg out-red-then-red "bash test-x.sh" "test-x: 1 passed, 2 failed" "bash test-x.sh" "test-x: 1 passed, 2 failed"
 check "a red run after the impl write is not a pass for the claim" 'python3 "$TR" score "$TMP/out-red-then-red.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == false" >/dev/null'
+echo "9. a same-command VAR=path assignment resolves a later \$VAR / \${VAR} test run (HIMMEL-5024)"
+check "f=path; bash \$f is a run of the file" '[ "$(tt "f=scripts/a/test-x.sh; bash \$f")" = "[[\"test-x.sh\"], \"pass+fail\"]" ]'
+check "the braced \${f} form resolves" '[ "$(tt "f=scripts/a/test-x.sh; bash \${f}")" = "[[\"test-x.sh\"], \"pass+fail\"]" ]'
+check "a quoted \"\$f\" resolves" '[ "$(tt "f=scripts/a/test-x.sh; bash \"\$f\"")" = "[[\"test-x.sh\"], \"pass+fail\"]" ]'
+check "an assignment among other setup and a && chain resolves" '[ "$(tt "cd d && f=a/test-x.sh && bash \$f")" = "[[\"test-x.sh\"], \"pass+fail\"]" ]'
+check "a variable assigned in no segment of this command does not resolve" '[ "$(tt "bash \$f")" = "null" ]'
+check "an unrelated variable does not resolve" '[ "$(tt "g=scripts/a/test-x.sh; bash \$f")" = "null" ]'
+check "a non-test value is not a test run" '[ "$(tt "f=scripts/a/helper.sh; bash \$f")" = "null" ]'
+leg var-red-green 'f=scripts/a/test-x.sh; echo run; bash $f' "Exit code 1
+FAIL" 'f=scripts/a/test-x.sh; bash $f' "ok"
+check "a RED spelled bash \$f scores red_before_green" 'python3 "$TR" score "$TMP/var-red-green.jsonl" | jq -e ".red_before_green == true and .verify_before_claim == true" >/dev/null'
 echo "test-trajectory: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

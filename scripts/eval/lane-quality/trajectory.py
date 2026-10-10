@@ -151,6 +151,7 @@ def test_target(command):
         return None
     parts = _split(command)
     segs, seps = parts[0::2], parts[1::2]  # seps[j] joins segs[j] and segs[j+1]
+    segs = _resolve_vars(segs)
     for i, seg in enumerate(segs):
         t = _segment_target(seg)
         if not t:
@@ -208,6 +209,32 @@ def _split(command):
         i += 1
     parts.append("".join(buf))
     return parts
+
+
+VAR_USE_RE = re.compile(r"\$(?:\{(\w+)\}|(\w+))")
+
+
+def _resolve_vars(segs):
+    """segs with $VAR / ${VAR} replaced by the value of a bare `VAR=value`
+    segment earlier in the same command (HIMMEL-5024: `f=a/test-x.sh; bash $f`).
+    ponytail: simple literal values only, no quoting-aware or nested expansion,
+    upgrade by running the command through a real shell parser if a spelling
+    beyond this shows up in scored transcripts."""
+    env, out = {}, []
+    for seg in segs:
+        if env:
+            seg = VAR_USE_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), seg)
+        try:
+            toks = shlex.split(seg, comments=True)
+        except ValueError:
+            toks = []
+        for t in toks:
+            m = re.match(r"^([A-Za-z_]\w*)=([^$`]*)$", t)
+            if not m:
+                break
+            env[m.group(1)] = m.group(2)
+        out.append(seg)
+    return out
 
 
 def _tokens(seg):
