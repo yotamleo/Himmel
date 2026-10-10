@@ -2109,6 +2109,31 @@ else
     echo "SKIP 4729 U+3000 IFS rows: no UTF-8 locale installed (tried C.UTF-8, C.utf8, en_US.UTF-8, en_US.utf8)"
 fi
 
+# --- HIMMEL-5152 (judge j2299b): bash splits on ANY IFS character, not only
+# iswspace ones, so an IFS of U+00A0 / U+0085 / U+200B / U+FEFF or the ANSI-C
+# tab form un-exports a seam the text layer cannot see. Any IFS assignment
+# beside a chokepoint word denies. Run under C so no locale helps the match.
+export LC_ALL=C
+for hex in '\0302\0240:U+00A0' '\0302\0205:U+0085' '\0342\0200\0213:U+200B' '\0357\0273\0277:U+FEFF'; do
+    SPX=$(printf '%b' "${hex%%:*}")
+    assert_deny "5152 ${hex##*:} IFS: export -n of the console marker, then the chokepoint" "$(j "IFS='${SPX}'; c='export${SPX}-n${SPX}HIMMEL_CONSOLE_LEG'; \$c; bash $STOP_WORKER --list")"
+done
+assert_deny "5152 ANSI-C tab IFS: export -n of the console marker, then the chokepoint" "$(j "IFS=\$'\\t'; c=\$'export\\t-n\\tHIMMEL_CONSOLE_LEG'; \$c; bash $STOP_WORKER --list")"
+assert_deny "5152 IFS+= append beside a chokepoint word"                                "$(j "IFS+=x; bash $MERGE_ON_GREEN 1")"
+assert_deny "5152 IFS= built from quoted fragments beside a chokepoint word"             "$(j "I'F'S=x; bash $MERGE_ON_GREEN 1")"
+assert_allow "5152 IFS assignment with no chokepoint word stays allowed"                  "$(j "IFS=: read -r a b <<< 'x:y'; echo \$a")"
+
+# --- HIMMEL-5153: matching must not depend on the ambient locale. Under C/POSIX
+# [[:space:]] misses U+3000 and the other Unicode spaces (16 of 36 rows passed).
+# Unicode spaces map to ASCII before matching, so C and UTF-8 agree.
+for hex in '\0343\0200\0200:U+3000' '\0302\0240:U+00A0' '\0342\0200\0203:U+2003' '\0341\0232\0200:U+1680' '\0342\0200\0250:U+2028' '\0302\0205:U+0085'; do
+    SPX=$(printf '%b' "${hex%%:*}")
+    assert_deny "5153 C locale ${hex##*:}: export -n with a literal separator" "$(j "export${SPX}-n${SPX}HIMMEL_CONSOLE_LEG; bash $STOP_WORKER --list")"
+    assert_deny "5153 C locale ${hex##*:}: env -i with a literal separator"    "$(j "env${SPX}-i${SPX}bash $STOP_WORKER --list")"
+    assert_deny "5153 C locale ${hex##*:}: declare +x with a literal separator" "$(j "declare${SPX}+x${SPX}${MOG_VAR}; bash $MERGE_ON_GREEN 1")"
+done
+unset LC_ALL
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
