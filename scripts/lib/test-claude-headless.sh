@@ -762,5 +762,34 @@ check "37 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/
 rm -f "$LIVE_DIR"/*.json
 kill -KILL "$LIVE37" "$WORKER37" 2>/dev/null; wait "$LIVE37" "$WORKER37" 2>/dev/null
 
+# 38 (HIMMEL-5119, codex-2): an expired row whose worker pid is recorded but whose
+# start time is unknown cannot be shown dead; a live worker keeps the slot.
+sleep 60 & LIVE38=$!
+sleep 60 & WORKER38=$!
+jq -n --arg p "$LIVE38" --arg s "$(proc_start "$LIVE38")" --arg w "$WORKER38" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb38", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:"", heartbeat:$hb}' > "$LIVE_DIR/hb38.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact38.txt"; RC38=$?
+check "38 expired row, worker pid alive with unknown start: slot kept" "1" "$RC38"
+check "38 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb38.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill "$LIVE38" "$WORKER38" 2>/dev/null; wait "$LIVE38" "$WORKER38" 2>/dev/null
+
+# 39 (HIMMEL-5119, codex-1): the row carries its launcher's TTL; an admitter with a
+# shorter default TTL must not reap a row still inside its own.
+sleep 60 & LIVE39=$!
+sleep 60 & WORKER39=$!
+jq -n --arg p "$LIVE39" --arg s "$(proc_start "$LIVE39")" --arg w "$WORKER39" --arg ws "$(proc_start "$WORKER39")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb39", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb, ttl_secs:100000}' > "$LIVE_DIR/hb39.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact39.txt"; RC39=$?
+check "39 row inside its own longer TTL: slot kept" "1" "$RC39"
+check "39 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb39.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill "$LIVE39" "$WORKER39" 2>/dev/null; wait "$LIVE39" "$WORKER39" 2>/dev/null
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 run_sut "$FAKE_OK" "$W/artifact40.txt" >/dev/null 2>&1
+check "40 dispatch row records its TTL" "3600" "$(jq -r '.ttl_secs' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
+rm -f "$LIVE_DIR"/*.json
+
 echo "---$PASS passed, $FAIL failed, $SKIP skipped ---"
 [ "$FAIL" -eq 0 ]

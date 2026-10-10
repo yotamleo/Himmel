@@ -189,10 +189,13 @@ pid_gone() { # <pid> <recorded start>
 # True when the row's heartbeat is older than the TTL. A row with no heartbeat
 # (written before HIMMEL-5119) is unknown, never stale.
 row_heartbeat_stale() {
-  local hb
+  local hb ttl
   hb="$(jq -r '.heartbeat // empty' "$1" 2>/dev/null)"
   case "$hb" in ''|*[!0-9]*) return 1 ;; esac
-  [ $(( $(date +%s) - hb )) -gt "$ROW_TTL_SECS" ]
+  # The row carries the TTL its launcher chose; the admitter's own is the fallback.
+  ttl="$(jq -r '.ttl_secs // empty' "$1" 2>/dev/null)"
+  case "$ttl" in ''|*[!0-9]*) ttl="$ROW_TTL_SECS" ;; esac
+  [ $(( $(date +%s) - hb )) -gt "$ttl" ]
 }
 
 # Kill the row's worker tree, only while its recorded start time still matches
@@ -207,12 +210,14 @@ kill_expired_worker() {
   wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
   wstart="$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
   case "$wpid" in ''|*[!0-9]*) return 0 ;; esac
-  [ -n "$wstart" ] || return 0
-  [ "$(proc_start "$wpid")" = "$wstart" ] || return 0
+  # Gone or reused: nothing to kill. Alive (or unknown) with no start time to
+  # match against: its identity cannot be confirmed, so the slot stays held.
+  pid_gone "$wpid" "$wstart" && return 0
+  [ -n "$wstart" ] && [ -n "$(proc_start "$wpid")" ] || return 1
   kill_tree "$wpid" 2>/dev/null || true
   i=0
   while [ "$i" -lt 10 ]; do
-    [ "$(proc_start "$wpid")" = "$wstart" ] || return 0
+    pid_gone "$wpid" "$wstart" && return 0
     sleep 0.2
     i=$((i + 1))
   done
@@ -611,9 +616,9 @@ ID="$(node -e "process.stdout.write(require('crypto').randomUUID())")" || { lock
 ROW="$LIVE_DIR/$ID.json"
 jq -n --arg id "$ID" --arg role "$ROLE" --arg worktree "$WORKTREE" --arg ticket "$TICKET" \
   --arg dispatched_at "$(now_iso)" --arg artifact "$ARTIFACT" \
-  --arg pid "$$" --arg pid_start "$(proc_start "$$")" --arg hb "$(date +%s)" \
+  --arg pid "$$" --arg pid_start "$(proc_start "$$")" --arg hb "$(date +%s)" --arg ttl "$ROW_TTL_SECS" \
   '{id:$id, role:$role, worktree:$worktree, ticket:$ticket, status:"dispatched",
-    pid:($pid|tonumber), pid_start:$pid_start, heartbeat:($hb|tonumber),
+    pid:($pid|tonumber), pid_start:$pid_start, heartbeat:($hb|tonumber), ttl_secs:($ttl|tonumber),
     dispatched_at:$dispatched_at, terminal_at:null, artifact:$artifact,
     outcome:null, artifact_check:null}' > "$ROW.tmp" || { lock_release; die "could not write registry row: $ROW"; }
 mv "$ROW.tmp" "$ROW" || { lock_release; die "could not write registry row: $ROW"; }
