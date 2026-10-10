@@ -192,6 +192,44 @@ repo authorization file. The durable fix is to never emit an unnecessary
 
 ---
 
+## Symptom: `merge-on-green.sh` exits 22 — "main-red gate: main's latest completed CI run … is failure" (HIMMEL-5115)
+
+`merge-on-green.sh` refuses while the newest **completed** run of the `CI`
+workflow on the default branch is red (cancelled and skipped runs are skipped;
+it falls back to the next older completed one), unless the PR is the declared
+fix. Eight merges once landed on an already-red main and turned 3 root breaks
+into 11 red-main merges. Since HIMMEL-5113 main CI is a cron/dispatch sweep, so
+the run covers a **range**; the message names it (`<previous sweep head>..<red
+head>`). The PR's own green rollup is not the question here: main is.
+
+**What to do:**
+
+1. **Read the named run** (`gh run view <id> --repo <owner>/<repo>` or
+   `--log-failed`) and decide whether your PR is the fix or merely unrelated.
+2. **Your PR is the fix:** add a commit-message line, in any commit of the PR,
+   `Fixes-main-red: run=<red run id>`, or `Fixes-main-red: suite=<name>` where
+   `<name>` (4+ chars of `[A-Za-z0-9._-]`) is a **failed job** of that run, or a
+   `test-*.sh` suite printed on a `##[error]` line of its failed log. It is
+   verified against the run, never trusted: a wrong run id or an unrelated name
+   is refused with the same exit 22. Trailers belong in the FIRST commit; a
+   late declaration costs a new commit, never `--amend`.
+3. **Your PR is unrelated:** do not merge. Report `MAIN-RED <job> <case>` to the
+   console (or confirm one is open), and merge after the fix lands. Main stays
+   "red" until the next cron sweep or a manual
+   `gh workflow run ci.yml --ref main` completes green; dispatching one is the
+   quickest way to clear the gate once the fix is on main.
+4. **Exit 22 with "unreadable":** `gh run list`, the PR's commits or the red
+   run's failed log could not be read (rate limit, outage). Unverified is
+   refused: retry shortly; never edit the gate to skip it.
+
+Decided case: when the window holds **no** completed non-cancelled run at all
+(new repo, or the workflow never ran on main), nothing red was observed and the
+merge proceeds with an audit line `main-red=no-completed-run`. A console-written
+fix-GO is not implemented (follow-up); the commit declaration is the one way
+through.
+
+---
+
 ## Symptom: `/worktree` refuses the branch, or a stale worktree lingers
 
 `scripts/clean-garden.sh` (behind `/worktree`, `/clean`, `/clean_garden`) is the
