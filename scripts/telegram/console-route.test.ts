@@ -141,7 +141,7 @@ test("short-verbs-auth-targeting", async () => {
     expect(readFileSync(f, "utf8")).toContain(`[telegram from=1 chat=-1] ${requests[i]}`);
   }
   for (const count of [0, 2]) {
-    const r = root(); const old = heartbeat(r, "old", "waiting", 301); const ran: string[] = [];
+    const r = root(); const old = heartbeat(r, "old", "waiting", 4000); const ran: string[] = [];
     if (count) { heartbeat(r); heartbeat(r, "second"); }
     for (const text of verbs) await inbound(r, fresh(text), [], ran);
     expect(readFileSync(old, "utf8")).toBe("");
@@ -256,7 +256,7 @@ test("bare /console accepts non-ASCII and punctuation text without inventing a n
 test("bare /console with zero or two live consoles lists the problem without queuing", async () => {
   for (const count of [0, 2]) {
     const r = root(); const replies: string[] = []; const ran: string[] = [];
-    const old = heartbeat(r, "old", "waiting", 301);
+    const old = heartbeat(r, "old", "waiting", 4000);
     const exited = heartbeat(r, "exited", "exited");
     if (count) { heartbeat(r); heartbeat(r, "second"); }
     await handleInbound(r, say("/console halt"), async (s) => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate(replies));
@@ -539,4 +539,71 @@ test("lockdown-arriving-in-settlement-gap-is-not-a-content-filter-block", async 
   const meta = JSON.parse(readFileSync(join(sessionDir(r, "__chat__"), "meta.json"), "utf8"));
   expect(meta.status).toBe("idle");
   expect(readFileSync(join(sessionDir(r, "__chat__"), "inbox.jsonl"), "utf8")).toContain("hello");
+});
+
+// HIMMEL-5125: a console mid-turn has no fresh waiter heartbeat; its inbox is
+// still armed and the waiter resumes from <inbox>.cursor, so the line is queued.
+const BUSY_SAY = "console is busy, will pick up on next wait";
+async function routeText(r: string, text: string) {
+  const replies: string[] = [];
+  await handleInbound(r, say(text), async () => {}, undefined, undefined, undefined, undefined, undefined, undefined, gate(replies));
+  return replies.join("\n");
+}
+
+test("HIMMEL-5125: bare /console queues to the only armed console whose waiter is stale within the busy TTL", async () => {
+  const r = root(); const f = heartbeat(r, NAME, "waiting", 900);
+  const reply = await routeText(r, "/console halt the wave");
+  expect(readFileSync(f, "utf8")).toContain("[telegram from=1 chat=1] halt the wave");
+  expect(reply).toContain("queued");
+  expect(reply).toContain(BUSY_SAY);
+});
+
+test("HIMMEL-5125: a waiter that exited on a wake reason is busy, not released", async () => {
+  const r = root(); const f = armInbox(r);
+  writeFileSync(f + ".wait", `hb=${Math.floor(Date.now() / 1000) - 60} pid=123 key=- tick=ok state=exited exit=wake-tick\n`);
+  const reply = await routeText(r, "/console halt the wave");
+  expect(readFileSync(f, "utf8")).toContain("halt the wave");
+  expect(reply).toContain(BUSY_SAY);
+});
+
+test("HIMMEL-5125: a fleet verb queues to a busy console", async () => {
+  const r = root(); const f = heartbeat(r, NAME, "sampling", 900); const replies: string[] = [];
+  await inbound(r, fresh("/fleet"), replies);
+  expect(readFileSync(f, "utf8")).toContain("] fleet status\n");
+  expect(replies.join("\n")).toContain(BUSY_SAY);
+});
+
+test("HIMMEL-5125: a unique name fragment routes to its console and is stripped from the text", async () => {
+  const r = root(); const a = heartbeat(r, "HIMMEL-nextleg-2026-10-10CO-roadmap-console"); const b = heartbeat(r, "HIMMEL-nextleg-2026-10-10V-other-console", "waiting", 900);
+  for (const frag of ["CO", "roadmap-conso", "ROADMAP"]) {
+    writeFileSync(a, ""); writeFileSync(b, "");
+    const reply = await routeText(r, `/console ${frag} do the thing`);
+    expect(readFileSync(a, "utf8")).toContain("] do the thing");
+    expect(readFileSync(a, "utf8")).not.toContain(frag + " do");
+    expect(readFileSync(b, "utf8")).toBe("");
+    expect(reply).toContain("roadmap-console");
+  }
+});
+
+test("HIMMEL-5125: an ambiguous fragment lists the candidates and sends nothing", async () => {
+  const r = root(); const a = heartbeat(r, "x-console-aa"); const b = heartbeat(r, "x-console-bb");
+  const reply = await routeText(r, "/console console do it");
+  expect(readFileSync(a, "utf8")).toBe("");
+  expect(readFileSync(b, "utf8")).toBe("");
+  expect(reply).toContain("x-console-aa");
+  expect(reply).toContain("x-console-bb");
+});
+
+test("HIMMEL-5125: a dead or released console still bounces", async () => {
+  const stale = (r: string) => heartbeat(r, NAME, "waiting", 4000);
+  const released = (r: string) => { const f = armInbox(r); writeFileSync(f + ".wait", `hb=${Math.floor(Date.now() / 1000) - 60} pid=123 key=- tick=- state=exited exit=signal-TERM\n`); return f; };
+  for (const mk of [stale, released]) {
+    const r = root(); const f = mk(r); const replies: string[] = [];
+    expect(await routeText(r, "/console halt")).toContain("no live console");
+    await inbound(r, fresh("/fleet"), replies);
+    expect(replies.join("\n")).toContain("no live console");
+    expect(readFileSync(f, "utf8")).toBe("");
+  }
+  const r = root();
+  expect(await routeText(r, "/console halt")).toContain("no live console");
 });
