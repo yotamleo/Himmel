@@ -295,10 +295,114 @@ fi
 gone_dir g6; rm -f "$T/g6/$SID.json"; printf 'started\n' > "$T/g6/$SID.recorder"
 touch -t 202001010000 "$T/g6/$SID.recorder"
 gone_run g6 "$T/g6"; rc=$?
-if [ "$rc" -eq 2 ]; then
-  ok "HIMMEL-2588: a 'started' marker older than any recorder can live (killed recorder) is denied"
+if [ "$rc" -eq 0 ] && grep -q 'HIMMEL-5171' "$T/g6.err"; then
+  ok "HIMMEL-5171: a 'started' marker older than any recorder can live (killed recorder) fails open with a notice"
 else
-  bad "HIMMEL-2588 stale started: expected rc=2, got rc=$rc err=$(cat "$T/g6.err")"
+  bad "HIMMEL-5171 stale started: expected rc=0 + notice, got rc=$rc err=$(cat "$T/g6.err")"
+fi
+# The notice is once per session: a second hook call stays silent.
+gone_run g6 "$T/g6"; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q 'HIMMEL-5171' "$T/g6.err"; then
+  ok "HIMMEL-5171: the fail-open notice is printed once per session"
+else
+  bad "HIMMEL-5171 notice once: expected rc=0 and no notice, got rc=$rc err=$(cat "$T/g6.err")"
+fi
+# The deny a deleted-after-verified-publish record earns names the recovery.
+if grep -q 'record-hook-integrity.sh' "$T/g1.err" && grep -q "$SID.recorder" "$T/g1.err"; then
+  ok "HIMMEL-5171: the missing-record deny names the manual recovery (marker + recorder)"
+else
+  bad "HIMMEL-5171 recovery text missing from deny: $(cat "$T/g1.err")"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-5171 — a recorder that did not publish a verified record must not
+# leave the marker `done`. Each trigger runs the REAL recorder with one
+# failure injected through a PATH stub, then the launcher against what it
+# left. On the base every one of these is a deny for the rest of the session.
+# ---------------------------------------------------------------------------
+STUBS="$T/stubs"
+mkdir -p "$STUBS"
+REAL_JQ="$(command -v jq)"
+printf '#!/bin/sh\nexit 1\n' > "$STUBS/mv.fail";     chmod +x "$STUBS/mv.fail"
+printf '#!/bin/sh\nexit 1\n' > "$STUBS/mktemp.fail"; chmod +x "$STUBS/mktemp.fail"
+# jq that rejects only the validation of the staged record ($out/.hook-integrity.*).
+cat > "$STUBS/jq.badvalidate" <<JQ_EOF
+#!/bin/sh
+for a in "\$@"; do case "\$a" in */.hook-integrity.*) exit 1 ;; esac; done
+exec "$REAL_JQ" "\$@"
+JQ_EOF
+chmod +x "$STUBS/jq.badvalidate"
+
+run_failing_recorder() {   # <name> <stub-name> <real-tool> <project> -> out dir $T/<name>
+  local name="$1" stub="$2" tool="$3" project="$4"
+  local dir="$T/$name" bin="$T/$name.bin"
+  rm -rf "$dir" "$bin"; mkdir -p "$dir" "$bin"
+  cp "$STUBS/$stub" "$bin/$tool"
+  printf '%s' "$PAYLOAD" | PATH="$bin:$PATH" CLAUDE_PROJECT_DIR="$project" HIMMEL_HOOK_INTEGRITY_DIR="$dir" \
+    bash "$RECORDER" >/dev/null 2>&1
+}
+expect_open() {   # <name> <label>: marker is not `done`, no record, launcher fails open
+  local name="$1" label="$2" dir="$T/$1" state rc
+  state="$(cat "$dir/$SID.recorder" 2>/dev/null)"
+  gone_run "$name" "$dir"; rc=$?
+  if [ "$state" != "done" ] && [ ! -s "$dir/$SID.json" ] && [ "$rc" -eq 0 ]; then
+    ok "HIMMEL-5171: $label -> marker '$state', launcher fails open"
+  else
+    bad "HIMMEL-5171 $label: marker='$state' record=$([ -s "$dir/$SID.json" ] && echo present || echo none) launcher rc=$rc err=$(cat "$T/$name.err")"
+  fi
+}
+run_failing_recorder t_mv mv.fail mv "$PROJECT"
+expect_open t_mv "a failed mv publish"
+run_failing_recorder t_mktemp mktemp.fail mktemp "$PROJECT"
+expect_open t_mktemp "a failed mktemp"
+run_failing_recorder t_jq jq.badvalidate jq "$PROJECT"
+expect_open t_jq "a failed jq validate of the staged record"
+
+# A lock lib that fails to source (verified against the anchor blob, so the
+# recorder does source it): a fixture project whose lib is `return 1`.
+LP="$T/lockfail"
+mkdir -p "$LP/scripts/hooks"
+cp "$RECORDER" "$LP/scripts/hooks/record-hook-integrity.sh"
+printf 'return 1\n' > "$LP/scripts/hooks/hook-integrity-lock.sh"
+git -C "$LP" init -q -b main
+git -C "$LP" -c user.email=t@t -c user.name=t add -A
+git -C "$LP" -c user.email=t@t -c user.name=t commit -q -m init
+git -C "$LP" update-ref refs/remotes/origin/main HEAD
+rm -rf "$T/t_lock"; mkdir -p "$T/t_lock"
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$LP" HIMMEL_HOOK_INTEGRITY_DIR="$T/t_lock" \
+  bash "$LP/scripts/hooks/record-hook-integrity.sh" >/dev/null 2>&1
+expect_open t_lock "a lock lib that fails to source"
+
+# A recorder killed after `started` (the 15 s hook timeout, SIGKILL): a git
+# stub kills it mid pin computation; its trap never runs. The marker is then
+# aged past any recorder's life, as the real 60 s would.
+KB="$T/t_kill.bin"; rm -rf "$KB" "$T/t_kill"; mkdir -p "$KB" "$T/t_kill"
+cat > "$KB/git" <<KILL_EOF
+#!/bin/sh
+case " \$* " in *" ls-tree "*) kill -9 "\$(cat "$T/t_kill.pid")" ;; esac
+exec "$(command -v git)" "\$@"
+KILL_EOF
+chmod +x "$KB/git"
+printf '%s' "$PAYLOAD" | PATH="$KB:$PATH" CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/t_kill" \
+  bash -c 'echo $$ > "$1"; exec bash "$2"' _ "$T/t_kill.pid" "$RECORDER" >/dev/null 2>&1
+touch -t 202001010000 "$T/t_kill/$SID.recorder"
+if [ "$(cat "$T/t_kill/$SID.recorder" 2>/dev/null)" = "started" ]; then
+  expect_open t_kill "a recorder killed after started"
+else
+  bad "HIMMEL-5171 killed recorder: expected marker 'started', got '$(cat "$T/t_kill/$SID.recorder" 2>&1)'"
+fi
+
+# Control: a record published and VERIFIED, then deleted, still denies.
+if [ "$(cat "$OUT_DIR/$SID.recorder")" = "done" ]; then
+  gone_dir c1; rm -f "$T/c1/$SID.json"
+  gone_run c1 "$T/c1"; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    ok "HIMMEL-5171 control: a record deleted after a verified publish still denies"
+  else
+    bad "HIMMEL-5171 control: expected rc=2, got rc=$rc err=$(cat "$T/c1.err")"
+  fi
+else
+  bad "HIMMEL-5171 control: the healthy recorder did not leave the marker done"
 fi
 
 # ===========================================================================

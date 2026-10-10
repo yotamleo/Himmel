@@ -56,8 +56,9 @@
 # is `exit 0` with no pin file written (or left as-is, once a record already
 # exists). run-hook-with-bash.js reads a missing pin file as "cannot verify"
 # and fails OPEN — see its header for why that direction is the safe rollout
-# default — but only for an exit BEFORE the HIMMEL-2588 marker below; once this
-# hook has said it ran, a missing record denies for the rest of the session. The lock (below) shares that posture: if it cannot
+# default — but only for an exit BEFORE the HIMMEL-2588 marker below, or one that
+# did not end in a verified publish (HIMMEL-5171: marker `failed`/`started`);
+# once this hook has marked itself `done`, a missing record denies. The lock (below) shares that posture: if it cannot
 # be acquired, this hook exits 0 without touching the record — the JS
 # launcher's own write path is the one side of this protocol that DENIES on a
 # lock timeout, since it is advancing an existing pin mid-session rather than
@@ -99,15 +100,27 @@ out_dir="${HIMMEL_HOOK_INTEGRITY_DIR:-$HOME/.claude/himmel/hook-integrity}"
 mkdir -p "$out_dir" 2>/dev/null || exit 0
 
 # HIMMEL-2588: say that a recorder ran, BEFORE anything below can fail, and
-# that it finished, on every exit. hook-integrity.js fails open on a missing
-# record only while this marker is absent (no recorder ran) or `started` and
-# young (still running); once it reads `done` a missing, empty or unparseable
-# record DENIES. Every exit above it is a session this hook never applies to.
+# how it ended, on every exit it controls. hook-integrity.js fails open on a
+# missing record while this marker is absent (no recorder ran), `started` (still
+# running, or killed before it could say), or `failed` (it ran and published
+# nothing); only `done` makes a missing, empty or unparseable record DENY.
+# HIMMEL-5171: `done` is therefore written ONLY when the record at $dest is
+# re-read here and carries pins — a verified publish. Any other exit (a failed
+# jq, mktemp, write, validate, mv or lock-lib source) writes `failed`, so a
+# recorder that could not vouch for the session never bricks it. A SIGKILL or
+# the hook timeout never reaches the trap and leaves `started`, which the
+# launcher treats as unvouched once it is older than a recorder can live.
+# Every exit above it is a session this hook never applies to.
+dest="$out_dir/$session_id.json"
 marker="$out_dir/$session_id.recorder"
 printf 'started\n' > "$marker" 2>/dev/null
 # shellcheck disable=SC2317,SC2329  # reached only through the EXIT trap
 mark_done() {
-    printf 'done\n' > "$marker" 2>/dev/null
+    local state=failed
+    if jq -e '(.pins | type) == "object"' "$dest" >/dev/null 2>&1; then
+        state="done"
+    fi
+    printf '%s\n' "$state" > "$marker" 2>/dev/null
     return 0
 }
 trap mark_done EXIT
@@ -277,8 +290,8 @@ fi
 # The two are separate decisions and conflating them inverts this hook's whole
 # purpose. run-hook-with-bash.js failed OPEN on a missing record before
 # HIMMEL-2588 (it now denies one once the marker above reads `done`, which
-# bricks the session instead — still the wrong outcome for a recoverable
-# lock-lib problem). So a recorder that exits without writing when
+# HIMMEL-5171 reserves for a verified publish, so this degraded path
+# still records). So a recorder that exits without writing when
 # it cannot vouch for its lock lib hands an attacker a one-step OFF SWITCH for
 # the entire integrity system: make the lib's bytes differ from the anchor blob
 # — no code execution needed, no pinned byte touched — and every hook in that
@@ -300,7 +313,6 @@ fi
 # crash between mkdir and the owner write would wedge every future session on
 # that record. Publishing lock-free is the safe degradation; a half-implemented
 # lock is not.
-dest="$out_dir/$session_id.json"
 lock_held=0
 tmp=""
 
