@@ -65,5 +65,7 @@ if [ -s "$DIR/.holder" ]; then
     ;; esac
 fi
 printf '%s %s\n' "$holder" "$start" > "$DIR/.holder" 2>/dev/null || die "cannot write $DIR/.holder"
+# HIMMEL-5165: a reused dir is a new judge; the earlier verdict's release marker no longer applies
+[ -L "$DIR/.verdict-written" ] || rm -f "$DIR/.verdict-written" 2>/dev/null
 [ -s "$DIR/.holder" ] || die "holder file empty: $DIR/.holder"
 printf '%s\n' "$DIR"

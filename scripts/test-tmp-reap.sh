@@ -19,6 +19,7 @@
 #      session (ppid chain reads to pid 1) only warns, one under a live session refuses
 #  11. FAMILIES does not glob against the caller's cwd
 #  13. a judge dir's .holder (HIMMEL-4325): live keeps, dead reaps at once, unknown/absent = today's path
+#  15. a verdict marker (.verdict-written, HIMMEL-5165) releases a judge dir even with a live holder
 #  14. judge-dir.sh creates the dir + holder, refuses a bad PR/suffix, fails loudly
 # Platform guard: POSIX bash 3.2+.
 set -uo pipefail
@@ -311,6 +312,25 @@ exists "13. live holder survives an unscoped sweep too" "$JD/j9101"
 exists "13. long-lived parent holder survives an unscoped sweep" "$JD/j9106"
 absent "13. unscoped sweep reaps the no-holder aged dir (today's path)" "$JD/j9002"
 kill "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+
+echo "== 15. a written verdict releases its judge dir (HIMMEL-5165) =="
+build_tree
+mkdir -p "$JD/j9401" "$JD/j9402" "$JD/j9403" "$JD/j9404"
+for n in 9401 9402 9403 9404; do : > "$JD/j$n/f"; holder "$JD/j$n" "$$ $(pstart $$)"; done
+: > "$JD/j9401/.verdict-written"; : > "$ROOT/marker-target"; ln -s "$ROOT/marker-target" "$JD/j9403/.verdict-written"
+: > "$JD/j9404/.verdict-written"; ( cd "$JD/j9404" && exec sleep 300 ) & CWD_PID=$!
+out="$(reap --apply --judge 9401)"; check "15. scoped rc 0" "$?" 0
+absent "15. live holder + verdict marker: dir reaped (scoped)" "$JD/j9401"
+out="$(reap --apply --judge 9402)"
+exists "15. control: live holder, no marker: kept" "$JD/j9402"
+out="$(reap --apply --judge 9403)"
+exists "15. a symlinked marker is not honoured: kept" "$JD/j9403"
+out="$(reap --apply --judge 9404)"
+exists "15. marker but a process cwd under the dir: kept" "$JD/j9404"
+kill "$CWD_PID" 2>/dev/null; wait "$CWD_PID" 2>/dev/null
+mkdir -p "$JD/j9405"; : > "$JD/j9405/f"; holder "$JD/j9405" "$$ $(pstart $$)"; : > "$JD/j9405/.verdict-written"
+out="$(reap --apply)"
+absent "15. unscoped sweep reaps a live-holder dir with a verdict marker" "$JD/j9405"
 
 echo "== 14. judge-dir.sh =="
 JDS="$HERE/judge-dir.sh"
