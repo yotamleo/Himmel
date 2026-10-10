@@ -479,6 +479,13 @@ row "4545 cd abs then cd rel then cp to symlink"    deny  "cd $T && cd cwl && cp
 row "4545 cd rel then cp to plain symlink"          deny  "cd cwl && cp $T/src/other.txt plainlink" "$T"
 row "4545 cp to \$X/plainlink (unproven cwd)"        deny  "n=\$(date +%H); cp $T/src/other.txt \$X/plainlink" "$T"
 row "4545 cd abs then cp to plain name, no link"    allow "cd $T/cwl && cp $T/src/other.txt nolink" "$T"
+# j2320b: a cd spelled so only the dequoted text reads it as cd.
+row "4545 c\\d abs then cp to plain symlink"         deny  "c\\d $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 c''d abs then cp to plain symlink"         deny  "c''d $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 \"c\"d abs then cp to plain symlink"       deny  "\"c\"d $T/cwl && cp $T/src/other.txt plainlink" "$T"
+row "4545 c\\d abs then mv to symlink chain"         deny  "c\\d $T/cwl; mv $T/src/other.txt plainlink2" "$T"
+row "4545 pu\\shd abs then cp to state-dir symlink"  deny  "pu\\shd $T/cwl && cp $T/src/other.txt statelink" "$T"
+row "4545 c\\d abs then cp to plain name, no link"   allow "c\\d $T/cwl && cp $T/src/other.txt nolink" "$T"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or
 # relocate the lift's whole tree; a plain-name test alone would pass it.
 row "4545 ln -s abs HOME src still denies"  deny  "cd /tmp && ln -s $HOME link"

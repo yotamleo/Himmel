@@ -989,6 +989,10 @@ _plain_name_copy() {
         rest=${rest/"${BASH_REMATCH[0]}"/ }
     done
     while [[ "$wrest" =~ $re ]]; do
+        dir=${BASH_REMATCH[4]}
+        case "$(lift_ref "${dir%/}/$dest")" in
+            LIFT|STATE|HIMMEL|HOME) return 1 ;;
+        esac
         wrest=${wrest/"${BASH_REMATCH[0]}"/ }
     done
     [ "$(printf '%s\n%s' "$rest" "$wrest" | grep -Ec "$DIRMOVE_RE")" = 0 ] || return 1
