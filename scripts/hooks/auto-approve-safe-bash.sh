@@ -890,7 +890,7 @@ is_redirect_word() {
 # Tokenized with CR as a word byte (bash's view). Only a real root counts, not
 # ~ / $HOME (`du -sh ~` stays ALLOW).
 segment_walks_root() {
-    local base j total tok raw have_e=0 rec=0 level=0 root=0
+    local base j total tok raw have_e=0 rec=0 level=0 root=0 dd=0
     local -a a ops
     TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
     [ "$RB_STATUS" = bin ] || return 1
@@ -905,7 +905,12 @@ segment_walks_root() {
         raw="${a[$j]}"
         shell_word_value "$raw" || continue
         tok="$SW_VALUE"
+        if [ "$dd" -eq 1 ]; then          # after `--` every word is an operand
+            is_redirect_word "$raw" "$tok" || ops+=("$tok")
+            continue
+        fi
         case "$tok" in
+            --) dd=1 ;;
             --recursive|--dereference-recursive|--directories=recurse|recurse)
                 case "$base" in ls|grep|egrep|fgrep) rec=1 ;; esac ;;
             --level|--level=*) level=1 ;;
@@ -917,6 +922,7 @@ segment_walks_root() {
                     grep|egrep|fgrep) case "$tok" in *[rR]*) rec=1 ;; esac
                                       case "$tok" in *[ef]*) have_e=1 ;; esac ;;
                     tree)             case "$tok" in *L*) level=1 ;; esac ;;
+                    rg|ripgrep|ag)    case "$tok" in *[ef]*) have_e=1 ;; esac ;;
                 esac ;;
             *) is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
         esac

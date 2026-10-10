@@ -1627,6 +1627,14 @@ assert "ctl: grep x / (no -r) stays ALLOW"     ALLOW "$(decide "$(j_bash "grep x
 assert "ctl: rg x src stays ALLOW"             ALLOW "$(decide "$(j_bash "rg x src")")"
 assert "ctl: tree -L 1 / stays ALLOW"          ALLOW "$(decide "$(j_bash "tree -L 1 /")")"
 assert "ctl: tree src stays ALLOW"             ALLOW "$(decide "$(j_bash "tree src")")"
+# /pr-check round 1: an attached rg/ag -e/-f pattern must not leave / as the
+# discarded "pattern"; `--` ends options, so `-R` after it is a filename.
+assert "rg -efoo / never ALLOW"                PASS  "$(decide "$(j_bash "rg -efoo /")")"
+assert "ag -efoo / never ALLOW"                PASS  "$(decide "$(j_bash "ag -efoo /")")"
+assert "rg -e foo / never ALLOW"               PASS  "$(decide "$(j_bash "rg -e foo /")")"
+assert "grep -r -- x / never ALLOW"            PASS  "$(decide "$(j_bash "grep -r -- x /")")"
+assert "ls -- -R / (-R is a filename) ALLOW"   ALLOW "$(decide "$(j_bash "ls -- -R /")")"
+assert "ctl: rg -efoo src stays ALLOW"         ALLOW "$(decide "$(j_bash "rg -efoo src")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
