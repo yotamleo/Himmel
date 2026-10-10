@@ -3924,6 +3924,19 @@ STUB_RUN_LIST_JSON='[{"databaseId":300,"status":"completed","conclusion":"failur
     run_mog 22 "5115-n: range base skips a cancelled run → exit 22"
 assert_err_has "5115-n: range runs from the previous completed sweep" "cccccccccccc..aaaaaaaaaaaa"
 
+# 5115-o/p — a .sh suite on an ##[error] line must be a whole path component:
+# `test-foo.sh` is named there, `foo.sh` is only the tail of it.
+MOG_RUN_LOG2="$(mktemp "${TMPDIR:-/tmp}/mog-runlog2.XXXXXX")" || { echo "FAIL: 5115 setup: mktemp" >&2; exit 1; }
+printf '%s\t%s\t%s\n' \
+    'shell-unit-shard (ubuntu-latest, 3)' 'UNKNOWN STEP' '2026-10-09T17:54:35.0819579Z ##[error]scripts/handover/test-foo.sh failed (2 assertions)' > "$MOG_RUN_LOG2"
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG2" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=test-foo.sh')" \
+    run_mog 0 "5115-o: whole .sh name on an error line → merged"
+STUB_RUN_LIST_JSON="$MOG_RUN_RED" STUB_RUN_LOG_FILE="$MOG_RUN_LOG2" \
+    STUB_PR_COMMITS_JSON="$(mog5115_commits 'Fixes-main-red: suite=foo.sh')" \
+    run_mog 22 "5115-p: tail fragment of a .sh name → exit 22"
+rm -f "$MOG_RUN_LOG2"
+
 # 5115-i — DECIDED: no completed run in the window means no red was observed.
 # Allowed, and the audit says so.
 STUB_RUN_LIST_JSON='[]' run_mog 0 "5115-i: no completed run at all → merged, audited"
