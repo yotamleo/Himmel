@@ -748,5 +748,19 @@ check "36 no marker nested inside the third reclaimer's slot" "1" "$(ls -A "$W/r
 check "36 no .dead leftover after losing the race" "0" "$(ls -d "$W"/reclaim36-taken.dead.* 2>/dev/null | wc -l | tr -d ' ')"
 kill "$OWNER_PID" "$THIRD_PID" 2>/dev/null; wait "$OWNER_PID" "$THIRD_PID" 2>/dev/null
 
+# 37 (HIMMEL-5119, codex-1): an expired row whose worker ignores SIGTERM keeps
+# its slot; admitting a second dispatch beside a live worker exceeds the cap.
+sleep 60 & LIVE37=$!
+( trap '' TERM; exec sleep 60 ) & WORKER37=$!
+sleep 0.3
+jq -n --arg p "$LIVE37" --arg s "$(proc_start "$LIVE37")" --arg w "$WORKER37" --arg ws "$(proc_start "$WORKER37")" --argjson hb "$(( $(date +%s) - 7200 ))" \
+  '{id:"hb37", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s,
+    worker_pid:($w|tonumber), worker_start:$ws, heartbeat:$hb}' > "$LIVE_DIR/hb37.json"
+HIMMEL_DISPATCH_ROW_TTL_SECS=3600 cap1_run "$W/artifact37.txt"; RC37=$?
+check "37 expired row with a SIGTERM-ignoring worker: slot kept" "1" "$RC37"
+check "37 that row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/hb37.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+kill -KILL "$LIVE37" "$WORKER37" 2>/dev/null; wait "$LIVE37" "$WORKER37" 2>/dev/null
+
 echo "---$PASS passed, $FAIL failed, $SKIP skipped ---"
 [ "$FAIL" -eq 0 ]

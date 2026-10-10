@@ -196,15 +196,27 @@ row_heartbeat_stale() {
 }
 
 # Kill the row's worker tree, only while its recorded start time still matches
-# (a reused pid is never touched). A wedged worker must not outlive its slot.
+# (a reused pid is never touched). A wedged worker must not outlive its slot:
+# returns 1 when that worker is still alive after the kill (SIGTERM ignored), so
+# the caller keeps the slot rather than admit a second dispatch beside it.
+# ponytail: a row with no worker_pid/worker_start (launch gap) cannot be
+# confirmed dead and is released on TTL alone; upgrade path is a wrapper-side
+# process-group record (HIMMEL-5119).
 kill_expired_worker() {
-  local wpid wstart
+  local wpid wstart i
   wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
   wstart="$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
   case "$wpid" in ''|*[!0-9]*) return 0 ;; esac
-  if [ -n "$wstart" ] && [ "$(proc_start "$wpid")" = "$wstart" ]; then
-    kill_tree "$wpid" 2>/dev/null || true
-  fi
+  [ -n "$wstart" ] || return 0
+  [ "$(proc_start "$wpid")" = "$wstart" ] || return 0
+  kill_tree "$wpid" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 10 ]; do
+    [ "$(proc_start "$wpid")" = "$wstart" ] || return 0
+    sleep 0.2
+    i=$((i + 1))
+  done
+  return 1
 }
 
 row_holder_dead() {
@@ -225,16 +237,22 @@ row_holder_dead() {
 }
 
 count_active() {
-  local dir="$1" n=0 f status
+  local dir="$1" n=0 f status expired
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
     status="$(jq -r '.status // ""' "$f" 2>/dev/null)"
     case "$status" in
       dispatched|running)
+        expired=0
         if row_heartbeat_stale "$f"; then
-          kill_expired_worker "$f"
+          expired=1
+          # A worker that survives the kill keeps the slot (fail closed).
+          kill_expired_worker "$f" || expired=2
         fi
-        if row_heartbeat_stale "$f" || row_holder_dead "$f"; then
+        if [ "$expired" = 2 ]; then
+          echo "claude-headless.sh: expired row $f worker survived the kill; slot kept" >&2
+          n=$((n + 1))
+        elif [ "$expired" = 1 ] || row_holder_dead "$f"; then
           if jq --arg terminal_at "$(now_iso)" '.status = "interrupted" | .terminal_at = $terminal_at' "$f" > "$f.tmp" 2>/dev/null \
               && mv "$f.tmp" "$f" 2>/dev/null; then
             echo "claude-headless.sh: reaped dead or expired dispatched row $f" >&2
