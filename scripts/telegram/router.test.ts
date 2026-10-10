@@ -94,3 +94,29 @@ test("/restart is anchored on the WHOLE message — anything else is chat", () =
     expect(classify(t).kind).toBe("chat");
   }
 });
+
+// HIMMEL-5148: the console verbs are case-insensitive and accept Telegram's
+// `/cmd@<bot>` addressing; a mid-text or trailing /console stays chat.
+test("HIMMEL-5148: /console is case-insensitive and accepts /console@<bot>", () => {
+  expect(classify("/Console foo bar baz")).toEqual({ kind: "console", name: "foo", text: "bar baz" });
+  expect(classify("/CONSOLE@MyBot foo bar")).toEqual({ kind: "console", name: "foo", text: "bar" });
+  expect(classify("/console@mybot hello there", "MyBot")).toEqual({ kind: "console", name: "hello", text: "there" });
+  expect(classify("/console@mybot\nfoo bar")).toEqual({ kind: "console", name: "foo", text: "bar" });
+  expect(classify("/console@mybot just text")).toEqual({ kind: "console", name: "just", text: "text" });
+  expect(classify("/Consoles")).toEqual({ kind: "consoles" });
+  expect(classify("/consoles@mybot", "mybot")).toEqual({ kind: "consoles" });
+});
+
+test("HIMMEL-5148: a mid-text, trailing, or other-bot /console stays chat", () => {
+  for (const t of [
+    "Note that we had the issue when console is in queue again /console. Let's also use the cloud",
+    "please /console foo bar",
+    "again /console",
+    "/consolex foo bar",
+    "/consoles foo",
+    "/console@",
+    "/console@bad-bot foo bar",
+  ]) expect(classify(t).kind).toBe("chat");
+  expect(classify("/console@otherbot foo bar", "mybot").kind).toBe("chat");
+  expect(classify("/consoles@otherbot", "mybot").kind).toBe("chat");
+});
