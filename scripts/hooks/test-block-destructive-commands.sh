@@ -13,6 +13,17 @@ HOOK="$(cd "$(dirname "$0")" && pwd)/block-destructive-commands.sh"
 
 FAILED=0
 
+# HIMMEL-5181: every case runs through sandbox-run.sh, and bwrap cannot nest, so
+# inside an outer sandbox-run.sh each of the cases returns rc 1 and the verdict
+# is vacuous. SANDBOX_CANARY is set only by sandbox-run.sh itself; require it AND
+# a failing probe, so CI and a normal station (no canary, or a working probe)
+# never skip and a broken sandbox-run.sh there still fails every case.
+if [ -n "${SANDBOX_CANARY:-}" ] \
+   && ! bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" -- true >/dev/null 2>&1; then
+    echo "SKIP block-destructive-commands: running inside a nested sandbox (SANDBOX_CANARY set, sandbox-run.sh cannot nest); every case would return rc 1. Run this suite from outside the sandbox."
+    exit 0
+fi
+
 run_case() {
     local input="$1"
     local env_assign="${2:-}"
