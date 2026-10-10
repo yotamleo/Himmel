@@ -572,6 +572,15 @@ sweep
 has "gh issue create" "$log" "a timed-out shard keeps the aggregate failure red"
 has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when a shard timed out"
 
+# ... and the aggregate's OWN timeout (cancelled + annotation) is red even when
+# every shard was cancelled: it is not a failure caused by shard cancellation.
+newcase timed-out-aggregate-red
+awk -F'\t' -v OFS='\t' '$2=="shell-unit (ubuntu-latest)"{print "cancelled",$2,"4545";next}{print}' "$PUSH_FIX" > "$STUB/jobs.tsv"
+printf 'The job running on runner X has exceeded the maximum execution time of 30 minutes.\n' > "$STUB/ann-4545"
+sweep
+has "gh issue create" "$log" "a timed-out aggregate is red whatever its shards did"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregate is recorded when it timed out itself"
+
 # ... and a cancelled shard whose annotation cannot be read stays red (unknown
 # never clears it), so a real timeout cannot drop the aggregate failure.
 newcase unreadable-annotation-shard-aggregate-red

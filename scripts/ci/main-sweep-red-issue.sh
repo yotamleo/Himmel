@@ -126,10 +126,11 @@ while IFS= read -r line; do
   fi
   case "$concl" in
     failure|timed_out)
-      # An aggregate's verdict is held until every shard is counted (below).
-      case "$name" in
-        "shell-unit ("*) printf '%s\n' "$name" >> "$TMP/agg-failed" ;;
-        *)               printf '%s\n' "$name" >> "$TMP/failed" ;;
+      # An aggregate's `failure` is held until every shard is counted (below).
+      # Its own timeout is a real failure whatever its shards did.
+      case "$name:$concl" in
+        "shell-unit ("*":failure") printf '%s\n' "$name" >> "$TMP/agg-failed" ;;
+        *)                         printf '%s\n' "$name" >> "$TMP/failed" ;;
       esac ;;
     success)           printf '%s\n' "$name" >> "$TMP/passed" ;;
   esac
