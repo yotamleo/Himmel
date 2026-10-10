@@ -2723,6 +2723,20 @@ run_clear "$tmp" 14 "8z-head --check-sweeps with no branch ref judges against HE
 printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, b.sh:4\n' "$_r1" > "$tmp/cand.txt"
 run_clear "$tmp" 0 "8z-head --check-sweeps with no branch ref judges against HEAD: present sites accepted" --check-sweeps "$tmp/cand.txt" feat/x
 rm -rf "$tmp"
+# 8z-sub. HIMMEL-5158 (j2319a): sites resolve from the repo root, not the cwd.
+# From a subdirectory a nested regular file is a site, and a root symlink whose
+# name a cwd file shadows is still a symlink.
+sweep_fixture
+(cd "$tmp" && mkdir -p sub && ln -s a.sh l.sh && printf "echo n\n" > sub/l.sh && cp a.sh sub/a.sh && git add l.sh sub/l.sh sub/a.sh \
+    && git commit -qm "round 3" && git push -q origin feat/x) >/dev/null 2>&1
+printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, sub/l.sh:1\n' "$_r1" > "$tmp/cand.txt"
+rc=0; out=$(cd "$tmp/sub" && PATH="$tmp/bin:$PATH" bash "$tmp/scripts/cr/clear-cr-marker.sh" --check-sweeps "$tmp/cand.txt" feat/x 2>&1) || rc=$?
+if [ "$rc" -eq 0 ]; then pass; else fail "8z-sub nested regular site from a subdir must be accepted (rc=$rc): $out"; fi
+printf 'SWEEP [r1@%s] class=unquoted path :: sites=a.sh:1, l.sh:1\n' "$_r1" > "$tmp/cand.txt"
+rc=0; out=$(cd "$tmp/sub" && PATH="$tmp/bin:$PATH" bash "$tmp/scripts/cr/clear-cr-marker.sh" --check-sweeps "$tmp/cand.txt" feat/x 2>&1) || rc=$?
+if [ "$rc" -eq 14 ] && printf '%s' "$out" | grep -qF 'site-not-a-file:l.sh'; then pass; else
+    fail "8z-sub a root symlink shadowed by sub/l.sh must be refused from a subdir (rc=$rc): $out"; fi
+rm -rf "$tmp"
 
 # 5a-5e. HIMMEL-2128 — CR_FLOOR_FALLBACK=claude-only gate-3b escape. All five
 # cases require cross-model (else gate 3b never runs) and a Claude avail-ok row

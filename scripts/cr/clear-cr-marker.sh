@@ -787,7 +787,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="${check_sweeps:-$git_dir/cr-class-sweeps/$bra
   // is consistent with the tree, not that a sweep happened. Zero hits is kept
   // on purpose (HIMMEL-4637): a sweep of a FIXED class legitimately finds
   // nothing, so requiring one hit would refuse the honest record. Upgrade
-  // path: a second writer countersigning sweeps (HIMMEL-5158).
+  // path: a second writer countersigning sweeps (HIMMEL-5162).
   const SQ = String.fromCharCode(39), DQ = String.fromCharCode(34);
   const BS = String.fromCharCode(92), BQ = String.fromCharCode(96);
   const META = ";|&$()<>" + BQ + String.fromCharCode(10, 13, 0);
@@ -805,7 +805,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="${check_sweeps:-$git_dir/cr-class-sweeps/$bra
   // the content a sweep would have read.
   const isBlob = (rev, p) => { if (!rev) return false;
       try {
-          const m = /^(\d+) blob /.exec(gitRun(["ls-tree", rev, "--", p.replace(/\/+$/, "")]));
+          const m = /^(\d+) blob /.exec(gitRun(["ls-tree", "--full-tree", rev, "--", p.replace(/\/+$/, "")]));
           return !!m && (m[1] === "100644" || m[1] === "100755");
       } catch { return false; } };
   // POSIX-shell word splitting of the recorded command, refusing anything a
@@ -843,10 +843,11 @@ verdict=$(LEDGER="$ledger" SWEEPS="${check_sweeps:-$git_dir/cr-class-sweeps/$bra
   const SHORT_OK = "niwEFGPIl";
   const LONG_OK = new Set(["--line-number", "--ignore-case", "--word-regexp", "--extended-regexp",
       "--fixed-strings", "--basic-regexp", "--perl-regexp"]);
-  // ponytail: git grep resolves a pathspec against cwd while inTree resolves it
-  // against the repo root (fail closed only), and a -P regex is bounded by the
-  // 20 s execFileSync timeout, not by a cost cap. Upgrade path: HIMMEL-5158
-  // (the deferred HIMMEL-4641 item 5), when a leg runs the gate from a subdir.
+  // ponytail: git grep resolves a pathspec against cwd while inTree and isBlob
+  // resolve it against the repo root (ls-tree --full-tree), so a search scoped
+  // by a cwd-relative pathspec run from a subdir can mis-scope its hits, and a
+  // -P regex is bounded by the 20 s execFileSync timeout, not by a cost cap.
+  // Upgrade path: HIMMEL-5162 (the deferred HIMMEL-4641 item 5).
   // Parse and re-run one search at the tip once: { err } or { hits: [files] }.
   const searchCache = new Map();
   const runSearch = (cmd) => {
