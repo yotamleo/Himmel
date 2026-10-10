@@ -73,6 +73,8 @@ if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
 fi
 
 : > "$TMP/failed"; : > "$TMP/passed"
+: > "$TMP/agg-failed"
+shard_red=0; shard_ok=0; shard_cx=0
 n_jobs=0
 is_nightly=0
 while IFS= read -r line; do
@@ -81,8 +83,31 @@ while IFS= read -r line; do
   case "$name" in
     *"$tab"*) jid="${name#*"$tab"}"; name="${name%%"$tab"*}" ;;
   esac
+  # HIMMEL-5143: the aggregate is named `shell-unit (dispatch verify) (os)` on a
+  # workflow_dispatch run and `shell-unit (os)` otherwise. One job, one identity,
+  # or a report recorded from a push run could never be re-proven on a dispatch.
+  name="${name/ (dispatch verify)/}"
   case "$name" in
-    "shell-unit-shard"*|"main-sweep"*) continue ;;
+    "shell-unit-shard"*)
+      # Count the shards (a shard killed by timeout-minutes is red, as below) so
+      # an aggregate that failed only through cancelled shards can be told apart.
+      scl="$concl"
+      if [ "$scl" = "cancelled" ] && [ -n "$jid" ]; then
+        # An unreadable annotation cannot clear the shard: unknown stays red so a
+        # real timeout never drops the aggregate's failure.
+        if notes="$(gh api "repos/$REPO/check-runs/$jid/annotations" --jq '.[].message' 2>/dev/null)"; then
+          if grep -q 'exceeded the maximum execution time' <<< "$notes"; then scl="timed_out"; fi
+        else
+          scl="timed_out"
+        fi
+      fi
+      case "$scl" in
+        failure|timed_out) shard_red=$((shard_red + 1)) ;;
+        success)           shard_ok=$((shard_ok + 1)) ;;
+        cancelled)         shard_cx=$((shard_cx + 1)) ;;
+      esac
+      continue ;;
+    "main-sweep"*) continue ;;
     # HIMMEL-5113: the nightly is swept too (event `schedule`). Its windows
     # legs are continue-on-error by design and guard-corpus-full is
     # schedule-only with its own nightly signal; neither is main's health.
@@ -100,10 +125,28 @@ while IFS= read -r line; do
     if grep -q 'exceeded the maximum execution time' <<< "$notes"; then concl="timed_out"; fi
   fi
   case "$concl" in
-    failure|timed_out) printf '%s\n' "$name" >> "$TMP/failed" ;;
+    failure|timed_out)
+      # An aggregate's `failure` is held until every shard is counted (below).
+      # Its own timeout is a real failure whatever its shards did.
+      case "$name:$concl" in
+        "shell-unit ("*":failure") printf '%s\n' "$name" >> "$TMP/agg-failed" ;;
+        *)                         printf '%s\n' "$name" >> "$TMP/failed" ;;
+      esac ;;
     success)           printf '%s\n' "$name" >> "$TMP/passed" ;;
   esac
 done < "$TMP/jobs"
+
+# HIMMEL-5143: the aggregate fails when its shards were cancelled (a superseded
+# run). If no shard finished red or green and some were cancelled, that failure
+# is not a verdict on main (same rule as a cancelled run with no job finished).
+# A finished red shard, or a timed-out one, keeps it red.
+if [ -s "$TMP/agg-failed" ]; then
+  if [ "$shard_red" -eq 0 ] && [ "$shard_ok" -eq 0 ] && [ "$shard_cx" -gt 0 ]; then
+    echo "main-sweep-red-issue: run $RUN_ID: aggregate failed only because its $shard_cx shard(s) were cancelled -- not a verdict on main."
+  else
+    cat "$TMP/agg-failed" >> "$TMP/failed"
+  fi
+fi
 
 # The nightly runs the tier=all shell-unit, so an extended-tier-only red would
 # open main-red and the next fast sweep (same job name, no tier) would falsely

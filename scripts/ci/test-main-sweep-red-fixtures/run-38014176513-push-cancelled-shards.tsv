@@ -1,0 +1,32 @@
+cancelled	lanes-and-trust-suites
+success	secret-scan
+success	bwk-awk-mktemp-gate
+success	commit-lint
+success	doc-invariants
+cancelled	shell-unit-shard (ubuntu-latest, 3)
+cancelled	leak-classes
+success	security-scan
+success	jira-cli-smoke
+success	claude-startup
+success	node-suites (himmel-run)
+cancelled	shell-unit-shard (ubuntu-latest, 7)
+cancelled	git-env-scrub
+cancelled	node-suites (jira)
+cancelled	shell-unit-shard (ubuntu-latest, 8)
+cancelled	node-suites (himmel-bus, marketplace/plugins/himmel-bus, 24)
+success	node-suites (himmel-gh, plugins/himmel-gh)
+cancelled	node-suites (bitbucket)
+cancelled	shell-unit-shard (ubuntu-latest, 1)
+cancelled	node-suites (himmel-jira, plugins/himmel-jira)
+cancelled	lint
+cancelled	shell-unit-shard (ubuntu-latest, 4)
+cancelled	shell-unit-shard (ubuntu-latest, 2)
+cancelled	node-suites (ci-orchestrator)
+cancelled	shell-unit-shard (ubuntu-latest, 6)
+cancelled	shell-unit-shard (ubuntu-latest, 5)
+cancelled	bun-suites (ubuntu-latest)
+cancelled	guardrail-matrices
+skipped	guard-corpus-full
+skipped	unchecked-mktemp-range
+skipped	plugin-version-bump
+failure	shell-unit (ubuntu-latest)

@@ -1,0 +1,32 @@
+success	leak-classes
+success	lint
+success	shell-unit-shard (ubuntu-latest, 1)
+success	shell-unit-shard (ubuntu-latest, 4)
+success	shell-unit-shard (ubuntu-latest, 7)
+success	shell-unit-shard (ubuntu-latest, 8)
+success	bun-suites (ubuntu-latest)
+success	shell-unit-shard (ubuntu-latest, 3)
+success	shell-unit-shard (ubuntu-latest, 2)
+success	shell-unit-shard (ubuntu-latest, 6)
+success	secret-scan
+success	bwk-awk-mktemp-gate
+success	commit-lint
+success	git-env-scrub
+success	shell-unit-shard (ubuntu-latest, 5)
+success	guardrail-matrices
+success	claude-startup
+success	doc-invariants
+success	jira-cli-smoke
+success	lanes-and-trust-suites
+success	node-suites (himmel-run)
+success	node-suites (ci-orchestrator)
+success	node-suites (himmel-jira, plugins/himmel-jira)
+success	node-suites (himmel-gh, plugins/himmel-gh)
+success	security-scan
+success	node-suites (jira)
+success	node-suites (himmel-bus, marketplace/plugins/himmel-bus, 24)
+success	node-suites (bitbucket)
+skipped	unchecked-mktemp-range
+skipped	guard-corpus-full
+skipped	plugin-version-bump
+success	shell-unit (dispatch verify) (ubuntu-latest)
