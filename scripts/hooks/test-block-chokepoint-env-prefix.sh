@@ -2110,7 +2110,7 @@ else
 fi
 
 CASES=$((CASES + 1))
-if grep -q "block-chokepoint-env-prefix.sh""$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
+if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
 else
     echo "WARN settings.json does not reference block-chokepoint-env-prefix.sh yet (not counted as a failure)"
