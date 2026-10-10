@@ -305,7 +305,6 @@ IS15_ALLOW='scripts/test-adopt.sh|real tree, cost-excluded (HIMMEL-5123 follow-u
 scripts/himmelctl/test/test-versioned-layout.sh|real tree, cost-excluded (HIMMEL-5123 follow-up if a selector-miss row names it)
 scripts/hooks/test-gitattributes-no-driver.sh|real tree, selected by the changed-suite name match, runs 0.01 s (not cost-excluded)
 scripts/test-uninstall-real-home-callers.sh|real tree, selected only by the case-sensitive content_rules ERE in impacted-suites.sh; lowercase .ps1 / quote-split callers are a known gap (follow-up ticket)
-scripts/ci/test-run-shell-tests.sh|real tree, marker owed after PR 2276 (HIMMEL-5123 item 1)
 scripts/cr/test-pr-check-run.sh|real tree, selected by the scripts/*.sh scan_roots row
 scripts/test-check-plugin-drift.sh|real tree, selected by the *package.json scan_roots row
 scripts/cr/test-pr-check-rounds.sh|fixture root, not the repo tree
