@@ -1870,6 +1870,77 @@ t3b_out="$(start_round "$cap_fix_head" clean t3conc)"; t3b_rc=$?
 assert_eq "$t3b_rc" "0" "a pending delta round restarts once the earlier start's caller is gone"
 assert_has "$t3b_out" "delta round 4 on t3conc" "the restarted pair is still the delta round"
 
+# HIMMEL-5109: a judge NO-GO on a test- or comment-only descendant of the last
+# reviewed head is bound to that head and buys the one round; a descendant
+# that changes code does not. A layer-decision without its keyword is named.
+for td_case in td-testpath td-comment td-code; do
+    three_rounds "$td_case" clean
+    td_r3="$cap_r3_head"
+    case "$td_case" in
+        td-testpath) mkdir -p "$repo/tests"; printf 'case\n' > "$repo/tests/$td_case.txt"; git -C "$repo" add "tests/$td_case.txt" ;;
+        td-comment) printf '# a clarifying comment\n' >> "$repo/$td_case.txt" ;;
+        td-code) printf 'echo changed\n' >> "$repo/$td_case.txt" ;;
+    esac
+    git -C "$repo" commit -q -am "$td_case judged head"
+    td_judged="$(git -C "$repo" rev-parse "$td_case")"
+    fix_commit "$td_case"
+    td_fix="$cap_fix_head"
+    printf 'class: option-parsing\n\nthe fix does not hold\n' > "$jev/judge-evidence.md"
+    judge "$td_case-1" NO-GO "$td_judged"
+    td_out="$(start_round "$td_fix" clean "$td_case")"; td_rc=$?
+    if [ "$td_case" = td-code ]; then
+        assert_eq "$td_rc" "8" "a NO-GO on a descendant that changes code buys no round"
+    else
+        assert_eq "$td_rc" "0" "$td_case: a NO-GO on a trivial descendant is bound to the reviewed head"
+        assert_has "$td_out" "pr-check: delta round 4 on $td_case (from $td_r3)" "$td_case: the round is scoped from the reviewed head"
+        assert_has "$(cat "$git_dir/cr-review-rounds/$td_case.delta")" "verdict:$td_case-1" "$td_case: the delta state names the judge record"
+    fi
+done
+three_rounds td-malformed clean
+tm_r3="$cap_r3_head"
+fix_commit td-malformed
+tm_fix="$cap_fix_head"
+printf 'class: option-parsing\n\nfirst\n' > "$jev/judge-evidence.md"
+judge tm-1 NO-GO "$tm_r3"
+(start_round "$tm_fix" clean td-malformed >/dev/null) || fail "td-malformed first round setup"
+printf 'more\n' >> "$repo/td-malformed.txt"
+git -C "$repo" commit -q -am "td-malformed more"
+tm_next="$(git -C "$repo" rev-parse td-malformed)"
+printf 'class: option-parsing\nlayer-decision: same-uid access belongs at the OS layer\n\nsecond\n' > "$jev/judge-evidence.md"
+judge tm-2 NO-GO "$tm_fix"
+tm_out="$(start_round "$tm_next" clean td-malformed)"; tm_rc=$?
+assert_eq "$tm_rc" "8" "a layer-decision without its keyword does not lift the class stop"
+assert_has "$tm_out" "lacks a layer keyword" "the refusal names the malformed layer-decision"
+
+# HIMMEL-5128: a delta round whose panel left no critic rows still advanced
+# .head to the unreviewed pair head, so a later judge NO-GO for the last
+# critic-reviewed head was never consulted. The scope base falls back to the
+# pending pair's <from> when .head has no critic avail row.
+printf 'class: shell-parsing\n\nthe fix does not hold\n' > "$jev/judge-evidence.md"
+three_rounds stranded suggestion
+sd_r3="$cap_r3_head"
+fix_commit stranded
+sd_fix1="$cap_fix_head"
+(start_round "$sd_fix1" fail stranded >/dev/null) || fail "stranded delta setup"
+printf 'fix again\n' >> "$repo/stranded.txt"
+git -C "$repo" commit -q -am "stranded second fix"
+sd_fix2="$(git -C "$repo" rev-parse stranded)"
+sd0_out="$(start_round "$sd_fix2" clean stranded)"; sd0_rc=$?
+assert_eq "$sd0_rc" "8" "a claude-only delta round followed by a new commit gets no round without a judge record"
+assert_has "$sd0_out" "no judge NO-GO for $sd_r3 is recorded" "the refusal names the check that fired (no judge record for the last critic-reviewed head)"
+assert_has "$sd0_out" "delta round was already used" "the refusal still reports the used delta"
+judge sd-1 NO-GO "$sd_r3"
+sd1_out="$(start_round "$sd_fix2" clean stranded)"; sd1_rc=$?
+assert_eq "$sd1_rc" "0" "a judge NO-GO on the last critic-reviewed head buys the round after a claude-only delta"
+assert_has "$sd1_out" "pr-check: delta round 5 on stranded (from $sd_r3)" "the fallback scopes the delta from the last critic-reviewed head"
+assert_has "$(cat "$git_dir/cr-review-rounds/stranded.delta")" "verdict:sd-1" "the delta state names the judge record"
+printf 'third fix\n' >> "$repo/stranded.txt"
+git -C "$repo" commit -q -am "stranded third fix"
+sd_fix3="$(git -C "$repo" rev-parse stranded)"
+sd2_out="$(start_round "$sd_fix3" clean stranded)"; sd2_rc=$?
+assert_eq "$sd2_rc" "8" "the fallback buys no second round on the consumed record"
+assert_has "$sd2_out" "no judge NO-GO for $sd_fix2 is recorded" "the refusal names the check against the reviewed delta head"
+
 if [ "$fails" -gt 0 ]; then
     printf 'FAIL test-pr-check-rounds (%s failures)\n' "$fails" >&2
     exit 1
