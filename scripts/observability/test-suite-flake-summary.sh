@@ -10,7 +10,7 @@
 #       that is not a readable file reads ?
 #   R3  counts format is "<n><TAB><suite>", most-flaked first, inside --days
 #   R4  detail format carries suite, case, sha, run and the suite's repeat count
-#   R5  the id the reader derives equals the id the runner writes (drift guard)
+#   R5  end to end: the id the reader derives equals the id the runner writes for this checkout (the no-copy guard is F19 in test-run-shell-tests-flake.sh)
 #   R6  only the last SUITE_FLAKE_TAIL_ROWS lines are read (bounded)
 #
 # Usage: bash scripts/observability/test-suite-flake-summary.sh
@@ -64,7 +64,7 @@ case "$d" in
   *) fail "R4: got [$d]" ;;
 esac
 
-echo "== R5: id drift guard =="
+echo "== R5: reader and runner agree on this checkout's id =="
 rs="$SB/rs"; mkdir -p "$rs/scripts"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$rs/scripts/test-pass.sh"
 printf '#!/usr/bin/env bash\nc="$(dirname "$0")/n"; n=$(cat "$c" 2>/dev/null || echo 0); echo $((n+1)) > "$c"\n[ "$n" -ge 1 ] || { echo "not ok 1 - drift"; exit 1; }\nexit 0\n' > "$rs/scripts/test-flaky.sh"
