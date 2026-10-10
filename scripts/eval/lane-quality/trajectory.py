@@ -233,9 +233,13 @@ def _resolve_vars(segs):
             toks = shlex.split(seg, comments=True)
         except ValueError:
             toks = []
-        pairs = [re.match(r"^([A-Za-z_]\w*)=([^$`]*)$", t) for t in toks]
+        pairs = [re.match(r"^([A-Za-z_]\w*)=(.*)$", t, re.S) for t in toks]
         if toks and all(pairs):  # `VAR=x cmd` scopes VAR to cmd, so only a bare assignment persists
-            env.update((m.group(1), m.group(2)) for m in pairs)
+            for m in pairs:
+                if re.search(r"[$`]", m.group(2)):  # unresolvable value: drop the stale binding
+                    env.pop(m.group(1), None)
+                else:
+                    env[m.group(1)] = m.group(2)
         out.append(seg)
     return out
 

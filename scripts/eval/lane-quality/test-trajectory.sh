@@ -203,6 +203,7 @@ check "an assignment among other setup and a && chain resolves" '[ "$(tt "cd d &
 check "a variable assigned in no segment of this command does not resolve" '[ "$(tt "bash \$f")" = "null" ]'
 check "an unrelated variable does not resolve" '[ "$(tt "g=scripts/a/test-x.sh; bash \$f")" = "null" ]'
 check "a prefix assignment scoped to another command does not persist (codex-1)" '[ "$(tt "f=a/test-x.sh echo setup; bash \$f")" = "null" ]'
+check "a later unresolvable reassignment drops the stale binding (codex-3)" '[ "$(tt "f=a/test-x.sh; f=\$other; bash \$f")" = "null" ]'
 check "a single-quoted or escaped \$f stays literal (codex-2)" '[ "$(tt "f=a/test-x.sh; bash '"'"'\$f'"'"'")" = "null" ] && [ "$(tt "f=a/test-x.sh; bash \\\$f")" = "null" ]'
 check "a non-test value is not a test run" '[ "$(tt "f=scripts/a/helper.sh; bash \$f")" = "null" ]'
 leg var-red-green 'f=scripts/a/test-x.sh; echo run; bash $f' "Exit code 1
