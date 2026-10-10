@@ -1738,9 +1738,7 @@ raw_obfuscated() {
     # --init-file take a value; a short cluster holding c runs a command
     # string, which needs a path or PATH to reach one). Any other --long
     # option, and a bare --, is skipped (J1685: --norc, --restricted).
-    d=${t//\$\(\(/}
-    d=${d//\$\(/}
-    d=${d//\$\{/}
+    _c_strip_expansion_openers "$t"; d=$REPLY
     # `.` counts only in command position (prose has ". ("): after a
     # separator or `$(`, then any keyword, precommand or VAR=x prefix.
     # `source` counts as any word. The shell may be an absolute path
@@ -1904,7 +1902,7 @@ names_base() {
 # must still match U+3000 and the other Unicode spaces an IFS can split on.
 raw_strip() {
     local LC_ALL=C
-    local re='^(.*)\$\{[^}]*\}(.*)$' t="$1" u
+    local t="$1"
     t=${t//\\$'\r\n'/}
     t=${t//\\$'\n'/}
     t=${t//[\'\"\\]/}
@@ -1927,10 +1925,74 @@ raw_strip() {
                 t=${t//"$sp"/ }
             done ;;
     esac
-    u=$t
-    while [[ $u =~ $re ]]; do u="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    strip_brace_exp "$t"
     RAW_T=$t
-    RAW_U=$u
+    RAW_U=$REPLY
+}
+
+# HIMMEL-5154: the result of deleting, again and again, the rightmost
+# `${...}` (an opener, then no `}`, then the closer) until none is left. The
+# per-delete regex rescan of the whole string was quadratic in the number of
+# expansions; this single left-to-right pass keeps a stack of the `${`
+# openers since the last retained `}` and drops the nearest one when a `}`
+# arrives, which yields the same string (also when a delete joins a `$` and a
+# `{` into a fresh opener). Result in REPLY. Callers run under LC_ALL=C.
+# Literal-pattern deletions of `$((`, `$(` and `${`, in C: in a UTF-8 locale a
+# `${s//lit/}` over multibyte text is quadratic (HIMMEL-5154); the patterns are
+# ASCII, so bytes give the same string. Result in REPLY.
+_c_strip_expansion_openers() {
+    local LC_ALL=C
+    local x=${1//\$\(\(/}
+    x=${x//\$\(/}
+    REPLY=${x//\$\{/}
+}
+
+strip_brace_exp() {
+    local out="" piece before scan off hasbrace p k nparts
+    local olen=0 np=0 lastc=""
+    local -a pos parts
+    pos=()
+    # split at every `}` in one pass (a trailing `x` keeps a final empty piece)
+    IFS='}' read -r -d '' -a parts <<< "$1x" || true
+    nparts=${#parts[@]}
+    parts[nparts - 1]=${parts[nparts - 1]%x$'\n'}
+    for ((k = 0; k < nparts; k++)); do
+        piece=${parts[k]}
+        hasbrace=1
+        [ "$k" -lt $((nparts - 1)) ] || hasbrace=0
+        if [ "$lastc" = '$' ] && [ "${piece:0:1}" = '{' ]; then
+            pos[np]=$((olen - 1)); np=$((np + 1))
+        fi
+        scan=$piece; off=$olen
+        # shellcheck disable=SC2016  # literal ${ glob pattern, not meant to expand
+        while [[ $scan == *'${'* ]]; do
+            before=${scan%%\$\{*}
+            off=$((off + ${#before}))
+            pos[np]=$off; np=$((np + 1))
+            off=$((off + 2))
+            scan=${scan#*\$\{}
+        done
+        if [ -n "$piece" ]; then
+            out+=$piece
+            olen=$((olen + ${#piece}))
+            lastc=${piece: -1}
+        fi
+        [ "$hasbrace" = 1 ] || break
+        if [ "$np" -gt 0 ]; then
+            np=$((np - 1))
+            p=${pos[np]}
+            out=${out:0:p}
+            olen=$p
+            lastc=""
+            [ "$p" -gt 0 ] && lastc=${out: -1}
+        else
+            out+='}'
+            olen=$((olen + 1))
+            lastc='}'
+            pos=()
+        fi
+    done
+    REPLY=$out
 }
 
 raw_mention() {
