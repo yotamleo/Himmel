@@ -38,6 +38,8 @@ BIN="$TMP/bin"; mkdir -p "$BIN"
 #   closed_issue  number of the newest CLOSED main-red issue (issue list --state closed)
 #   closed_body   that issue's body (issue view <closed_issue>)
 #   closed_list_fail  if present, only `issue list --state closed` exits 1
+#   edit_fail     if present, `issue edit` exits 1
+#   view_fail     if present, `issue view` exits 1
 cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "gh $*" >> "$STUB/gh.log"
@@ -58,11 +60,13 @@ case "$*" in
   "api "*"/actions/runs/"*) cat "$STUB/run.txt" ;;
   "issue list"*"--state closed"*) [ -e "$STUB/closed_list_fail" ] && exit 1; cat "$STUB/closed_issue" 2>/dev/null ;;
   "issue list"*)            [ -e "$STUB/list_fail" ] && exit 1; cat "$STUB/open_issue" 2>/dev/null ;;
+  "issue edit"*)            [ -e "$STUB/edit_fail" ] && exit 1 ;;
   "issue view"*)
+    [ -e "$STUB/view_fail" ] && exit 1
     if [ -e "$STUB/closed_body_$3" ]; then cat "$STUB/closed_body_$3"
     elif [ -e "$STUB/closed_issue" ] && [ "$3" = "$(head -n 1 "$STUB/closed_issue")" ]; then cat "$STUB/closed_body" 2>/dev/null
     else cat "$STUB/issue_body" 2>/dev/null; fi ;;
-  "issue create"*|"issue edit"*|"issue comment"*|"issue close"*|"label create"*) : ;;
+  "issue create"*|"issue comment"*|"issue close"*|"label create"*) : ;;
   *) echo "stub gh: unhandled: $*" >&2; exit 99 ;;
 esac
 exit 0
@@ -445,6 +449,84 @@ printf '7\n' > "$STUB/open_issue"
 printf 'old body\n<!-- main-red-run: 900 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
 sweep
 has "gh issue close 7" "$log" "a green re-run of the same run id still closes"
+
+# 20. HIMMEL-5141 (judge j2292a mutants): run ids of different widths. A lexical
+# compare or a sort without -n reads "1000" as older than "900"/"99".
+newcase wide-open-newer
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 1000 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+hasnt "gh issue edit" "$log" "open guard compares numerically: run 1000 is newer than 900"
+
+newcase wide-open-sort
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 1000 -->\n<!-- main-red-failed: lint -->\n\n<!-- main-red-closed-run: 99 -->\n' > "$STUB/issue_body"
+sweep
+hasnt "gh issue edit" "$log" "open guard takes the numeric max of its markers (1000 over 99)"
+
+newcase wide-closed-newer
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '6\n' > "$STUB/closed_issue"
+printf 'b\n<!-- main-red-closed-run: 1000 -->\n' > "$STUB/closed_body"
+sweep
+hasnt "gh issue create" "$log" "closed guard compares numerically: run 1000 is newer than 900"
+
+newcase wide-closed-sort
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '6\n' > "$STUB/closed_issue"
+printf 'b\n<!-- main-red-run: 1000 -->\n<!-- main-red-closed-run: 99 -->\n' > "$STUB/closed_body"
+sweep
+hasnt "gh issue create" "$log" "closed guard takes the numeric max of one report's markers"
+
+newcase wide-closed-max
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '9\n6\n' > "$STUB/closed_issue"
+printf 'b\n<!-- main-red-closed-run: 1000 -->\n' > "$STUB/closed_body_9"
+printf 'b\n<!-- main-red-closed-run: 99 -->\n' > "$STUB/closed_body_6"
+sweep
+hasnt "gh issue create" "$log" "the running maximum across closed reports is numeric (1000 survives 99)"
+
+# A closed report stamped by this very run id: strict -gt, so the red run files.
+newcase closed-equal-red
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '6\n' > "$STUB/closed_issue"
+printf 'b\n<!-- main-red-closed-run: 900 -->\n' > "$STUB/closed_body"
+sweep
+has "gh issue create" "$log" "a closed report stamped by the same run id does not block its red re-run"
+
+# Fail-closed on a failed write or read: nothing further may happen.
+newcase close-stamp-edit-fails
+printf 'success%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+: > "$STUB/edit_fail"
+sweep
+if [ "$rc" -eq 1 ]; then ok "a failed closing-run stamp exits 1"; else bad "failed stamp exit=$rc; out: $out"; fi
+hasnt "gh issue close" "$log" "a failed closing-run stamp never closes the issue"
+hasnt "gh issue comment" "$log" "a failed closing-run stamp posts no green comment"
+
+newcase closed-view-fails
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '6\n' > "$STUB/closed_issue"
+printf 'b\n<!-- main-red-closed-run: 700 -->\n' > "$STUB/closed_body"
+: > "$STUB/view_fail"
+sweep
+if [ "$rc" -eq 1 ]; then ok "a failed closed-issue read exits 1"; else bad "failed closed read exit=$rc; out: $out"; fi
+hasnt "gh issue create" "$log" "a failed closed-issue read never opens a report"
+
+# The stamp edit precedes the close (a close without the marker is the defect).
+newcase close-order
+printf 'success%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+edit_ln="$(grep -n '^gh issue edit 7' "$STUB/gh.log" | head -n 1 | cut -d: -f1)"
+close_ln="$(grep -n '^gh issue close 7' "$STUB/gh.log" | head -n 1 | cut -d: -f1)"
+if [ -n "$edit_ln" ] && [ -n "$close_ln" ] && [ "$edit_ln" -lt "$close_ln" ]; then ok "the closing-run stamp edit precedes the close"; else bad "edit line '$edit_ln' not before close line '$close_ln'"; fi
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
