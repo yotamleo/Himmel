@@ -377,11 +377,20 @@ trivial_descendant() {
 $_td_paths
 EOF
     [ "$_td_ok" -eq 0 ] || return 0
+    # Binary edits and mode/create/delete changes carry no +/- text line, so a
+    # text-only scan would miss them: refuse any of them outright.
+    _td_bin="$(git diff --no-renames --numstat "$1" "$2" 2>/dev/null | grep -E '^-' || true)"
+    [ -z "$_td_bin" ] || return 1
+    _td_sum="$(git diff --no-renames --summary "$1" "$2" 2>/dev/null)" || return 1
+    [ -z "$_td_sum" ] || return 1
     # Every added or removed line must be a comment or blank.
     _td_lines="$(git diff --no-renames --no-color -U0 "$1" "$2" 2>/dev/null | sed -n -e '/^+++ /d' -e '/^--- /d' -e '/^[-+]/p')" || return 1
     [ -n "$_td_lines" ] || return 1
-    printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#[^!]|#$|//)' | grep -q . && return 1
-    printf '%s\n' "$_td_lines" | grep -qiE '^[-+][[:space:]]*(#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:)' && return 1
+    _td_bad="$(printf '%s\n' "$_td_lines" | grep -vE '^[-+][[:space:]]*($|#[^!]|#$|//)' || true)"
+    [ -z "$_td_bad" ] || return 1
+    # Directive words, and encoding declarations (coding: / coding=), change meaning.
+    _td_dir="$(printf '%s\n' "$_td_lines" | grep -iE '^[-+][[:space:]]*(#|//).*(shellcheck|disable|noqa|nolint|eslint|pragma|gitleaks|headless-claude-ok|-ok:|coding[:=])' || true)"
+    [ -z "$_td_dir" ] || return 1
     return 0
 }
 
