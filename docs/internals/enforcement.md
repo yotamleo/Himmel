@@ -3150,7 +3150,9 @@ coverage. It re-runs rather than trusting a recorded PASS, so the console's
 flow is unchanged (ready-check, then go) and no file a leg could write stands
 in for the check. A trust-reviewed GO (`--trust-reviewed <qid>`, HIMMEL-3832)
 also needs the judge's verdict on disk: `go_trust_verdict` reads every
-`<root>/*/*/verdicts/<qid>/*.md`, takes the first non-blank line under
+`*.md` in `<root>/<user>/<bucket>/verdicts/<qid>/` only (the scope
+`go_verdict_scope` resolves for the anchor, HIMMEL-4589; an unresolved scope
+exits 5, fail closed), takes the first non-blank line under
 `## Verdict`, and accepts only `**GO** for head \`<40-hex>\`` or
 `**NO-GO** for head \`<40-hex>\``, with one optional trailing full stop. It
 passes only when no file is unparsed, none is NO-GO for this head, and at least
