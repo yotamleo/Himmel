@@ -158,6 +158,7 @@ gathering, per the rule below.>
 > under `~/.cache/himmel/verdicts/<qid>/` (the one scratch path above) instead
 > of `/tmp`. Take the PR's HEAD content, not the primary checkout's `main`:
 > `git archive <head> scripts/ <changed files> | tar -x -C <scratch dir>`
+> (list only changed files that still exist at `<head>`; `git archive` rejects a deleted path)
 > (run in a checkout that has the head fetched).
 
 > **Per-child scratch subdirectory.** If this question needs bulk
