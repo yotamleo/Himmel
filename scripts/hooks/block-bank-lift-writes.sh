@@ -362,6 +362,10 @@ case "$CMD" in *$'\002'*|*$'\003'*|*$'\004'*|*$'\005'*|*$'\036'*|*$'\037'*) deny
 # an unclosed quote or substitution, a heredoc delimiter whose quote does
 # not close on its line — also prints a "\002U" line. A quoted delimiter is
 # read as one word, spaces included (HIMMEL-4458).
+# HIMMEL-4729: every caller runs this program under LC_ALL=C. It walks the
+# text with substr(s, i, 1), which gawk resolves by decoding from the start in a
+# UTF-8 locale (quadratic: 0.15 s per run at 45 KB); every byte it tests is
+# ASCII, so a byte walk emits the same tokens.
 read -r -d '' TOKENIZER <<'AWK'
 function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
 function addc(c) { if (c == SB || c == US || c == NL || c == BO || c == BC || c == CM) forged = 1; tok = tok c }
@@ -760,14 +764,14 @@ names_lift() {
 whole_command_gate() {
     local text="$1" depth="$2" out line t i nt
     [ "$depth" -le 4 ] || deny "a command naming the bank lift nests too deep to inspect"
-    out=$(printf '%s' "$text" | awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
+    out=$(printf '%s' "$text" | LC_ALL=C awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         case "$line" in
             $'\002X') deny "the command decodes a tokenizer control byte (\\x02-\\x05, \\x1e, \\x1f)" ;;
             $'\002U') deny "a command naming the bank lift cannot be parsed reliably (an unclosed quote or substitution, or a heredoc delimiter whose quote does not close)" ;;
             $'\002B\037'*) continue ;;   # heredoc body: data; its $( ) arrive as S lines
-            $'\002S\037'*) line="${line#$'\002S\037'}"; whole_command_gate "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
+            $'\002S\037'*) line="${line#$'\002S\037'}"; _c_replace "$line" $'\036' $'\n'; whole_command_gate "$REPLY" $((depth+1)); continue ;;
         esac
         local -a tk=() args=()
         IFS=$'\037' read -r -a tk <<<"$line"
@@ -804,9 +808,26 @@ LIFT_CODE_JOINED_RE='bank[^a-z0-9]{0,4}l[a-z?*]{0,2}ft[^a-z0-9]{0,6}json|bank[-_
 # _code_names_lift <lowered-code>: 0 when inline code names the lift.
 _code_names_lift() {
     [[ "$1" =~ $LIFT_CODE_RE ]] && return 0
-    case "$1" in *[\"\'+\`,]*) ;; *) return 1 ;; esac
-    local j="${1//[\"\'+\`,[:space:]]/}"
+    _lift_join "$1" || return 1
+    local j="$LIFT_J"
+    # Unicode spaces (U+3000 ...) are not ASCII, so a UTF-8 pass drops them;
+    # the ASCII ones are already gone, so it has next to no matches to pay for.
+    j="${j//[[:space:]]/}"
     [[ "$j" =~ $LIFT_CODE_JOINED_RE ]]
+}
+# _lift_join <lowered-code>: 1 when the text has none of the quote characters
+# a split name hides behind; else LIFT_J = the text with those and the ASCII
+# blanks dropped. HIMMEL-4729: the bytes tested are ASCII, so the case and the
+# strip run under a function-local LC_ALL=C. In a UTF-8 locale the strip
+# re-decoded the whole text per match (3 s at 45 KB).
+# _c_replace <text> <byte> <replacement>: REPLY = text with every <byte>
+# replaced, under the same function-local LC_ALL=C (HIMMEL-4729). A UTF-8
+# ${x//b/r} re-decodes the text for each match; a 640-line body has 640.
+_c_replace() { local LC_ALL=C; REPLY=${1//"$2"/"$3"}; }
+_lift_join() {
+    local LC_ALL=C
+    case "$1" in *[\"\'+\`,]*) ;; *) return 1 ;; esac
+    LIFT_J="${1//[\"\'+\`,[:space:]]/}"
 }
 # Matches "bank…lift" spelled close together (also a l?ft glob), not "bank"
 # and "left" far apart in prose.
@@ -1072,7 +1093,7 @@ analyse() {
         fi
         return 0
     fi
-    out=$(printf '%s' "$text" | awk "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
+    out=$(printf '%s' "$text" | LC_ALL=C awk "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
     local low
     low=$(_lower "$out")
     low="${low//\\/}"
@@ -1086,14 +1107,15 @@ analyse() {
     done <<EOF
 $out
 EOF
-    CUR_BODIES="${CUR_BODIES//$'\036'/$'\n'}"
+    _c_replace "$CUR_BODIES" $'\036' $'\n'
+    CUR_BODIES=$REPLY
     # Pass 1: clauses.
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         case "$line" in
             $'\002X') deny "the command decodes a tokenizer control byte (\\x02-\\x05, \\x1e, \\x1f)" ;;
             $'\002B\037'*) bodies="$bodies${line#$'\002B\037'}"$'\n'; continue ;;
-            $'\002S\037'*) line="${line#$'\002S\037'}"; analyse "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
+            $'\002S\037'*) line="${line#$'\002S\037'}"; _c_replace "$line" $'\036' $'\n'; analyse "$REPLY" $((depth+1)); continue ;;
         esac
         local -a tk=() args=() rt=()
         IFS=$'\037' read -r -a tk <<<"$line"
@@ -1129,7 +1151,8 @@ EOF
 $out
 EOF
     if [ -n "$bodies" ] && [ "$stdin_shell" = 1 ]; then
-        analyse "${bodies//$'\036'/$'\n'}" $((depth+1))
+        _c_replace "$bodies" $'\036' $'\n'
+        analyse "$REPLY" $((depth+1))
     fi
     return 0
 }
@@ -1966,23 +1989,25 @@ check_clause() {
 
 # Layer 1: the whole-command mention rule (J1874). The trigger reads both the
 # raw text and the dequoted tokens (quote splits, $'..', heredoc bodies).
-WTOK=$(printf '%s' "$CMD" | awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
+WTOK=$(printf '%s' "$CMD" | LC_ALL=C awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
 # HIMMEL-4458: the cwd is never modelled through shell control flow. It is the
 # hook's own cwd unless a directory-changing word appears ANYWHERE in the raw
 # text or the dequoted tokens; then it is unknown for the whole command, and a
 # relative destination of an extraction or copy denies (_rel_unproven). Erring
 # toward unproven is the design. grep -c reads all input: a -q early exit would
 # SIGPIPE printf on a big command and, under pipefail, read a hit as none.
-cwd_hits=$(printf '%s\n%s' "$CMD" "${WTOK//$'\037'/ }" | grep -Ec "$DIRWORD_RE")
+_c_replace "$WTOK" $'\037' ' '
+WTOK_SP=$REPLY
+cwd_hits=$(printf '%s\n%s' "$CMD" "$WTOK_SP" | grep -Ec "$DIRWORD_RE")
 case "$cwd_hits" in ''|0) ;; *) CWD_UNPROVEN=1 ;; esac
-xenv_hits=$(printf '%s\n%s' "$CMD" "${WTOK//$'\037'/ }" | grep -Ec "$XENV_RE")
+xenv_hits=$(printf '%s\n%s' "$CMD" "$WTOK_SP" | grep -Ec "$XENV_RE")
 case "$xenv_hits" in ''|0) ;; *) XENV_SET=1 ;; esac
 if names_lift "$CMD" || names_lift "$WTOK"; then whole_command_gate "$CMD" 0; fi
 # HIMMEL-5094: env/sudo -C/-D in any flag cluster (-iC, -0C), read on the whole
 # text independent of the wrapper parse, beside an archive word and a computed
 # word: the parse may mistake the directory for the command, so the computed
 # word is never read as the extractor. Fail closed.
-if [[ "$CMD" =~ $ENVC_RE ]] || [[ "${WTOK//$'\037'/ }" =~ $ENVC_RE ]]; then
+if [[ "$CMD" =~ $ENVC_RE ]] || [[ "$WTOK_SP" =~ $ENVC_RE ]]; then
     if [[ "$CMD" =~ $EXTRACT_WORD_RE ]] && [[ "$CMD" == *['$`']* ]]; then
         deny "env/sudo with a -C/-D directory option beside an archive tool and a computed word: the cwd is unknown and the computed word may be the extractor; name the command and destination literally"
     fi

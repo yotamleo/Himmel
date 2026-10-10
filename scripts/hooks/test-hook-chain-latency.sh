@@ -25,9 +25,9 @@
 #   * p95: the slowest member (block-write-into-main-checkout.sh) peaked at
 #     292 ms loaded; the budget is that x2 (the run-shell-tests.sh rule).
 #   * SCALE_MAX is a ratio, which load mostly cancels, so it is NOT doubled:
-#     the quadratic walkers this test was written against ran 9-14x, and the
-#     highest linear-ish member measured 5.4x loaded (block-bank-lift-writes.sh,
-#     whose remaining UTF-8 pattern-op cost is HIMMEL-4729).
+#     the quadratic walkers this test was written against ran 9-14x. The pair is
+#     160 -> 640 lines (HIMMEL-4729): the UTF-8 pattern ops it fixed only went
+#     superlinear above about 20 KB, so the old 40 -> 160 pair could not see them.
 # Env overrides exist for slower boxes, never to make a red go green.
 #
 # Exit codes: 0 all cases passed, 1 at least one failed.
@@ -37,7 +37,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd -P)"
 SETTINGS="$ROOT/.claude/settings.json"
 
-SCALE_MAX=${HOOK_LATENCY_SCALE_MAX:-6}
+# Tenths, because bash arithmetic is integer: 45 = 4.5x.
+SCALE_MAX_X10=${HOOK_LATENCY_SCALE_MAX_X10:-45}
+SCALE_MAX="$((SCALE_MAX_X10 / 10)).$((SCALE_MAX_X10 % 10))"
+# Every member run is bounded, so a hung member fails this test, not the CI shard.
+# The bound is a GNU timeout/gtimeout resolved once (stock macOS ships neither);
+# without one the member runs unbounded rather than as command-not-found.
+MEMBER_TIMEOUT=${HOOK_LATENCY_MEMBER_TIMEOUT:-60}
+# shellcheck source=../lib/timeout-bin.sh
+. "$ROOT/scripts/lib/timeout-bin.sh"
 P95_BUDGET_MS=${HOOK_LATENCY_P95_BUDGET_MS:-600}
 RUNS=3
 
@@ -72,7 +80,8 @@ MEMBERS=$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].com
 
 payload() {  # payload <command> <file>
     jq -n --arg c "$1" --arg cwd "$SANDBOX" \
-        '{tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd, session_id: "hook-latency"}' > "$2"
+        '{tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd, session_id: "hook-latency"}' > "$2" \
+        && [ -s "$2" ] || { echo "FAIL fixture: jq wrote no payload to ${2##*/}"; exit 1; }
 }
 
 # A python heredoc of prose -- the shape that starved the chain on the station
@@ -84,8 +93,10 @@ prose() {  # prose <lines>
     done
     printf '%sPYEOF' "$out"
 }
-payload "$(prose 40)" "$SANDBOX/small.json"
-payload "$(prose 160)" "$SANDBOX/big.json"
+# 160 -> 640 lines (about 11 KB -> 45 KB): the superlinear UTF-8 pattern ops of
+# HIMMEL-4729 only show above about 20 KB, so the old 40 -> 160 pair hid them.
+payload "$(prose 160)" "$SANDBOX/small.json"
+payload "$(prose 640)" "$SANDBOX/big.json"
 
 # shellcheck disable=SC2016  # the corpus is command TEXT; nothing expands here
 CORPUS=(
@@ -117,7 +128,7 @@ run_ms() {  # run_ms <member> <payload file> -- wall ms into MS
     env -i PATH="$PATH" HOME="$SANDBOX/home" TMPDIR="${TMPDIR:-/tmp}" \
         LANG="$UTF8_LOCALE" LC_ALL="$UTF8_LOCALE" CLAUDE_PROJECT_DIR="$ROOT" \
         HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_RELAY=1 \
-        bash "$ROOT/$1" < "$2" > /dev/null 2>&1
+        ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$MEMBER_TIMEOUT"} bash "$ROOT/$1" < "$2" > /dev/null 2>&1
     rc=$?
     t1=${EPOCHREALTIME//[!0-9]/}
     MS=$(( (t1 - t0) / 1000 ))
@@ -142,7 +153,7 @@ for m in $MEMBERS; do
     min_ms "$m" "$SANDBOX/big.json"; big=$MS
     # +50ms of slack so a member that costs nothing at either size cannot fail
     # on scheduler noise alone.
-    if [ "$big" -le $(( SCALE_MAX * small + 50 )) ]; then
+    if [ $(( big * 10 )) -le $(( SCALE_MAX_X10 * small + 500 )) ]; then
         pass "$name scaling: 4x input ${small}ms -> ${big}ms (<= ${SCALE_MAX}x)"
     else
         fail "$name scaling: 4x input ${small}ms -> ${big}ms (> ${SCALE_MAX}x: superlinear)"

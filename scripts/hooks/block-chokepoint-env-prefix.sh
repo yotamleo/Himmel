@@ -1896,15 +1896,30 @@ names_base() {
     done
 }
 
-raw_mention() {
-    local t="$1" any="$2" u script_path vars_list base v env_s=0
-    local re='^(.*)\$\{[^}]*\}(.*)$'
-    local env_re='(^|[^[:alnum:]_-])env([^[:alnum:]_-].*)?(^|[^[:alnum:]_-])-(-s|[[:alnum:]]*S)'
+# raw_strip <text> -- raw_mention's join/strip steps into RAW_T (quotes and
+# continuations dropped) and RAW_U (RAW_T minus ${...}). Only these pattern ops
+# re-decode the whole string in a UTF-8 locale (quadratic on a large heredoc,
+# HIMMEL-4729) and every character they test is ASCII, so they alone run under
+# C. The class regexes in raw_mention stay in the caller's locale: [[:space:]]
+# must still match U+3000 and the other Unicode spaces an IFS can split on.
+raw_strip() {
+    local LC_ALL=C
+    local re='^(.*)\$\{[^}]*\}(.*)$' t="$1" u
     t=${t//\\$'\r\n'/}
     t=${t//\\$'\n'/}
     t=${t//[\'\"\\]/}
     u=$t
     while [[ $u =~ $re ]]; do u="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    RAW_T=$t
+    RAW_U=$u
+}
+
+raw_mention() {
+    local t="$1" any="$2" u script_path vars_list base v env_s=0
+    local env_re='(^|[^[:alnum:]_-])env([^[:alnum:]_-].*)?(^|[^[:alnum:]_-])-(-s|[[:alnum:]]*S)'
+    raw_strip "$t"
+    t=$RAW_T
+    u=$RAW_U
     t="$t$NL$u"
     [[ $t =~ $env_re ]] && env_s=1
     while IFS=$'\t' read -r script_path vars_list; do

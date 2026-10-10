@@ -2087,6 +2087,28 @@ assert_deny  "4529 unclosed ((, then a closed \$(( )) seam assignment, still den
 assert_allow "4529 balanced (( )) comparison stays allowed after unclosed openers" "$(j "echo (( x; (( HIMMEL_CONSOLE_LEG == 0 )); echo ok")"
 HOOK_WRAP=''
 
+# --- HIMMEL-4729 (judge j2299a): a Unicode space is a word separator once IFS
+# is set to it, so `export<U+3000>-n<U+3000>NAME` really un-exports NAME. The
+# class regexes must run in the CALLER's UTF-8 locale ([[:space:]] matches
+# U+3000 there, not under C); only raw_mention's ASCII strip steps run under C.
+# The fixtures need a UTF-8 locale to mean anything, so no locale = a SKIP line,
+# never a vacuous pass.
+U8_LOCALES=$(locale -a 2>/dev/null)
+U8=''
+for l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+    if grep -qx -- "$l" <<<"$U8_LOCALES"; then U8=$l; break; fi
+done
+if [ -n "$U8" ]; then
+    SP3=$(printf '\343\200\200')
+    export LC_ALL="$U8"
+    assert_deny "4729 U+3000 IFS: export -n of the console marker, then the chokepoint" "$(j "IFS='${SP3}'; c='export${SP3}-n${SP3}HIMMEL_CONSOLE_LEG'; \$c; bash $STOP_WORKER --list")"
+    assert_deny "4729 U+3000 IFS: declare +x of a seam, then the chokepoint"            "$(j "IFS='${SP3}'; c='declare${SP3}+x${SP3}${MOG_VAR}'; \$c; bash $MERGE_ON_GREEN 1")"
+    assert_deny "4729 U+3000 IFS: exec -c with the chokepoint"                          "$(j "IFS='${SP3}'; c='exec${SP3}-c${SP3}bash $STOP_WORKER --list'; \$c")"
+    unset LC_ALL
+else
+    echo "SKIP 4729 U+3000 IFS rows: no UTF-8 locale installed (tried C.UTF-8, C.utf8, en_US.UTF-8, en_US.utf8)"
+fi
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"

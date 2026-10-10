@@ -703,8 +703,28 @@ _bwimc_text_untrusted() {
     fi
     return 1
 }
+# _bwimc_drop_quotes TEXT — _bwimc_dq = TEXT without any ", ' or `. The
+# characters are ASCII and a UTF-8 sequence never contains an ASCII byte, so
+# the strip runs under a function-local LC_ALL=C: a UTF-8 ${x//c/} re-decodes
+# the whole text per match (HIMMEL-4729, 0.3 s at 640 quoted lines).
+_bwimc_drop_quotes() {
+    local LC_ALL=C
+    _bwimc_dq=${1//\"/}
+    _bwimc_dq=${_bwimc_dq//\'/}
+    _bwimc_dq=${_bwimc_dq//\`/}
+}
+# _bwimc_nonblank TEXT — true when TEXT holds a byte that is not ASCII
+# whitespace: what `[ -n "$(printf %s TEXT | tr -d '[:space:]')" ]` tested,
+# without the fork per clause (HIMMEL-4729: 6.6 s at 640 lines). GNU tr is
+# byte-wise, so the glob runs under LC_ALL=C to see the same bytes.
+_bwimc_nonblank() {
+    local LC_ALL=C
+    [[ $1 == *[![:space:]]* ]]
+}
 _bwimc_split_emit() {
-    if [ "$_bwimc_sp_pipe" = 1 ] && [ -n "${1//[[:space:]]/}" ]; then
+    # A UTF-8 glob stops at the first non-space character; the gsub it
+    # replaces re-decoded the whole clause per space.
+    if [ "$_bwimc_sp_pipe" = 1 ] && [[ $1 == *[![:space:]]* ]]; then
         printf '%s%s\n' "$_BWIMC_PIPE" "$1"
     else
         printf '%s\n' "$1"
@@ -717,8 +737,7 @@ _bwimc_split_emit() {
 # subshells: nothing in it can write, change the cwd or carry git state.
 _bwimc_is_colon() {
     local v="${1#"$_BWIMC_PIPE"}"
-    v="${v//[[:space:]]/}"
-    [ "$v" = ':' ]
+    [[ $v =~ ^[[:space:]]*:[[:space:]]*$ ]]
 }
 _bwimc_clause_unpipe() {
     local _v="${!1}"
@@ -2206,9 +2225,8 @@ _bwimc_unq() {
             done
             t="$o"; o=""; k=0 ;;
     esac
-    t="${t//\"/}"
-    t="${t//\'/}"
-    t="${t//\`/}"
+    _bwimc_drop_quotes "$t"
+    t=$_bwimc_dq
     case "$t" in
         *\\*)
             t="${t//\\$'\n'/}"
@@ -3357,7 +3375,7 @@ _bwimc_check_interp_body() {
     _bwimc_ecwd_unres="$_bwimc_ibody_saved_unres"
     _bwimc_ecwd_pushn="$_bwimc_ibody_saved_pushn"
     while IFS= read -r _bwimc_ibody_clause; do
-        [ -n "$(printf '%s' "$_bwimc_ibody_clause" | tr -d '[:space:]')" ] || continue
+        _bwimc_nonblank "$_bwimc_ibody_clause" || continue
         _bwimc_clause_unpipe _bwimc_ibody_clause
         _bwimc_ibody_clause_sp=$(_bwimc_space_before_redirects "$_bwimc_ibody_clause")
         _bwimc_ecwd_track "$_bwimc_ibody_clause_sp" "$_bwimc_clause_piped"
@@ -3646,7 +3664,7 @@ case "$1" in
 esac
 while IFS= read -r _bwimc_rclause; do
     ! _bwimc_is_colon "$_bwimc_rclause" || continue
-    [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
+    _bwimc_nonblank "$_bwimc_rclause" || continue
     _bwimc_clause_unpipe _bwimc_rclause
     _bwimc_rclause_piped="$_bwimc_clause_piped"
     _bwimc_rclause_sp=$(_bwimc_space_before_redirects "$_bwimc_rclause")
@@ -4015,9 +4033,8 @@ _bwimc_unq() {
             done
             t="$o"; o=""; k=0 ;;
     esac
-    t="${t//\"/}"
-    t="${t//\'/}"
-    t="${t//\`/}"
+    _bwimc_drop_quotes "$t"
+    t=$_bwimc_dq
     case "$t" in
         *\\*)
             t="${t//\\$'\n'/}"
@@ -5549,7 +5566,7 @@ case "$_bwimc_ghb" in
     *archive*) ! _bwimc_xtract_ok "$_bwimc_ghb" || _bwimc_g_xtract_ok=1 ;;
 esac
 while IFS= read -r _bwimc_clause; do
-    [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
+    _bwimc_nonblank "$_bwimc_clause" || continue
     # HIMMEL-4010: substitution bodies arrive as their own clauses; the
     # brackets only matter to the (b)/(e) cwd tracker, and this arm keeps
     # every cwd it has seen anyway, so a body's cd can only add denies.
@@ -5600,7 +5617,7 @@ while IFS= read -r _bwimc_clause; do
             continue ;;
     esac
     ! _bwimc_is_colon "$_bwimc_clause" || continue
-    [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
+    _bwimc_nonblank "$_bwimc_clause" || continue
     _bwimc_clause_unpipe _bwimc_clause
     _tolower_ascii "$_bwimc_clause"
     _bwimc_clause_lc="$_TOLOWER_OUT"

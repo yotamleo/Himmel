@@ -259,6 +259,9 @@ strip_tabs() {
 #             gating still says "yes, a real heredoc operator is here" even
 #             though the delimiter text itself reads as blank in this copy.
 scan_quotes() {
+    # Every tested character is ASCII, so walk bytes: ${s:$i:1} re-decodes
+    # the string from the start in a UTF-8 locale (quadratic, HIMMEL-4729).
+    local LC_ALL=C
     local mode=$1 s=$2
     local out="" i=0 n=${#s} c j closed cj span blank
     while [ "$i" -lt "$n" ]; do
@@ -345,6 +348,7 @@ scan_quotes() {
 # untouched from that point on (fail open, same posture as an unterminated
 # heredoc above).
 neutralize_chars() {
+    local LC_ALL=C
     local s=$1
     local out="" i=0 n=${#s} c
     while [ "$i" -lt "$n" ]; do
@@ -404,16 +408,16 @@ strip_heredoc_bodies() {
                         *'$('*|*'`'*) keep=1 ;;
                     esac
                 fi
-                [ "$keep" = "1" ] && out="${out}${body}"
-                out="${out}${line}"$'\n'
+                [ "$keep" = "1" ] && out+="$body"
+                out+="$line"$'\n'
                 body=""
             else
-                body="${body}${line}"$'\n'
+                body+="$line"$'\n'
             fi
             continue
         fi
 
-        out="${out}${line}"$'\n'
+        out+="$line"$'\n'
         detect_line=$(blank_quoted_spans "$line")
         # Gate on BOTH: detect_line confirms a `<<` exists OUTSIDE any
         # quoted span (a real operator, not text like `echo '<<EOF'`); the

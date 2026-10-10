@@ -1640,7 +1640,7 @@ EOF
                         ua=1
                     fi
                     while [ "$k" -lt "$n" ]; do
-                        txt="$txt ${pieces[k]}" ntxt="$ntxt ${npieces[k]-}"
+                        txt+=" ${pieces[k]}" ntxt+=" ${npieces[k]-}"
                         k=$((k + 1))
                     done
                     [ "$nok" = 1 ] || ntxt=$txt
@@ -2339,7 +2339,7 @@ _dc_name_fold() {
         _dc_fold_one "$1"
         return 0
     fi
-    local s=$'\037' i n w acc='' res='' kp='' d=0 b=0 fb=-1 lb=-1
+    local s=$'\037' i n w acc='' alen=0 res='' kp='' d=0 b=0 fb=-1 lb=-1
     local -a f
     case "$1" in *"$s"*) _dc_fold_one "$1"; return 0 ;; esac
     _dc_split_words "$1"
@@ -2354,14 +2354,16 @@ _dc_name_fold() {
     for ((i = 0; i < n; i++)); do
         w=${f[i]}
         acc+=$w
+        # alen tracks ${#acc}: re-measuring a growing UTF-8 string is quadratic
+        alen=$((alen + ${#w}))
         case "$w" in *[\(\)\{\}]*) _dc_depth "$w" ;; esac
         [ "$i" -lt $((n - 1)) ] || break
-        if [ "${#acc}" -ge 1024 ] && [ "$d" = 0 ] && [ "$b" = 0 ] \
+        if [ "$alen" -ge 1024 ] && [ "$d" = 0 ] && [ "$b" = 0 ] \
             && { [ "$i" -lt "$fb" ] || [ "$i" -ge "$lb" ]; }; then
             _dc_fold_one "$acc "
-            res+=$_DCO kp+=$_DCK acc=''
+            res+=$_DCO kp+=$_DCK acc='' alen=0
         else
-            acc+=" "
+            acc+=" " alen=$((alen + 1))
         fi
     done
     _dc_fold_one "$acc"
@@ -2607,13 +2609,13 @@ _dc_data_bodies() {
             [ -z "$dash" ] || l2=${l2#"${l2%%[!$'\t']*}"}
             if [ "$l2" = "$end" ]; then
                 [ -z "$bb" ] || { out=$out$bo bd=$bd$bb _DCNB=x; }
-                bo='' bb='' end='' out=$out$line$'\n' bd=$bd$'\n'
+                bo='' bb='' end='' out+=$line$'\n' bd+=$'\n'
             else
                 bo=$bo$'\n' bb=$bb$line$'\n'
             fi
             continue
         fi
-        out=$out$line$'\n' bd=$bd$'\n'
+        out+=$line$'\n' bd+=$'\n'
         [[ $line =~ $lre ]] || continue
         dash=${BASH_REMATCH[1]} w=${BASH_REMATCH[2]}
         case "$d" in *" $w "*) ;; *) continue ;; esac
