@@ -191,6 +191,9 @@ export HIMMEL_FAILURE_ROUTES_LOG="$W/failure-routes.log.jsonl"
 # HIMMEL-4786: fails= ~<k> reads the digest step's skips.jsonl under this dir.
 export LEG_DIGEST_STATE_DIR="$W/leg-digest"
 mkdir -p "$LEG_DIGEST_STATE_DIR"
+# HIMMEL-5131: flakes= reads the suite-flake ledger for this repo id; never the real ~/.himmel one.
+export SUITE_FLAKE_LEDGER="$W/suite-flake.jsonl"
+export SUITE_FLAKE_REPO_ID=tick-test-repo
 export CLAUDE_SESSIONS_PROC="$W/proc"
 # HIMMEL-3167: launch logs live in <work-dir>/<chain>/<name>.launch.log.
 export TICK_LAUNCH_DIR="$W/console-work"
@@ -1987,6 +1990,46 @@ rm -f "$LEG_DIGEST_STATE_DIR/skips.jsonl"; mkdir -p "$LEG_DIGEST_STATE_DIR/skips
 same 'fails=? when the skips log is unreadable (HIMMEL-4786)' "$(fails_of "$d4670")" '?'
 rmdir "$LEG_DIGEST_STATE_DIR/skips.jsonl"
 rm -f "$HIMMEL_LEG_FAILURES_LEDGER" "$HIMMEL_EVAL_RUNS_LEDGER" "$HIMMEL_FAILURE_ROUTES_LOG"
+
+# --- HIMMEL-5131: flakes=<rows>/<suites>@<top-suite>*<k> ---------------------------
+# This shift = suite-flake rows for this repo id with ts >= the console lock's
+# `started` (03:00Z). Absent unless a row is new; a quiet shift keeps the line as is.
+mkdir -p "$W/repo/scripts/observability"
+cp "$HERE/../../observability/suite-flake-summary.sh" "$W/repo/scripts/observability/suite-flake-summary.sh"
+flakes_of() { TOKEN='' bash "$SUT" --doc "$1" 2>/dev/null | sed -n -E 's/.* flakes=([^ ]*).*/\1/p'; }
+fk0=$(date -u -d 2026-10-07T03:00:00Z +%s)
+fkrow() { printf '{"v":1,"ts":%s,"host":"h","source":"run-shell-tests","kind":"flake","suite":"%s","repo":"%s","case":"c","rc":1,"sha":"s","run":"1"}\n' "$1" "$2" "$3"; }
+rm -f "$SUITE_FLAKE_LEDGER"
+same 'flakes= is absent with no ledger (HIMMEL-5131)' "$(flakes_of "$d4670")" ''
+{
+    fkrow $((fk0 - 60)) test-old.sh tick-test-repo
+    fkrow $((fk0 + 60)) test-x.sh tick-test-repo
+    fkrow $((fk0 + 120)) test-x.sh tick-test-repo
+    fkrow $((fk0 + 180)) test-y.sh tick-test-repo
+    fkrow $((fk0 + 180)) test-other.sh some-other-repo
+    printf 'not json\n'
+} > "$SUITE_FLAKE_LEDGER"
+same 'flakes= counts this shift, this repo only, with the top suite repeat count (HIMMEL-5131)' "$(flakes_of "$d4670")" '3/2@test-x.sh*2'
+fk_out="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
+case "$fk_out" in *' or=skip fails='*' flakes=3/2@test-x.sh*2') pass 'flakes= follows fails= and is the last field without spare= (HIMMEL-5131)' ;; *) fail "flakes= position (out='$fk_out')" ;; esac
+contains 'verbose labels suite flakes (HIMMEL-5131)' "$(TOKEN='' bash "$SUT" --doc "$d4670" --verbose 2>/dev/null)" 'suite flakes: 3/2@test-x.sh*2'
+same 'a doc with no lock start reads no flakes= (HIMMEL-5131)' "$(flakes_of "$d4670_free")" ''
+# A suite name carrying Unicode whitespace plus a key=value must not forge a field:
+# board.mjs splits the line on a JS \s regex where the last key wins.
+fknbsp=$'test-x\xc2\xa0legs=9\xe2\x80\xa8fleet=9.sh'
+fkrow $((fk0 + 60)) "$fknbsp" tick-test-repo > "$SUITE_FLAKE_LEDGER"
+fk_out="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
+case "$fk_out" in *$'\xc2\xa0'*|*$'\xe2\x80\xa8'*) fail "flakes= carries Unicode whitespace from a suite name (out='$fk_out')" ;; *) pass 'flakes= strips Unicode whitespace from the top suite name (HIMMEL-5131)' ;; esac
+same 'a forged key in a suite name stays inside the flakes= value (HIMMEL-5131)' "$(flakes_of "$d4670")" '1/1@test-x_legs_9_fleet_9.sh*1'
+rm -f "$SUITE_FLAKE_LEDGER"; mkdir -p "$SUITE_FLAKE_LEDGER"
+same 'flakes=? when the ledger is unreadable (HIMMEL-5131)' "$(flakes_of "$d4670")" '?'
+rmdir "$SUITE_FLAKE_LEDGER"
+# The tick.sh whitelist guard on its own: a stub reader that bypasses the reader's
+# sanitising and emits an NBSP + a forged key; reverting the guard turns this red.
+printf '#!/usr/bin/env bash\nprintf "1/1@test-x\\xc2\\xa0legs=9.sh*1\\n"\n' > "$W/repo/scripts/observability/suite-flake-summary.sh"
+fk_out="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
+case "$fk_out" in *' flakes='*) fail "tick.sh guard let an NBSP-bearing reader line through (out='$fk_out')" ;; *) pass 'tick.sh drops a reader line carrying Unicode whitespace (HIMMEL-5131)' ;; esac
+cp "$HERE/../../observability/suite-flake-summary.sh" "$W/repo/scripts/observability/suite-flake-summary.sh"
 
 # --- HIMMEL-4911: vault=<ok|STALL:<age>,<n>|PUSH-LAG:<age>|skip|unknown> -- the luna
 # vault's commit health, from vault-status.sh. RED control (pre-change tick.sh): the

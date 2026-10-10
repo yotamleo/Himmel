@@ -54,6 +54,15 @@ TICK_UNDERFILL_MIN minutes (default 10); capacity=ok otherwise, capacity=unknown
 when fleet=?. TICK_LAUNCH_DIR overrides the console work dir the launch logs
 are read from.
 
+flakes=<rows>/<suites>@<top-suite>*<k> (HIMMEL-5131) sits between fails= and spare=
+and is ABSENT unless this repo's suite-flake ledger (run-shell-tests.sh,
+HIMMEL-5116) took a row since the console lock's start: <rows> FLAKE rows,
+<suites> distinct suites, the suite flaked most and its repeat count (the
+per-row suite, case, sha and run: scripts/observability/suite-flake-summary.sh
+--format detail). flakes=? when the ledger is unreadable. Advisory: not in
+console-wait's action key, so it wakes nothing. Env seams: SUITE_FLAKE_LEDGER,
+SUITE_FLAKE_REPO_ID, SUITE_FLAKE_TAIL_ROWS.
+
 spare=<pct>@<h>h (HIMMEL-4421) is the very last field and is ABSENT unless the
 weekly quota the current burn leaves unspent at the reset (bank-monitor.sh
 --spare) is >= TICK_SPARE_MIN percent (default 10) and the reset is <=
@@ -1178,6 +1187,24 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     fi
 fi
 
+# HIMMEL-5131: flakes=<rows>/<suites>@<top-suite>*<k> -- this repo's suite-flake
+# ledger rows (run-shell-tests.sh, HIMMEL-5116) since the console lock's `started`
+# (the same shift boundary as fails=), read by scripts/observability/suite-flake-summary.sh
+# (bounded tail, repo-id filtered). ABSENT unless a row is new this shift (or `?`
+# when the ledger is unreadable), so a quiet shift changes no line. Advisory:
+# console-wait.sh's action key does not name it, so it wakes nothing. Env seams:
+# SUITE_FLAKE_LEDGER, SUITE_FLAKE_REPO_ID, SUITE_FLAKE_TAIL_ROWS (the writer's).
+flakes_tail=""
+if [ -n "$console_doc" ] && [ -n "${fails_start:-}" ] && command -v jq >/dev/null 2>&1; then
+    fk_since="$(printf '%s' "$fails_start" | jq -R -r 'fromdateiso8601? // empty' 2>/dev/null)"
+    case "$fk_since" in ''|*[!0-9]*) fk_since="" ;; esac
+    if [ -n "$fk_since" ]; then
+        fk_out="$(bash "$REPO/scripts/observability/suite-flake-summary.sh" --since "$fk_since" --format tick 2>/dev/null | head -n 1)" || fk_out=""
+        # printable-ASCII whitelist: Unicode whitespace in a suite name must not forge a field
+        case "$fk_out" in ''|none) ;; *[!A-Za-z0-9._/+@*?-]*) ;; *) flakes_tail=" flakes=$fk_out" ;; esac
+    fi
+fi
+
 fill="$(bash "$REPO/scripts/context-fill.sh" --percent 2>/dev/null)" || fill=""
 case "$fill" in ''|*[!0-9]*) fill='?' ;; esac
 
@@ -1492,6 +1519,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'plan-index: %s\n' "$plan_index_summary"
     printf 'OpenRouter: %s\n' "$openrouter"
     printf 'leg failures: %s\n' "$fails_summary"
+    [ -z "$flakes_tail" ] || printf 'suite flakes: %s\n' "${flakes_tail# flakes=}"
     printf 'vault: %s\n' "$vault_summary"
     [ -z "$spare_tail" ] || printf 'spare: %s\n' "${spare_tail# spare=}"
 else
@@ -1507,10 +1535,10 @@ else
     # `vault=` (HIMMEL-4911) sits between `tracker=` and `denials=`.
     if [ "$burn" -eq 1 ]; then
         printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$flakes_tail$spare_tail"
     else
         printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s vault=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$vault_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$flakes_tail$spare_tail"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then
