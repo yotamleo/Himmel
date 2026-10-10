@@ -71,7 +71,7 @@ for event in Stop SubagentStop TeammateIdle TaskCompleted PreCompact; do
   for mode in single chain; do
     run "$event" "$mode"
     if [ "$RC" -eq 0 ] && [ ! -e "$CANARY" ] \
-      && printf '%s' "$ERR" | grep -q 'record is missing' \
+      && grep -q 'record is missing' <<<"$ERR" \
       && printf '%s' "$OUT" | jq -e '.systemMessage | test("record is missing|integrity")' >/dev/null 2>&1; then
       ok "$event ($mode): integrity failure skips the hook, exits 0 with a notice"
     else
@@ -84,7 +84,7 @@ done
 for event in PreToolUse PermissionRequest UserPromptSubmit PostToolUse PostToolUseFailure SessionStart Notification SessionEnd SomeFutureEvent ""; do
   for mode in single chain; do
     run "$event" "$mode"
-    if [ "$RC" -eq 2 ] && [ ! -e "$CANARY" ] && printf '%s' "$ERR" | grep -q 'record is missing'; then
+    if [ "$RC" -eq 2 ] && [ ! -e "$CANARY" ] && grep -q 'record is missing' <<<"$ERR"; then
       ok "${event:-<absent>} ($mode): integrity failure still exits 2, hook not run"
     else
       bad "${event:-<absent>} ($mode): expected rc=2, got rc=$RC canary=$([ -e "$CANARY" ] && echo ran || echo none) err=$ERR"
