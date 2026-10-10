@@ -425,7 +425,11 @@ git init -q --separate-git-dir "$sb/gd/s.git" "$sb/rs/co" 2>/dev/null
 git init -q --separate-git-dir "$sb/gd/t.git" "$sb/rt/co" 2>/dev/null
 git -C "$sb/rs/co" remote add origin ../r.git; git -C "$sb/rt/co" remote add origin ../r.git
 s1=$(_flake_repo_id "$sb/rs/co" 2>&1); s2=$(_flake_repo_id "$sb/rt/co" 2>&1)
-if [ -n "$s1" ] && [ "$s1" != "$s2" ]; then
+case "$s1:$s2" in
+  origin-*:origin-*) s_ok=1 ;;
+  *) s_ok=0 ;;
+esac
+if [ "$s_ok" = 1 ] && [ "$s1" != "$s2" ]; then
   pass "F16: --separate-git-dir checkouts with ../r.git from two parents are two ids"
 else
   fail "F16: separate-git-dir relative origin ids collide: [$s1] [$s2]"
