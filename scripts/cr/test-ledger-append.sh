@@ -1616,7 +1616,7 @@ check "control: finding with no --verdict (unadjudicated) is accepted" "$?" "0"
 # journal mapper keys on it); a dedup no-op or a refusal prints none.
 CF="$tmp/confirm.jsonl"
 CR_LEDGER="$CF" bash "$LA" finding --branch b --head CFX1 --model m --id cf-1 --severity imp --file f --line 1 --verdict agreed 2>"$tmp/cf1.err"
-check "HIMMEL-5155: a fresh finding prints its confirmation line" "$(cat "$tmp/cf1.err")" "ledger-append.sh: appended finding cf-1 at CFX1"
+check "HIMMEL-5155: a fresh finding prints its confirmation line" "$(cat "$tmp/cf1.err")" 'ledger-append.sh: appended finding cf-1 at CFX1 -> {"verdict":"agreed"}'
 CR_LEDGER="$CF" bash "$LA" finding --branch b --head CFX1 --model m --id cf-1 --severity imp --file f --line 1 --verdict agreed 2>"$tmp/cf2.err"
 check "HIMMEL-5155: an identical repeat prints no confirmation" "$(grep -c 'appended finding' "$tmp/cf2.err")" "0"
 CR_LEDGER="$CF" bash "$LA" finding --branch b --head CFX1 --model m --id cf-1 --severity crit --file f --line 1 --verdict agreed 2>"$tmp/cf3.err"

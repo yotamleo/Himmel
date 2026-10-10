@@ -848,7 +848,8 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" FU_CLASS="$fu_class
       parsed.push(rec);
       // HIMMEL-5155: one confirmation per fresh finding row, same shape as the amend lines, so a
       // reader (the AG-UI journal mapper) needs no inference from silence.
-      process.stderr.write("ledger-append.sh: appended finding "+sid+" at "+shead.slice(0,8)+"\n");
+      process.stderr.write("ledger-append.sh: appended finding "+sid+" at "+shead.slice(0,8)
+        +(rec.verdict?" -> "+JSON.stringify({verdict:rec.verdict}):"")+"\n");
     }
     process.exit(anyFail?3:0);
   }
@@ -1249,5 +1250,6 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" FU_CLASS="$fu_class
   }
   fs.appendFileSync(led, JSON.stringify(rec)+"\n");
   // HIMMEL-5155: a finding append confirms itself (the batch loop above prints the same line).
-  if(e.KIND==="finding") process.stderr.write("ledger-append.sh: appended finding "+e.ID+" at "+e.HEAD_.slice(0,8)+"\n");
+  if(e.KIND==="finding") process.stderr.write("ledger-append.sh: appended finding "+e.ID+" at "+e.HEAD_.slice(0,8)
+    +(rec.verdict?" -> "+JSON.stringify({verdict:rec.verdict}):"")+"\n");
 JS

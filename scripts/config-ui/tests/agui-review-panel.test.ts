@@ -138,6 +138,18 @@ describe("a /pr-check run", () => {
     expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
   });
 
+  test("a confirmation that echoes a finding's verdict backs only the row with that verdict", () => {
+    const deltas = withExtra([
+      ...bash(
+        1,
+        `if false; then ${finding("codex-1", "fixed")}; fi; ${finding("codex-1", "agreed")}`,
+        `${appended("codex-1")} -> {"verdict":"agreed"}`,
+      ),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "agreed" }] });
+  });
+
   test("a finding and an amend of one id are confirmed by their own lines", () => {
     const amend = `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r`;
     const deltas = withExtra([
