@@ -335,7 +335,7 @@ check "3895: go_gate still accepts the ordinary GO" "$rc" "0"
 # first call, deterministically; the verifier must read the file once.
 cp "$GO13" "$GO13.forged"
 printf 'trust-reviewed=forged\n' >> "$GO13.forged"
-# shellcheck disable=SC2317  # invoked indirectly, by the verifier under test
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, by the verifier under test
 sed() { command sed "$@"; local r=$?; [ -f "$GO13.forged" ] && mv -f "$GO13.forged" "$GO13"; return "$r"; }
 rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
 unset -f sed
@@ -537,7 +537,7 @@ check "5134: prints the fix-GO path" "$out" "$ROOT20/.locks/go/fix-main-red.97.$
 F20="$ROOT20/.locks/go/fix-main-red.97.$SHA.37964772913"
 contains "5134: names the red run" "$(cat "$F20" 2>/dev/null)" "fix-main-red-run=37964772913"
 contains "5134: carries head=" "$(cat "$F20" 2>/dev/null)" "head=$SHA"
-check "5134: no ordinary GO is written beside it" "$(find "$ROOT20/.locks/go" -maxdepth 1 -name '97.*' | wc -l | tr -d ' ')" "0"
+check "5134: no ordinary GO is written beside it" "$(compgen -G "$ROOT20/.locks/go/97.*" | wc -l | tr -d ' ')" "0"
 # the written file verifies under the shared gate for the SAME run only
 fx_rc() { bash -c '. "$1"; go_fixred_gate 97 "$2" "$3" o/r "$4"' _ "$HERE/../../lib/go-gate.sh" "$SHA" "$ROOT20" "$1" >/dev/null 2>&1; echo $?; }
 check "5134: the gate accepts it for the red run" "$(fx_rc 37964772913)" "0"
