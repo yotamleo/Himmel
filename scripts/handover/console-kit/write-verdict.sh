@@ -82,8 +82,11 @@
 # by a test-only or comment-only commit. `--bind-reviewed <sha>` (NO-GO only)
 # checks, with review-round.sh's own `trivial-descendant` verb run in the cwd's
 # repo, that <head> is a strict descendant of <sha> and the delta changes only
-# test paths or comment lines, then writes the NO-GO for <sha> and names <head>
-# in a `judged-head:` evidence line; any other delta exits 2, nothing written.
+# test paths or comment lines, then writes the NO-GO for <head> as usual and
+# records <sha> in a signed `reviewed-head:` annotation; any other delta exits 2,
+# nothing written. The verdict line keeps naming the judged head, so every veto
+# reader (go_trust_verdict, the GO-over-NO-GO scan, the scope round) still keys
+# on it; the round gate binds such a NO-GO to the reviewed head at read time.
 # A `layer-decision:` evidence line without its text|os|classifier|accept
 # keyword draws a stderr warning (review-round.sh would silently ignore it).
 #
@@ -236,7 +239,7 @@ fi
 # `layer-decision: text|os|classifier|accept <reason>`; one without the keyword
 # is silently dropped and the repeated-class stop stays. Warn at write time
 # (not refuse: a NO-GO only narrows, HIMMEL-4714) with the same two patterns.
-if awk '/^layer-decision:/ && !/^layer-decision: (text|os|classifier|accept)[ \t]+[^ \t]/ { bad = 1 } END { exit !bad }' "$EVIDENCE"; then
+if awk '/^layer-decision:/ && (!/^layer-decision: (text|os|classifier|accept)[ \t]+[^ \t]/ || /\r$/) { bad = 1 } END { exit !bad }' "$EVIDENCE"; then
     echo "write-verdict: warning - a layer-decision line lacks a layer keyword; review-round.sh will not honour it. Write: layer-decision: text|os|classifier|accept <reason> (HIMMEL-5109)" >&2
 fi
 case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
@@ -273,16 +276,16 @@ SCOPE=$(go_verdict_scope "$ANCHOR") || { echo "write-verdict: cannot resolve thi
 # whose delta is test-path-only or comment-only - review-round.sh's own rule,
 # asked through its read-only verb so the writer and the gate cannot disagree.
 # It runs in the caller's cwd (the repo under review); the absolute script path
-# is never handed off to the anchor. From here the record is written for the
-# reviewed head and names the judged one in its evidence.
-JUDGED=""
+# is never handed off to the anchor. The verdict line stays on the judged head
+# (moving it to the reviewed head would strip the judged head of its veto); the
+# reviewed head is only annotated.
+REVIEWED=""
 if [ -n "$BIND" ]; then
     if ! bash "$ANCHOR/scripts/cr/review-round.sh" trivial-descendant "$BIND" "$HEAD" >/dev/null 2>&1; then
         echo "write-verdict: --bind-reviewed refused - $HEAD is not a strict descendant of $BIND whose delta changes only test paths or comment lines (run from the repo under review); nothing written" >&2
         exit 2
     fi
-    JUDGED=$HEAD
-    HEAD=$BIND
+    REVIEWED=$BIND
 fi
 
 # Walk <root>/<user>/<bucket>/verdicts/<qid>, refusing a symlink at any step.
@@ -390,7 +393,7 @@ if ! {
     printf 'pr: %s\n' "$PR" &&
     { [ -z "$BRANCH" ] || printf 'branch: %s\n' "$BRANCH"; } &&
     printf '\n' &&
-    { [ -z "$JUDGED" ] || printf 'judged-head: %s\nbound-by: write-verdict --bind-reviewed; the delta from the reviewed head is test-path-only or comment-only\n\n' "$JUDGED"; } &&
+    { [ -z "$REVIEWED" ] || printf 'reviewed-head: %s\nbound-by: write-verdict --bind-reviewed; the delta from the reviewed head is test-path-only or comment-only\n\n' "$REVIEWED"; } &&
     cat "$EVIDENCE" &&
     # HIMMEL-4984: the body ends in a newline, so the mac line is a line of its own.
     { [ -z "$(tail -c 1 "$EVIDENCE")" ] || printf '\n'; }

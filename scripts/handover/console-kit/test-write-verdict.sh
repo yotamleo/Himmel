@@ -486,7 +486,7 @@ check "17: control - the real ls -ld on a 0700 root is accepted" "$rc" 0
 # A judge often rules on a head that follows the last reviewed one by a test-
 # or comment-only commit. The writer verifies that delta with review-round.sh's
 # own classifier (the `trivial-descendant` verb) and writes the NO-GO against
-# the reviewed head, naming the judged head in the evidence.
+# the judged head (it keeps its veto), annotating the reviewed head.
 fx="$tmp/fx"
 mkdir -p "$fx/src" "$fx/tests" || exit 1
 fxg() { git -C "$fx" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false "$@"; }
@@ -510,14 +510,20 @@ for pair in "q24:$J_TEST:test-only" "q25:$J_COMMENT:comment-only"; do
     rc=0; out=$(fxcd wv "$qq" NO-GO "$jh" --evidence-file "$ev" --bind-reviewed "$REV" 2>&1) || rc=$?
     check "18: --bind-reviewed on a $kind delta writes rc 0" "$rc" 0
     fb="$scope_dir/$qq/judge.md"
-    contains "18: $kind - the verdict line names the reviewed head" "$(cat "$fb" 2>/dev/null)" "**NO-GO** for head \`$REV\`."
-    contains "18: $kind - the evidence names the judged head" "$(cat "$fb" 2>/dev/null)" "judged-head: $jh"
+    contains "18: $kind - the verdict line names the judged head" "$(cat "$fb" 2>/dev/null)" "**NO-GO** for head \`$jh\`."
+    contains "18: $kind - the evidence names the reviewed head" "$(cat "$fb" 2>/dev/null)" "reviewed-head: $REV"
     check "18: $kind - the record is signed" "$(grep -c '^mac: [0-9a-f]\{64\}$' "$fb" 2>/dev/null)" 1
-    rc=0; verdict_rc "$qq" "$REV" || rc=$?
-    check "18: $kind - the binding vetoes the reviewed head" "$rc" 2
+    rc=0; verdict_rc "$qq" "$jh" || rc=$?
+    check "18: $kind - go_trust_verdict at the judged head refuses" "$rc" 2
+    rc=0; out=$(fxcd wv "$qq" GO "$jh" --evidence-file "$ev" --judge second 2>&1) || rc=$?
+    check "18: $kind - a second GO on the judged head in the same qid is refused rc 4" "$rc" 4
+    contains "18: $kind - ... naming the veto" "$out" "a GO never overrides a veto"
+    rc=0; verdict_rc "$qq" "$jh" || rc=$?
+    check "18: $kind - go_trust_verdict at the judged head still refuses after the refused GO" "$rc" 2
 done
 rc=0; out=$(fxcd wv q26 NO-GO "$J_CODE" --evidence-file "$ev" --bind-reviewed "$REV" 2>&1) || rc=$?
 check "18: a code-changing delta is refused rc 2" "$rc" 2
+contains "18: a code-changing delta names the refusal" "$out" "--bind-reviewed refused"
 check "18: a code-changing delta writes nothing" "$([ -e "$scope_dir/q26" ] && echo yes || echo no)" no
 rc=0; out=$(fxcd wv q27 NO-GO "$J_SIB" --evidence-file "$ev" --bind-reviewed "$J_TEST" 2>&1) || rc=$?
 check "18: a non-descendant head is refused rc 2" "$rc" 2
@@ -542,6 +548,9 @@ contains "19: ... and warns it is not honoured" "$out" "layer-decision line lack
 rc=0; out=$(wv q32 NO-GO "$SHA_A" --evidence-file "$evd/ld-ok.md" 2>&1) || rc=$?
 check "19: a keyworded layer-decision writes rc 0" "$rc" 0
 case "$out" in *"lacks a layer keyword"*) echo "FAIL - 19: a keyworded layer-decision warned"; fails=$((fails+1)) ;; *) echo "ok - 19: a keyworded layer-decision does not warn" ;; esac
+printf 'class: option-parsing\nlayer-decision: classifier the reader rejects a CRLF line\r\n' > "$evd/ld-crlf.md"
+rc=0; out=$(wv q34 NO-GO "$SHA_A" --evidence-file "$evd/ld-crlf.md" 2>&1) || rc=$?
+contains "19: a CRLF layer-decision line warns like the gate's regex rejects it" "$out" "layer-decision line lacks a layer keyword"
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"

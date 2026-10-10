@@ -1600,7 +1600,7 @@ rm -rf "$vscope/sg-1"
 
 # HIMMEL-4984: a record admits a scope round only when it carries a valid mac
 # and binds to this branch and PR; any NO-GO for the new head blocks it.
-for sx_case in sx-ok sx-unsigned sx-edited sx-other-pr sx-other-branch sx-nogo-beside sx-unreadable-sibling; do
+for sx_case in sx-ok sx-unsigned sx-edited sx-other-pr sx-other-branch sx-nogo-beside sx-bound-nogo-beside sx-unreadable-sibling; do
     three_rounds "$sx_case" clean
     sx_r3="$cap_r3_head"
     scope_commit "$sx_case" "tests/test-$sx_case.sh"
@@ -1626,6 +1626,13 @@ for sx_case in sx-ok sx-unsigned sx-edited sx-other-pr sx-other-branch sx-nogo-b
         sx-nogo-beside)
             printf 'class: tool-defaults\n\na NO-GO for the same head\n' > "$jev/judge-evidence.md"
             judge "$sx_case-nogo" NO-GO "$sx_head" ;;
+        sx-bound-nogo-beside)
+            # HIMMEL-5109: a NO-GO written with --bind-reviewed still vetoes its judged head
+            printf 'class: tool-defaults\n\na bound NO-GO for the same head\n' > "$jev/judge-evidence.md"
+            (cd "$repo" && env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_RELAY CLAUDE_CODE_SESSION_ID=judge-sess-5109 \
+                bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$sx_case-nogo" NO-GO "$sx_head" \
+                --pr 1 --evidence-file "$jev/judge-evidence.md" --bind-reviewed "$sx_r3") \
+                >/dev/null 2>"$tmp/judge-$sx_case-nogo.err" || fail "judge writes $sx_case-nogo bound" ;;
     esac
     sx_rc=0; start_round "$sx_head" clean "$sx_case" >/dev/null || sx_rc=$?
     assert_eq "$sx_rc" "$sx_want" "$sx_case"
