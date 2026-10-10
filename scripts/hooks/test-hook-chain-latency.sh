@@ -200,7 +200,8 @@ shape_row() {  # shape_row <member> <label> <unit> <small N> <big N> [<prefix> [
     # A member that cannot source its library denies in about 2 ms at both
     # sizes (rc 2 is a legal answer), which would pass the ratio vacuously: a
     # shape row also requires that the member really scanned the payload.
-    if [ "$small" -lt 20 ]; then
+    # (10 ms: five times a lib-less exit, with headroom on fast hosts.)
+    if [ "$small" -lt 10 ]; then
         fail "$name $label: ran ${small}ms at the small size (exited before scanning: vacuous row)"
     elif [ $(( big * 10 )) -le $(( SCALE_MAX_X10 * small + 500 )) ]; then
         pass "$name $label: 4x input ${small}ms -> ${big}ms (<= ${SCALE_MAX}x)"
@@ -215,6 +216,7 @@ shape_row() {  # shape_row <member> <label> <unit> <small N> <big N> [<prefix> [
     shape_row scripts/hooks/block-destructive-commands.sh 'quoted multibyte' 'é"a b"; ' 1000 4000
     shape_row scripts/hooks/require-quiet-run.sh 'quote-dense line' "'a b' " 2000 8000
     shape_row scripts/hooks/block-chokepoint-env-prefix.sh '${...} run with multibyte' '${V}é' 500 2000 'echo é'
+    shape_row scripts/hooks/block-chokepoint-env-prefix.sh 'dense unmatched ${ openers' '${V:-' 2000 8000
     shape_row scripts/hooks/block-edit-live-settings.sh '$"..." name words' '~/.cl$"a"ude/x ' 500 2000 'echo ' '> /tmp/out.txt'
 }
 

@@ -1948,9 +1948,9 @@ _c_strip_expansion_openers() {
 }
 
 strip_brace_exp() {
-    local out="" piece before scan off hasbrace p k nparts
+    local out="" piece before off hasbrace p k j nparts nsub
     local olen=0 np=0 lastc=""
-    local -a pos parts
+    local -a pos parts sub
     pos=()
     # split at every `}` in one pass (a trailing `x` keeps a final empty piece)
     IFS='}' read -r -d '' -a parts <<< "$1x" || true
@@ -1963,15 +1963,21 @@ strip_brace_exp() {
         if [ "$lastc" = '$' ] && [ "${piece:0:1}" = '{' ]; then
             pos[np]=$((olen - 1)); np=$((np + 1))
         fi
-        scan=$piece; off=$olen
         # shellcheck disable=SC2016  # literal ${ glob pattern, not meant to expand
-        while [[ $scan == *'${'* ]]; do
-            before=${scan%%\$\{*}
-            off=$((off + ${#before}))
-            pos[np]=$off; np=$((np + 1))
-            off=$((off + 2))
-            scan=${scan#*\$\{}
-        done
+        if [[ $piece == *'${'* ]]; then
+            # split at every `$` once: a segment that starts with `{` follows a
+            # `${` opener at the running offset (re-slicing the remainder per
+            # opener was quadratic in the opener count, HIMMEL-5154)
+            IFS='$' read -r -d '' -a sub <<< "${piece}x" || true
+            nsub=${#sub[@]}
+            sub[nsub - 1]=${sub[nsub - 1]%x$'\n'}
+            off=$((olen + ${#sub[0]}))
+            for ((j = 1; j < nsub; j++)); do
+                before=${sub[j]}
+                [ "${before:0:1}" = '{' ] && { pos[np]=$off; np=$((np + 1)); }
+                off=$((off + 1 + ${#before}))
+            done
+        fi
         if [ -n "$piece" ]; then
             out+=$piece
             olen=$((olen + ${#piece}))
