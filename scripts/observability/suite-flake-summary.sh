@@ -36,7 +36,8 @@ done
 case "$format" in tick|counts|detail) ;; *) format=tick ;; esac
 case "$now" in ''|*[!0-9]*) now=$(date +%s 2>/dev/null || echo 0) ;; esac
 case "$days" in ''|*[!0-9]*) days=7 ;; esac
-case "$since" in ''|*[!0-9]*) since=$(( now - 10#$days * 86400 )) ;; esac
+now=$(( 10#$now ))
+case "$since" in ''|*[!0-9]*) since=$(( now - 10#$days * 86400 )) ;; *) since=$(( 10#$since )) ;; esac
 [ "$since" -ge 0 ] 2>/dev/null || since=0
 
 unreadable() { [ "$format" = detail ] || echo '?'; exit 0; }

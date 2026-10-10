@@ -84,5 +84,8 @@ for fl in --days --since --now --format; do
   case "$r" in *rc=0) pass "R7: trailing $fl exits 0" ;; *) fail "R7: trailing $fl got [$r]" ;; esac
 done
 
+echo "== R8: leading-zero epochs read as decimal =="
+eq "R8: --now 01800000000 --since 01799999000" "$(SUITE_FLAKE_LEDGER="$L" SUITE_FLAKE_REPO_ID=repo-a bash "$SUT" --now 01800000000 --since 01799999000 --format tick 2>/dev/null)" "3/2@test-x.sh*2"
+
 [ "$failures" -eq 0 ] && { echo "ALL PASS"; exit 0; }
 echo "FAILURES: $failures"; exit 1
