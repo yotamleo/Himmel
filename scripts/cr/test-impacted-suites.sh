@@ -86,6 +86,7 @@ mkf scripts/lib/my_helper.sh
 mkf scripts/test-stem-underscore.sh 'use my_helper here'
 mkf scripts/hooks/gate.sh
 mkf scripts/test-stem-word.sh 'open the gate now'
+mkf scripts/test-stem-gate-full.sh 'bash scripts/hooks/gate.sh'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -209,7 +210,7 @@ out="$(run_is "$range")"
 if grepq "$out" '^scripts/test-stem-underscore\.sh$'; then pass "underscore stem named without .sh is listed"; else fail "underscore stem not listed: $out"; fi
 change scripts/hooks/gate.sh
 out="$(run_is "$range")"
-if ! grepq "$out" 'test-stem-word\.sh'; then pass "one-word stem (gate) is not matched extensionless"; else fail "one-word stem over-listed: $out"; fi
+if grepq "$out" '^scripts/test-stem-gate-full\.sh$' && ! grepq "$out" 'test-stem-word\.sh'; then pass "one-word stem (gate) is not matched extensionless"; else fail "one-word stem over-listed or control missing: $out"; fi
 
 # --- 11b. an extensionless basename takes the path rule (HIMMEL-4606) ---------
 # `diff` is a common word: a suite that merely says `diff -u` must not be listed,
