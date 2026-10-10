@@ -403,7 +403,66 @@ row "cd state; mv lift-named src ./"       deny  "cd ~/.himmel/state && mv $T/sr
 row "cd state; cp -t . lift-named src"     deny  "cd ~/.himmel/state; cp -t . /tmp/bank-lift.json"
 row "cd; cp other src . (cwd unproven)"            deny  "cd /tmp && cp $T/src/other.txt ."
 row "cd; cp lift-named src (over-deny r6)" deny  "cd /tmp && cp $T/src/bank-lift.json backup.txt"
-row "cd; cp other src to file (cwd unproven)"      deny  "cd /tmp && cp $T/src/other.txt backup.txt"
+row "cd; cp other src to file (HIMMEL-4545 trim)"  allow "cd /tmp && cp $T/src/other.txt backup.txt"
+
+echo "== HIMMEL-4545 over-deny trim: plain literal names under an unproven cwd =="
+# Measured over-deny (J1916, p22-hist 845 of 211,645): most rows were a copy to
+# a plain name after a $( ), backtick, ( ) or cd. A file-to-name copy reaches
+# the lift only through a lift-named word (the mention rule) or a directory's
+# contents landing on state / .himmel / HOME, so those shapes allow and every
+# shape that can spill a directory or name a computed word still denies.
+row "4545 cp name after \$( ) (trim)"        allow "n=\$(date +%H); cp $T/src/other.txt copy.txt"
+row "4545 mv computed dir, literal names (trim)" allow "S=/tmp/s; cd \$S && mv \$S/legs.new \$S/legs.txt"
+row "4545 backtick then cp to name (trim)"  allow "echo \`date\` ; cp $T/src/other.txt backup.txt"
+row "4545 arithmetic then cp to name (trim)" allow "x=\$((1|2)); cp /etc/hosts f"
+row "4545 rsync file to name (trim)"        allow "n=\$(date +%H); rsync -a $T/src/other.txt out.txt"
+row "4545 cp two literal srcs to a name (trim)" allow "cd /tmp && cp $T/src/other.txt $T/src/sub dir2"
+row "4545 cp dest . still denies"           deny  "cd /tmp && cp $T/src/other.txt ."
+row "4545 cp dest .. still denies"          deny  "cd /tmp && cp $T/src/other.txt .."
+row "4545 cp dest ./ still denies"          deny  "cd /tmp && cp $T/src/other.txt ./"
+row "4545 cp dest name/ still denies"       deny  "cd /tmp && cp $T/src/other.txt out/"
+row "4545 cp dest state still denies"       deny  "cd /tmp && cp $T/src/other.txt state"
+row "4545 cp dest .himmel still denies"     deny  "cd /tmp && cp $T/src/other.txt .himmel"
+row "4545 cp dest STATE (case) still denies" deny "cd /tmp && cp $T/src/other.txt STATE"
+row "4545 cp dest glob still denies"        deny  "cd /tmp && cp $T/src/other.txt 'st*'"
+row "4545 cp dest computed still denies"    deny  "cd /tmp && cp $T/src/other.txt \$d"
+row "4545 cp dest brace still denies"       deny  "cd /tmp && cp $T/src/other.txt {state,x}"
+row "4545 cp -T still denies"               deny  "cd /tmp && cp -rT /tmp/forged-home overlord"
+row "4545 cp --no-target-directory denies"  deny  "cd /tmp && cp -r --no-target-directory /tmp/forged-home overlord"
+row "4545 cp --parents still denies"        deny  "cd /tmp && cp --parents .himmel/state/x.json overlord"
+row "4545 rsync -R still denies"            deny  "cd /tmp && rsync -R .himmel/state/x.json overlord"
+row "4545 cp src dir/ still denies"         deny  "cd /tmp && cp -r /tmp/forged-home/ overlord"
+row "4545 cp src dir/. still denies"        deny  "cd /tmp && cp -r /tmp/forged-home/. overlord"
+row "4545 rsync src dir/ still denies"      deny  "cd /tmp && rsync -a /tmp/forged-home/ overlord"
+row "4545 cp src glob still denies"         deny  "cd /tmp && cp /tmp/forged-home/* overlord"
+row "4545 cp src computed still denies"     deny  "cd /tmp && cp \$s overlord"
+row "4545 cp src .himmel still denies"      deny  "cd /tmp && cp -r /tmp/forged-home/.himmel overlord"
+row "4545 cp src state still denies"        deny  "cd /tmp && cp -r /tmp/forged/state overlord"
+row "4545 cp -t dir, src dir/ still denies" deny  "cd /tmp && cp -r -t overlord /tmp/forged-home/"
+row "4545 mv src .himmel still denies"      deny  "cd /tmp && mv /tmp/forged-home/.himmel overlord"
+row "4545 ln -s relative src still denies"  deny  "n=\$(date +%H); ln -s target link-\$n"
+row "4545 ln -s computed src still denies"  deny  "n=\$(date +%H); ln -s \"\$p\" link"
+# HIMMEL-4545 residual: a glob source into a computed destination that is the
+# state dir (assigned in the command or inherited) lands the lift by name.
+mkdir -p "$T/gsrc" && printf '{}' > "$T/gsrc/bank-lift.json"
+row "4545 glob src, computed dest denies"   deny  "d=$ST; cp $T/gsrc/* \"\$d\""
+row "4545 glob src, computed dest unquoted" deny  "d=$ST; cp $T/gsrc/*.json \$d"
+row "4545 glob src, mv computed dest"       deny  "d=$ST; mv $T/gsrc/* \"\$d\""
+row "4545 glob src, cp -t computed dest"    deny  "d=$ST; cp -t \"\$d\" $T/gsrc/*"
+row "4545 glob src, rsync computed dest"    deny  "d=$ST; rsync -a $T/gsrc/* \"\$d\""
+row "4545 glob src name-miss, computed dest (ctrl)" allow "d=$T/out; cp $T/gsrc/*.txt \"\$d\""
+row "4545 literal src, computed dest (ctrl)" allow "d=$T/out; cp $T/src/other.txt \"\$d\""
+# A source that is HOME or one of its ancestors, by any spelling, can alias or
+# relocate the lift's whole tree; a plain-name test alone would pass it.
+row "4545 ln -s abs HOME src still denies"  deny  "cd /tmp && ln -s $HOME link"
+row "4545 ln -s ~ src still denies"         deny  "cd /tmp && ln -s ~ link"
+row "4545 ln -s HOME parent still denies"   deny  "cd /tmp && ln -s $T link"
+row "4545 mv abs HOME src still denies"     deny  "cd /tmp && mv $HOME moved"
+row "4545 cp -r abs HOME src still denies"  deny  "cd /tmp && cp -r $HOME moved"
+row "4545 cp -s abs HOME parent still denies" deny "cd /tmp && cp -s $T moved"
+row "4545 cp src .. component still denies" deny  "cd /tmp && cp -r ../.. moved"
+row "4545 ln -s HOME own name still denies" deny  "cd /tmp && ln -s ${HOME##*/} link"
+row "4545 mv HOME ancestor name still denies" deny "cd /tmp && mv $(basename "$T") link"
 
 echo "== review round 5 (unforgeable redirect marks) =="
 # A word spelling a tokenizer mark must not be read as a redirect: the marks
@@ -605,6 +664,13 @@ row "4458 worktree relative, lib symlinked out" deny "bash scripts/lib/bank-lift
 row "4458 worktree bank-lift.sh symlinked out" deny  "bash $REPO/.claude/worktrees/w3/scripts/lib/bank-lift.sh clear"
 row "4458 direct, bank-lift.sh symlinked out"  deny  "./scripts/lib/bank-lift.sh show" "$REPO/.claude/worktrees/w3"
 row "4458 missing worktree script (unresolved)" deny "bash $REPO/.claude/worktrees/w9/scripts/lib/bank-lift.sh show"
+# HIMMEL-4545 residual: a worktree copy EDITED after the cut is other code
+# under the trusted name, so it no longer runs as show/clear.
+mkdir -p "$REPO/.claude/worktrees/w4/scripts/lib"
+printf '%s\n' 'echo edited' > "$REPO/.claude/worktrees/w4/scripts/lib/bank-lift.sh"
+row "4545 edited worktree copy: abs clear"   deny  "bash $REPO/.claude/worktrees/w4/scripts/lib/bank-lift.sh clear"
+row "4545 edited worktree copy: rel show"    deny  "bash scripts/lib/bank-lift.sh show" "$REPO/.claude/worktrees/w4"
+row "4545 edited worktree copy: direct"      deny  "./scripts/lib/bank-lift.sh clear" "$REPO/.claude/worktrees/w4"
 row "4458 symlinked repo path show (ctrl)"     allow "bash $T/repolink/scripts/lib/bank-lift.sh show"
 row "4458 symlinked repo cwd show (ctrl)"      allow "bash scripts/lib/bank-lift.sh show" "$T/repolink"
 
