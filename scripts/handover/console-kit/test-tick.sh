@@ -2024,6 +2024,12 @@ same 'a forged key in a suite name stays inside the flakes= value (HIMMEL-5131)'
 rm -f "$SUITE_FLAKE_LEDGER"; mkdir -p "$SUITE_FLAKE_LEDGER"
 same 'flakes=? when the ledger is unreadable (HIMMEL-5131)' "$(flakes_of "$d4670")" '?'
 rmdir "$SUITE_FLAKE_LEDGER"
+# The tick.sh whitelist guard on its own: a stub reader that bypasses the reader's
+# sanitising and emits an NBSP + a forged key; reverting the guard turns this red.
+printf '#!/usr/bin/env bash\nprintf "1/1@test-x\\xc2\\xa0legs=9.sh*1\\n"\n' > "$W/repo/scripts/observability/suite-flake-summary.sh"
+fk_out="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
+case "$fk_out" in *' flakes='*) fail "tick.sh guard let an NBSP-bearing reader line through (out='$fk_out')" ;; *) pass 'tick.sh drops a reader line carrying Unicode whitespace (HIMMEL-5131)' ;; esac
+cp "$HERE/../../observability/suite-flake-summary.sh" "$W/repo/scripts/observability/suite-flake-summary.sh"
 
 # --- HIMMEL-4911: vault=<ok|STALL:<age>,<n>|PUSH-LAG:<age>|skip|unknown> -- the luna
 # vault's commit health, from vault-status.sh. RED control (pre-change tick.sh): the

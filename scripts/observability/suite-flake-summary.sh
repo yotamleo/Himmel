@@ -18,9 +18,10 @@
 # read. Rows of another repo, legacy rows with no repo id, non-flake rows and
 # malformed lines are skipped. Never fails: read problems print ?.
 #
-# ponytail: the repo-id recipe is a copy of run-shell-tests.sh's (no shared lib
-# yet); test-suite-flake-summary.sh R5 fails if the two drift. Upgrade: one lib
-# both source, once the id normalisation (HIMMEL-5144) lands.
+# ponytail: _flake_norm_url / _flake_repo_id are a verbatim copy of
+# run-shell-tests.sh's (a shared lib would touch scripts/ci, a trust path);
+# test-suite-flake-summary.sh R5 fails if the two drift. Upgrade: a follow-up
+# ticket for one lib both source (v1.1.2).
 set -uo pipefail
 
 format=tick since="" days=7 now=""
@@ -51,15 +52,38 @@ if [ -z "$ledger" ]; then
   else unreadable; fi
 fi
 
+# _flake_norm_url / _flake_repo_id: copied verbatim from scripts/ci/run-shell-tests.sh.
+# _flake_norm_url <url> — host/path with the scheme, user, trailing .git and
+# trailing slash dropped and the host lowercased, so the https, https+.git, ssh
+# and scp spellings of one origin agree.
+_flake_norm_url() {
+  local _u="$1" _h _r
+  case "$_u" in
+    *://*) _u=${_u#*://} ;;
+    *) case "${_u%%/*}" in *:*) _u="${_u%%:*}/${_u#*:}" ;; esac ;;
+  esac
+  case "${_u%%/*}" in *@*) _u=${_u#*@} ;; esac
+  _u=${_u%/}; _u=${_u%.git}; _u=${_u%/}
+  _h=${_u%%/*}; _r=${_u#"$_h"}
+  printf '%s%s' "$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]')" "$_r"
+}
+
+# _flake_repo_id <dir> — the default repo id for the checkout at <dir>.
+_flake_repo_id() {
+  local _url _common
+  _url=$(git -C "$1" config --get remote.origin.url 2>/dev/null)
+  if [ -n "$_url" ]; then
+    printf 'origin-%s' "$(_flake_norm_url "$_url" | cksum | cut -d' ' -f1)"
+  else
+    _common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    printf 'dir-%s' "$(printf '%s' "${_common:-$1}" | cksum | cut -d' ' -f1)"
+  fi
+}
+
 repo_id="${SUITE_FLAKE_REPO_ID:-}"
 if [ -z "$repo_id" ]; then
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-  url=$(git -C "$here" config --get remote.origin.url 2>/dev/null)
-  if [ -n "$url" ]; then
-    repo_id="origin-$(printf '%s' "$url" | cksum | cut -d' ' -f1)"
-  else
-    repo_id="dir-$(printf '%s' "$here" | cksum | cut -d' ' -f1)"
-  fi
+  repo_id=$(_flake_repo_id "$here")
 fi
 repo_id=$(printf '%s' "$repo_id" | tr -c 'A-Za-z0-9._:@-' '_')
 
@@ -85,7 +109,7 @@ case "$format" in
     printf '%s\n' "$rows" | jq -s -r "
       if length == 0 then \"none\"
       else (group_by(.suite) | map({s: .[0].suite, n: length}) | sort_by(-.n, .s)) as \$g
-        | \"\(length)/\(\$g | length)@\(\$g[0].s | gsub(\"[^A-Za-z0-9._/+-]\"; \"_\"))*\(\$g[0].n)\"
+        | \"\(length)/\(\$g | length)@\(\$g[0].s | gsub(\"[^A-Za-z0-9._/+-]\"; \"_\") | .[0:80])*\(\$g[0].n)\"
       end" 2>/dev/null || echo '?'
     ;;
   counts)

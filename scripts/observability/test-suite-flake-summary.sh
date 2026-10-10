@@ -74,6 +74,16 @@ chmod +x "$rs/scripts/test-pass.sh" "$rs/scripts/test-flaky.sh"
 got=$(env -u SUITE_FLAKE_REPO_ID SUITE_FLAKE_LEDGER="$SB/real.jsonl" bash "$SUT" --now "$(date +%s)" --days 1 --format tick 2>/dev/null)
 eq "R5: reader sees the row the runner just wrote for this repo" "$got" "1/1@test-flaky.sh*1"
 
+# R5b: a checkout with no origin falls back to the git common dir id, on both sides.
+nr="$SB/noorigin"; git init -q "$nr" && git -C "$nr" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q --allow-empty -m fixture && mkdir -p "$nr/scripts/ci" "$nr/scripts/observability" "$nr/suites"
+cp "$rs/scripts/test-pass.sh" "$rs/scripts/test-flaky.sh" "$nr/suites/"
+cp "$REPO/scripts/ci/run-shell-tests.sh" "$nr/scripts/ci/run-shell-tests.sh"; cp -R "$REPO/scripts/lib" "$nr/scripts/lib"
+cp "$SUT" "$nr/scripts/observability/suite-flake-summary.sh"
+(cd "$nr" && env -u SUITE_TIER_MODE -u SUITE_FLAKE_REPO_ID SUITE_FLAKE_LEDGER="$SB/noorigin.jsonl" \
+   SUITE_LOCK_DIR="$SB/lock2" SUITE_ROTATE_STATE="$SB/rot2" bash scripts/ci/run-shell-tests.sh "$nr/suites" >/dev/null 2>&1)
+got=$(cd "$nr" && env -u SUITE_FLAKE_REPO_ID SUITE_FLAKE_LEDGER="$SB/noorigin.jsonl" bash scripts/observability/suite-flake-summary.sh --now "$(date +%s)" --days 1 --format tick 2>/dev/null)
+eq "R5b: no-origin checkout, reader sees the dir- id row the runner wrote" "$got" "1/1@test-flaky.sh*1"
+
 echo "== R6: bounded tail =="
 n=$(SUITE_FLAKE_TAIL_ROWS=2 SUITE_FLAKE_LEDGER="$L" SUITE_FLAKE_REPO_ID=repo-a bash "$SUT" --now "$NOW" --days 2 --format tick 2>/dev/null)
 eq "R6: only the last 2 lines are read (the old row and a malformed line)" "$n" "1/1@test-old.sh*1"
@@ -90,6 +100,13 @@ eq "R8: --now 01800000000 --since 01799999000" "$(SUITE_FLAKE_LEDGER="$L" SUITE_
 echo "== R9: tick top-suite text is a printable-ASCII whitelist =="
 { row $((NOW - 10)) repo-a $'test-n\xc2\xa0legs=9\xe2\x80\xa8fleet=9@x*2.sh' 'c'; } > "$SB/uni.jsonl"
 eq "R9: NBSP, U+2028, @ and * in a suite name become _" "$(SUITE_FLAKE_LEDGER="$SB/uni.jsonl" SUITE_FLAKE_REPO_ID=repo-a bash "$SUT" --now "$NOW" --days 1 --format tick 2>/dev/null)" "1/1@test-n_legs_9_fleet_9_x_2.sh*1"
+
+echo "== R10: top-suite text is capped at 80 chars =="
+long=$(printf 'test-%0100d.sh' 0)
+{ row $((NOW - 10)) repo-a "$long" 'c'; } > "$SB/long.jsonl"
+cap=$(SUITE_FLAKE_LEDGER="$SB/long.jsonl" SUITE_FLAKE_REPO_ID=repo-a bash "$SUT" --now "$NOW" --days 1 --format tick 2>/dev/null)
+top=${cap#1/1@}; top=${top%\*1}
+eq "R10: a 109-char suite name is cut to 80" "${#top}" "80"
 
 [ "$failures" -eq 0 ] && { echo "ALL PASS"; exit 0; }
 echo "FAILURES: $failures"; exit 1
