@@ -86,7 +86,10 @@ while IFS= read -r line; do
   # HIMMEL-5143: the aggregate is named `shell-unit (dispatch verify) (os)` on a
   # workflow_dispatch run and `shell-unit (os)` otherwise. One job, one identity,
   # or a report recorded from a push run could never be re-proven on a dispatch.
-  name="${name/ (dispatch verify)/}"
+  # HIMMEL-5146: only that aggregate is rewritten; no other job loses the text.
+  case "$name" in
+    "shell-unit (dispatch verify) ("*) name="${name/ (dispatch verify)/}" ;;
+  esac
   case "$name" in
     "shell-unit-shard"*)
       # Count the shards (a shard killed by timeout-minutes is red, as below) so
