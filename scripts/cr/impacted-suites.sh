@@ -512,7 +512,20 @@ found="$work/found"
 : > "$found"
 
 suite_re='(^|/)test-[^/]*\.sh$|\.test\.(mjs|js|ts)$'
-suites=$(grep -E "$suite_re" <<< "$tree"); [ $? -le 1 ] || io_fail "listing suites"   # rc 1 = none
+# HIMMEL-5167: no here-string or here-document below carries the tree, the changed
+# list or the suite list. A here-string goes through a temp file once it outgrows a
+# pipe (always, on bash before 5.1); on a full temp dir it fails, the command never
+# runs and its rc 1 read as "no match" — a short list at rc 0. A checked write to a
+# file under $work fails closed instead, and every later read is a plain file.
+printf '%s\n' "$tree" > "$work/tree" || io_fail "writing the tree listing"
+printf '%s\n' "$changed" > "$work/changed" || io_fail "writing the changed-file list"
+suites="$work/suites"   # the suite paths at head, one per line
+# Create each output file in a checked step first: a redirect that cannot open its
+# target also returns rc 1, which `|| grep_rc=$?` below would read as "none".
+: > "$suites" || io_fail "creating the suite list"
+grep_rc=0
+grep -E "$suite_re" "$work/tree" > "$suites" || grep_rc=$?   # rc 1 = none
+[ "$grep_rc" -le 1 ] || io_fail "listing suites"
 # Basenames that name nothing on their own: match them by "<parent>/<name>"
 # (a repo-root file has no parent, so it falls back to the bare name).
 generic_re='^(README\.md|CLAUDE\.md|SKILL\.md|CHANGELOG\.md|index\.(js|mjs|ts)|package\.json|package-lock\.json|\.gitignore|LICENSE)$'
@@ -567,7 +580,7 @@ add_stem_needle() {
 # line pulled in hundreds of suites); `cg` wants the parent too.
 file_literal() {
     local f="$1" name="${1##*/}" parent
-    if grep -Eq "$generic_re" <<< "$name"; then
+    if [[ $name =~ $generic_re ]]; then
         case "$f" in
             */*) parent="${f%/*}"; printf '%s/%s\n' "${parent##*/}" "$name" ;;
             # Repo root: no parent to qualify it, so the bare name is the only
@@ -600,7 +613,7 @@ src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
 bare_source_ere() {
     local f="$1" name="${1##*/}"
     [ "${f#*/}" != "$f" ] || return 0
-    grep -Eq "$generic_re" <<< "$name" && return 0
+    [[ $name =~ $generic_re ]] && return 0
     case "$name" in *[-_.]*) return 0 ;; esac
     { printf '%s(source|\\.)[[:space:]]+(--[[:space:]]+)?["'"'"']?([^[:space:]"'"'"']*/)?' "$src_lead"; needle_tail_ere "$name"; printf '\n'; } || return 1
     { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$name"; printf '\n'; } || return 1
@@ -613,11 +626,11 @@ front="$work/front"   # the files whose sourcers the next round looks for
 
 while IFS= read -r f; do
     [ -n "$f" ] || continue
-    if grep -Eq "$suite_re" <<< "$f"; then
+    if [[ $f =~ $suite_re ]]; then
         # A changed suite is impacted by itself (unless the PR deleted it) —
         # and falls through so its basename is also a needle: a wrapper that
         # invokes it (test-arm-resume-fast.sh -> test-arm-resume.sh) is reached.
-        if grep -Fxq -- "$f" <<< "$suites"; then printf '%s\n' "$f" >> "$found" || io_fail "recording a changed suite"; fi
+        if grep -Fxq -- "$f" "$suites"; then printf '%s\n' "$f" >> "$found" || io_fail "recording a changed suite"; fi
     fi
     name="${f##*/}"
     add_needle "$(file_literal "$f")"
@@ -631,7 +644,7 @@ while IFS= read -r f; do
         */skills/*/SKILL.md)
             skill="${f%/SKILL.md}"; add_needle "/${skill##*/}" ;;
     esac
-done <<< "$changed"
+done < "$work/changed"
 
 # Source closure (HIMMEL-3896): a shell file joins the closure as a sourcer when
 # (a) a `source`/`.` line names a file already in the closure, (b) it assigns a
@@ -655,6 +668,7 @@ varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
 # line whose first non-blank character is `#` is skipped: a `#` later in a line
 # (a quoted string, a trailing comment after a real source) never hides one.
 # (src_lead is defined above bare_source_ere, which the changed-file loop needs.)
+: > "$work/varsrc.raw" || io_fail "creating the variable-sourcer list"   # a failed open is rc 1 below
 grep_rc=0
 git grep -z -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
@@ -664,6 +678,7 @@ fi
 tr '\0' '\n' < "$work/varsrc.raw" | sed "s/^${head_sha}://" > "$varsrc" || io_fail "listing variable-sourcing files"
 # closure_grep <patfile> <outfile> <what> — the .sh files at head matching any pattern.
 closure_grep() {
+    : > "$2.raw" || io_fail "creating the $3 hit list"   # a failed open is rc 1 below
     grep_rc=0
     git grep -z -l -E -f "$1" "$head_sha" -- ':(glob)**/*.sh' > "$2.raw" || grep_rc=$?
     if [ "$grep_rc" -gt 1 ]; then
@@ -703,6 +718,12 @@ while [ -s "$front" ]; do
         if grep -Fxq -- "$hit" "$seen"; then continue; fi
         printf '%s\n' "$hit" >> "$seen" || io_fail "growing the source closure"
         printf '%s\n' "$hit" >> "$work/next" || io_fail "growing the source closure"
+        # ponytail: a closure helper gets its basename needle only, no stem needle
+        # (add_stem_needle). A sourced file is named with its extension in the
+        # `source` line that put it here, so a suite that names only its stem is not
+        # running it; the stem rule exists for scripts a suite INVOKES by name
+        # (`guard_rc <hook>`), and a changed hook still gets one above. Unmeasured
+        # widening; upgrade path is a --selector-miss row naming such a suite.
         add_needle "$(file_literal "$hit")"
     done < "$work/src.out"
     cp "$work/next" "$front" || io_fail "advancing the source closure"
@@ -727,6 +748,8 @@ HIMMEL_UNINSTALL_[^A-Za-z]{0,3}REAL_HOME|scripts/test-uninstall-real-home-caller
 \.himmel/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.log|scripts/observability/test-ledgers-registry.sh
 EOF
 }
+# A process substitution's rc is lost: write the rows to a checked file first.
+content_rules > "$work/content-rules" || io_fail "writing the content rules"
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     # A side that does not exist (file added or deleted) is skipped; a side that
@@ -754,11 +777,11 @@ while IFS= read -r f; do
             echo "impacted-suites: content-rule grep failed (rc=$cgrep_rc) on ${f} — cannot tell which suites are impacted" >&2
             exit 2
         fi
-        if [ "$cgrep_rc" -eq 0 ] && grep -Fxq -- "$rule_suite" <<< "$suites"; then
+        if [ "$cgrep_rc" -eq 0 ] && grep -Fxq -- "$rule_suite" "$suites"; then
             printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a content-rule suite"
         fi
-    done < <(content_rules)
-done <<< "$changed"
+    done < "$work/content-rules"
+done < "$work/changed"
 
 # scan_roots — one `<glob> <suite>` row per suite that WALKS a repo tree
 # (HIMMEL-4256): a file added, changed or deleted under the tree changes the
@@ -879,7 +902,7 @@ while IFS= read -r f; do
     [ -n "$f" ] || continue
     # A `!<glob> <suite>` row vetoes that suite for a file the suite's walk
     # skips. A glob with no `/` is matched against the basename.
-    vetoed=""
+    : > "$work/vetoed" || io_fail "resetting the veto list"
     while read -r glob rule_suite; do
         case "$glob" in !*) ;; *) continue ;; esac
         glob="${glob#!}"
@@ -887,7 +910,7 @@ while IFS= read -r f; do
         case "$glob" in */*) ;; *) subject="${f##*/}" ;; esac
         # shellcheck disable=SC2254
         case "$subject" in
-            $glob) vetoed="${vetoed}${rule_suite}"$'\n' ;;
+            $glob) printf '%s\n' "$rule_suite" >> "$work/vetoed" || io_fail "recording a veto" ;;
         esac
     done < "$work/scan-roots"
     while read -r glob rule_suite; do
@@ -896,12 +919,12 @@ while IFS= read -r f; do
         # $glob unquoted on purpose: it is the case pattern.
         # shellcheck disable=SC2254
         case "$f" in
-            $glob) if grep -Fxq -- "$rule_suite" <<< "$suites" && ! grep -Fxq -- "$rule_suite" <<< "$vetoed"; then
+            $glob) if grep -Fxq -- "$rule_suite" "$suites" && ! grep -Fxq -- "$rule_suite" "$work/vetoed"; then
                        printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a scan-root suite"
                    fi ;;
         esac
     done < "$work/scan-roots"
-done <<< "$changed"
+done < "$work/changed"
 
 # The CR guarded closure (HIMMEL-4453): scripts/cr/test-cr-guarded-closure.sh
 # DERIVES its file set by walking the runbook + scripts/cr call graph and never
@@ -919,7 +942,7 @@ done <<< "$changed"
 # its own file list into the closure.
 closure_suite=scripts/cr/test-cr-guarded-closure
 closure_suite="${closure_suite}.sh"
-if grep -Fxq -- "$closure_suite" <<< "$suites"; then
+if grep -Fxq -- "$closure_suite" "$suites"; then
     # A head whose cr_guarded set cannot be read or parses empty is not proof the
     # closure is untouched: select the suite, which fails loudly on its own.
     cg_rc=0
@@ -944,7 +967,7 @@ if grep -Fxq -- "$closure_suite" <<< "$suites"; then
             done < "$work/guarded"
             [ "$cg_hit" -eq 0 ] || break
             { needle_ere "$(file_literal "$f" cg)"; printf '\n'; } >> "$work/cg-pats" || io_fail "writing a guarded-closure needle"
-        done <<< "$changed"
+        done < "$work/changed"
         if [ "$cg_hit" -eq 0 ] && [ -s "$work/cg-pats" ]; then
             cg_rc=0
             # One search for every changed file; any path a guarded file can name
@@ -964,6 +987,7 @@ if [ -s "$pats" ]; then
     # about the PR as pushed. -l prefixes each path with "<head_sha>:".
     # rc 1 is "no match"; anything higher is a search that did not run, which
     # must not read as an empty impacted set.
+    : > "$work/grep.out" || io_fail "creating the search result file"   # a failed open is rc 1 below
     grep_rc=0
     # -z like the diff and ls-tree above (HIMMEL-4997): a suite path holding a
     # non-ASCII byte, double quote, backslash or tab must come back as itself,
@@ -994,6 +1018,7 @@ if ! tree_shape=$(git diff -z --diff-filter=ADT --name-only --no-renames "$mb" "
 fi
 if [ -n "$tree_shape" ]; then
     for ts_rev in "$mb" "$head_sha"; do
+        : > "$work/treescan.out" || io_fail "creating the tree-scan list"   # a failed open is rc 1 below
         ts_rc=0
         git grep -z -l -E '^# selector: tree-scan$' "$ts_rev" -- \
             ':(glob)**/test-*.sh' > "$work/treescan.out" || ts_rc=$?
@@ -1004,13 +1029,14 @@ if [ -n "$tree_shape" ]; then
         tr '\0' '\n' < "$work/treescan.out" | sed "s/^${ts_rev}://" > "$work/treescan.paths" || io_fail "reading the tree-scan list"
         while IFS= read -r ts; do
             [ -n "$ts" ] || continue
-            if grep -Fxq -- "$ts" <<< "$tree"; then printf '%s\n' "$ts" >> "$found" || io_fail "recording a tree-scan suite"; fi
+            if grep -Fxq -- "$ts" "$work/tree"; then printf '%s\n' "$ts" >> "$found" || io_fail "recording a tree-scan suite"; fi
         done < "$work/treescan.paths"
     done
 fi
 
 impacted="$work/impacted"
 if [ "$shell_only" -eq 1 ]; then
+    : > "$work/shell" || io_fail "creating the shell-suite list"   # a failed open is rc 1 below
     grep_rc=0
     grep -E '(^|/)test-[^/]*\.sh$' "$found" > "$work/shell" || grep_rc=$?   # rc 1 = no shell suite
     [ "$grep_rc" -le 1 ] || io_fail "filtering to shell suites"
@@ -1029,7 +1055,7 @@ if [ "$selector_miss" -eq 1 ]; then
             while IFS= read -r f; do
                 [ -n "$f" ] || continue
                 printf 'selector-miss: %s %s\n' "$red" "$f"
-            done <<< "$changed"
+            done < "$work/changed"
         fi
     done < "$red_file"
     exit "$miss"
