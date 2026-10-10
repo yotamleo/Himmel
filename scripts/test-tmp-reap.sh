@@ -342,6 +342,15 @@ check "14. creates and prints the dir" "$d" "$JD/j9201"
 check "14. rc 0" "$rc" 0
 check "14. holder = ancestor session pid + start time" "$(cat "$JD/j9201/.holder")" "$$ $(pstart $$)"
 d="$(jd 9201 b)"; check "14. suffix dir" "$d" "$JD/j9201b"
+# HIMMEL-5173: the SAME live holder asking again shares nothing once the dir has contents
+mkdir -p "$JD/j9210"; : > "$JD/j9210/evidence.md"; echo "$$ $(pstart $$)" > "$JD/j9210/.holder"
+d="$(jd 9210 2>/dev/null)"; rc=$?
+check "14. same live holder, dir with contents: refused (HIMMEL-5173)" "$rc" 1
+check "14. ... and prints no dir" "$d" ""
+check "14. ... and the contents are untouched" "$([ -f "$JD/j9210/evidence.md" ] && echo kept)" kept
+mkdir -p "$JD/j9211"; echo "$$ $(pstart $$)" > "$JD/j9211/.holder"
+d="$(jd 9211 2>/dev/null)"; rc=$?
+check "14. same live holder, empty dir (only .holder): reusable" "$rc" 0
 # the first call's session holds j9201, so use the released-dir row on a dir we mark ourselves
 : > "$JD/j9201/.verdict-written"; d="$(jd 9201 2>/dev/null)"; rc=$?
 check "14. a released dir (verdict marker) is not reused (HIMMEL-5165)" "$rc" 1

@@ -552,15 +552,42 @@ printf 'class: option-parsing\nlayer-decision: classifier the reader rejects a C
 rc=0; out=$(wv q34 NO-GO "$SHA_A" --evidence-file "$evd/ld-crlf.md" 2>&1) || rc=$?
 contains "19: a CRLF layer-decision line warns like the gate's regex rejects it" "$out" "layer-decision line lacks a layer keyword"
 
-# --- 20. HIMMEL-5165: a verdict written from a judge dir releases that dir ---
-jdir="$scratch/j7$$"; mkdir -p "$jdir" && printf 'ev\n' > "$jdir/evidence.md"
-rc=0; out=$(wv q35 GO "$SHA_A" --evidence-file "$jdir/evidence.md" 2>&1) || rc=$?
-check "20: GO from a judge dir rc 0" "$rc" 0
-check "20: ... drops the .verdict-written release marker" "$([ -f "$jdir/.verdict-written" ] && echo yes || echo no)" yes
+# --- 20. HIMMEL-5165/5173: a verdict written from the PR's own judge dir releases that dir ---
+# --pr 7$$ so the dir j7$$ (the PR's own) and j7$$a are the only ones that may carry the marker.
+PR20="7$$"
+trap 'rm -rf "$tmp" "$evd" "$outd" "$scratch/j$PR20" "$scratch/j${PR20}a" "$scratch/j${PR20}ab" "$scratch/j${PR20}a.b" "$scratch/j${PR20}c" "$scratch/j${PR20}d" "$scratch/j8$$"' EXIT
+mkjd() { mkdir -p "$scratch/$1" && printf 'ev\n' > "$scratch/$1/evidence.md"; }
+mkjd "j$PR20"
+rc=0; out=$(WV_NOPR="--pr $PR20" wv q35 GO "$SHA_A" --evidence-file "$scratch/j$PR20/evidence.md" 2>&1) || rc=$?
+check "20: GO from the PR's own judge dir rc 0" "$rc" 0
+check "20: ... drops the .verdict-written release marker" "$([ -f "$scratch/j$PR20/.verdict-written" ] && echo yes || echo no)" yes
+mkjd "j${PR20}a"
+rc=0; out=$(WV_NOPR="--pr $PR20" wv q37 GO "$SHA_A" --evidence-file "$scratch/j${PR20}a/evidence.md" 2>&1) || rc=$?
+check "20: the PR's own suffixed dir rc 0" "$rc" 0
+check "20: ... is released too" "$([ -f "$scratch/j${PR20}a/.verdict-written" ] && echo yes || echo no)" yes
 printf 'ev\n' > "$evd/not-judge.md"
 rc=0; out=$(wv q36 GO "$SHA_A" --evidence-file "$evd/not-judge.md" 2>&1) || rc=$?
 check "20: evidence outside a judge dir drops no marker" "$([ -e "$evd/.verdict-written" ] && echo yes || echo no)" no
-rm -rf "$jdir"
+mkjd "j8$$"
+rc=0; out=$(WV_NOPR="--pr $PR20" wv q38 GO "$SHA_A" --evidence-file "$scratch/j8$$/evidence.md" 2>&1) || rc=$?
+check "20: another PR's judge dir still writes the verdict rc 0" "$rc" 0
+check "20: ... but is not released (marker tied to --pr, HIMMEL-5173)" "$([ -e "$scratch/j8$$/.verdict-written" ] && echo yes || echo no)" no
+for bad in "j${PR20}ab" "j${PR20}a.b"; do
+    mkjd "$bad"
+    rc=0; out=$(WV_NOPR="--pr $PR20" wv q39 GO "$SHA_A" --evidence-file "$scratch/$bad/evidence.md" 2>&1) || rc=$?
+    check "20: malformed segment $bad writes the verdict rc 0" "$rc" 0
+    check "20: ... and drops no marker" "$([ -e "$scratch/$bad/.verdict-written" ] && echo yes || echo no)" no
+done
+mkjd "j${PR20}c"; ln -s "$evd/marker-target" "$scratch/j${PR20}c/.verdict-written"
+rc=0; out=$(WV_NOPR="--pr $PR20" wv q40 GO "$SHA_A" --evidence-file "$scratch/j${PR20}c/evidence.md" 2>&1) || rc=$?
+check "20: a pre-existing symlinked marker: verdict rc 0" "$rc" 0
+check "20: ... the symlink target is not created" "$([ -e "$evd/marker-target" ] && echo yes || echo no)" no
+mkjd "j${PR20}d"; printf 'class: other\n' > "$evd/ng.md"
+rc=0; out=$(WV_NOPR="--pr $PR20" wv q41 NO-GO "$SHA_A" --evidence-file "$evd/ng.md" 2>&1) || rc=$?
+rc=0; out=$(WV_NOPR="--pr $PR20" wv q41 GO "$SHA_A" --evidence-file "$scratch/j${PR20}d/evidence.md" 2>&1) || rc=$?
+check "20: a GO refused over a NO-GO for the same head is rc 4" "$rc" 4
+check "20: ... and no marker follows a failed verdict write" "$([ -e "$scratch/j${PR20}d/.verdict-written" ] && echo yes || echo no)" no
+rm -rf "$scratch/j$PR20" "$scratch/j${PR20}a" "$scratch/j${PR20}ab" "$scratch/j${PR20}a.b" "$scratch/j${PR20}c" "$scratch/j${PR20}d" "$scratch/j8$$"
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"
