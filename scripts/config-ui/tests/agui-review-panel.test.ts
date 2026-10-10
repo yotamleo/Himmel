@@ -26,6 +26,15 @@ function replayState(events: AguiEvent[]): unknown {
   return state;
 }
 
+// A tool call appended to the review-panel fixture, with its result.
+const tool = (n: number, name: string, input: Record<string, unknown>, isError = false, content = "ok") => [
+  JSON.stringify({ type: "assistant", uuid: `a-x${n}`, sessionId: "sess-rev", message: { id: `msg_X${n}`, role: "assistant", content: [{ type: "tool_use", id: `toolu_x${n}`, name, input }] } }),
+  JSON.stringify({ type: "user", uuid: `u-x${n}`, sessionId: "sess-rev", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_x${n}`, content, ...(isError ? { is_error: true } : {}) }] } }),
+];
+const bash = (n: number, command: string, content = "ok") => tool(n, "Bash", { command }, false, content);
+const amended = (id: string) => `ledger-append.sh: amended ${id} at ${HEAD.slice(0, 8)} -> {"verdict":"fixed"}`;
+const withExtra = (extra: string[]) => mapJournal(readFileSync(join(FIX, "review-panel.jsonl"), "utf8") + extra.join("\n") + "\n").events;
+
 describe("a /pr-check run", () => {
   const { events } = mapFile(join(FIX, "review-panel.jsonl"));
   const stateEvents = events.filter((e) => e.type === "STATE_SNAPSHOT" || e.type === "STATE_DELTA");
@@ -82,19 +91,106 @@ describe("a /pr-check run", () => {
   });
 
   test("a ledger row for another head, or one merely echoed, leaves the review alone", () => {
-    const bash = (n: number, command: string) => [
-      JSON.stringify({ type: "assistant", uuid: `a-x${n}`, sessionId: "sess-rev", message: { id: `msg_X${n}`, role: "assistant", content: [{ type: "tool_use", id: `toolu_x${n}`, name: "Bash", input: { command } }] } }),
-      JSON.stringify({ type: "user", uuid: `u-x${n}`, sessionId: "sess-rev", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_x${n}`, content: "ok" }] } }),
-    ];
     const extra = [
-      ...bash(1, "bash scripts/cr/ledger-append.sh amend --head fedcba9876543210fedcba9876543210fedcba98 --id codex-1 --set verdict=fixed --reason r"),
+      ...bash(1, "bash scripts/cr/ledger-append.sh amend --head fedcba9876543210fedcba9876543210fedcba98 --id codex-1 --set verdict=fixed --reason r", "ledger-append.sh: amended codex-1 at fedcba98 -> {}"),
       ...bash(2, "echo 'bash scripts/cr/ledger-append.sh finding --id codex-2 --verdict fixed --reason r'"),
-      ...bash(3, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-2 --set verdict=fixed --reason r`),
+      ...bash(3, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-2 --set verdict=fixed --reason r`, amended("codex-2")),
     ];
-    const text = readFileSync(join(FIX, "review-panel.jsonl"), "utf8") + extra.join("\n") + "\n";
-    const deltas = mapJournal(text).events.filter((e) => e.type === "STATE_DELTA");
+    const deltas = withExtra(extra).filter((e) => e.type === "STATE_DELTA");
     expect(deltas).toHaveLength(3);
     expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/1/verdict", value: "fixed" }] });
+  });
+
+  // HIMMEL-4655 (codex-3): a command's success is not each ledger call's success.
+  test("an amend applies only when its confirmation line is in the result", () => {
+    const deltas = withExtra([
+      ...bash(1, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r || true`, "ledger-append.sh: amend found NO finding codex-1 at head 01234567 - nothing amended."),
+      ...bash(2, `if false; then bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-2 --set verdict=fixed --reason r; fi`, ""),
+      ...bash(3, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r; bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-2 --set verdict=agreed --reason r || true`, amended("codex-1")),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("a finding row applies unless the ledger refused something, or it was appended as an amend", () => {
+    const finding = (id: string, verdict: string) => `bash scripts/cr/ledger-append.sh finding --head ${HEAD} --id ${id} --verdict ${verdict} --reason r`;
+    const deltas = withExtra([
+      ...bash(1, `${finding("codex-1", "fixed")} || true`, "ledger-append.sh: finding codex-1 is ALREADY recorded at head 0123 with different content - NOTHING was written"),
+      ...bash(2, `${finding("codex-1", "fixed")}; ${finding("codex-2", "fixed")} || true`, "ledger-append.sh: appended verdict amend for codex-1 at 01234567\nledger-append.sh: --verdict must be agreed|disproved (got 'x') - NOTHING was written"),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  // HIMMEL-4655 (codex-4): an Edit of a staged verdict file is followed, never shown stale.
+  test("an Edit of a staged verdict file updates what write-verdicts --from-file applies", () => {
+    const run = "bash scripts/cr/write-verdicts.sh aggregate --from-file /tmp/scratch/v2.txt";
+    const deltas = withExtra([
+      ...tool(1, "Write", { file_path: "/tmp/scratch/v2.txt", content: "VERDICT [codex-1] = agreed\nVERDICT [codex-2] = agreed\n" }),
+      ...tool(2, "Edit", { file_path: "/tmp/scratch/v2.txt", old_string: "[codex-2] = agreed", new_string: "[codex-2] = conflict" }),
+      ...bash(3, run),
+      ...tool(4, "Edit", { file_path: "/tmp/scratch/v2.txt", old_string: "not in the cached text", new_string: "x" }),
+      ...bash(5, run),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({
+      delta: [
+        { op: "add", path: "/review/findings/0/verdict", value: "agreed" },
+        { op: "add", path: "/review/findings/1/verdict", value: "conflict" },
+      ],
+    });
+  });
+
+  test("a failed Edit leaves the staged text; replace_all replaces every match", () => {
+    const deltas = withExtra([
+      ...tool(1, "Write", { file_path: "/tmp/scratch/v3.txt", content: "VERDICT [codex-1] = agreed\nVERDICT [codex-2] = agreed\n" }),
+      ...tool(2, "Edit", { file_path: "/tmp/scratch/v3.txt", old_string: "agreed", new_string: "disproved", replace_all: true }),
+      ...tool(3, "Edit", { file_path: "/tmp/scratch/v3.txt", old_string: "disproved", new_string: "conflict", replace_all: true }, true),
+      ...bash(4, "bash scripts/cr/write-verdicts.sh aggregate --from-file /tmp/scratch/v3.txt"),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas[2]).toMatchObject({
+      delta: [
+        { op: "add", path: "/review/findings/0/verdict", value: "disproved" },
+        { op: "add", path: "/review/findings/1/verdict", value: "disproved" },
+      ],
+    });
+  });
+});
+
+describe("ledger confirmations and Edits, review follow-ups", () => {
+  test("one confirmation line backs one amend row of an id", () => {
+    const deltas = withExtra([
+      ...bash(1, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r; bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=agreed --reason r`, amended("codex-1")),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("a confirmation that echoes a verdict backs only the row with that verdict", () => {
+    const deltas = withExtra([
+      ...bash(1, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=agreed --reason r; bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-1 --set verdict=fixed --reason r`, amended("codex-1")),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "fixed" }] });
+  });
+
+  test("an Edit that adds the first VERDICT line to a Write without any is followed", () => {
+    const deltas = withExtra([
+      ...tool(1, "Write", { file_path: "/tmp/scratch/v5.txt", content: "notes only\n" }),
+      ...tool(2, "Edit", { file_path: "/tmp/scratch/v5.txt", old_string: "notes only", new_string: "VERDICT [codex-1] = agreed" }),
+      ...bash(3, "bash scripts/cr/write-verdicts.sh aggregate --from-file /tmp/scratch/v5.txt"),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "agreed" }] });
+  });
+
+  test("an Edit that removes every VERDICT line is still followed by a later Edit", () => {
+    const deltas = withExtra([
+      ...tool(1, "Write", { file_path: "/tmp/scratch/v4.txt", content: "VERDICT [codex-1] = agreed\n" }),
+      ...tool(2, "Edit", { file_path: "/tmp/scratch/v4.txt", old_string: "VERDICT [codex-1] = agreed", new_string: "nothing" }),
+      ...tool(3, "Edit", { file_path: "/tmp/scratch/v4.txt", old_string: "nothing", new_string: "VERDICT [codex-1] = disproved" }),
+      ...bash(4, "bash scripts/cr/write-verdicts.sh aggregate --from-file /tmp/scratch/v4.txt"),
+    ]).filter((e) => e.type === "STATE_DELTA");
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/0/verdict", value: "disproved" }] });
   });
 });
 
