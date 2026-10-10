@@ -35,6 +35,9 @@ BIN="$TMP/bin"; mkdir -p "$BIN"
 #   open_issue    number of the open main-red issue  (issue list); absent = none
 #   issue_body    that issue's body                  (issue view)
 #   list_fail     if present, `issue list` exits 1
+#   closed_issue  number of the newest CLOSED main-red issue (issue list --state closed)
+#   closed_body   that issue's body (issue view <closed_issue>)
+#   closed_list_fail  if present, only `issue list --state closed` exits 1
 cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "gh $*" >> "$STUB/gh.log"
@@ -53,8 +56,11 @@ case "$*" in
       cat "$STUB/lastgreen" 2>/dev/null
     fi ;;
   "api "*"/actions/runs/"*) cat "$STUB/run.txt" ;;
+  "issue list"*"--state closed"*) [ -e "$STUB/closed_list_fail" ] && exit 1; cat "$STUB/closed_issue" 2>/dev/null ;;
   "issue list"*)            [ -e "$STUB/list_fail" ] && exit 1; cat "$STUB/open_issue" 2>/dev/null ;;
-  "issue view"*)            cat "$STUB/issue_body" 2>/dev/null ;;
+  "issue view"*)
+    if [ -e "$STUB/closed_issue" ] && [ "$3" = "$(cat "$STUB/closed_issue")" ]; then cat "$STUB/closed_body" 2>/dev/null
+    else cat "$STUB/issue_body" 2>/dev/null; fi ;;
   "issue create"*|"issue edit"*|"issue comment"*|"issue close"*|"label create"*) : ;;
   *) echo "stub gh: unhandled: $*" >&2; exit 99 ;;
 esac
@@ -326,6 +332,91 @@ printf '7\n' > "$STUB/open_issue"
 printf 'old body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
 sweep
 has "gh issue close 7" "$log" "a newer green run closes the older red"
+
+# 18. HIMMEL-5129: a newer green sweep CLOSED the issue before an older red
+# sweep finished. The close stamps its run id; the older red run must find that
+# marker on the newest closed issue and open nothing.
+newcase closed-newer-green
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '6\n' > "$STUB/closed_issue"
+printf 'old body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: lint -->\n\n<!-- main-red-closed-run: 950 -->\n' > "$STUB/closed_body"
+sweep
+if [ "$rc" -eq 0 ]; then ok "older red after a newer close exits 0"; else bad "older red after a newer close exit=$rc; out: $out"; fi
+hasnt "gh issue create" "$log" "an older red run does not reopen a report a newer green closed"
+
+newcase closed-older-green
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '6\n' > "$STUB/closed_issue"
+printf 'old body\n<!-- main-red-run: 700 -->\n<!-- main-red-closed-run: 800 -->\n' > "$STUB/closed_body"
+sweep
+has "gh issue create" "$log" "a red run newer than the closing run still opens the issue"
+
+# A hand-closed issue has no closed-run marker; its last red run still orders.
+newcase closed-by-hand-newer
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '6\n' > "$STUB/closed_issue"
+printf 'body\n<!-- main-red-run: 950 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/closed_body"
+sweep
+hasnt "gh issue create" "$log" "an older red run does not reopen over a hand-closed newer report"
+
+# A real closed report from before the markers existed (yotamleo/Himmel#2262,
+# fetched verbatim) carries neither marker, so it never blocks a new red.
+newcase closed-real-premarker
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '2262\n' > "$STUB/closed_issue"
+cat > "$STUB/closed_body" <<'REAL'
+**Automated main-red report** -- maintained in place by main-sweep-red.yml. Do not open duplicates; this issue is refreshed each completed push-to-main sweep and is closed automatically only after a later sweep runs and passes every job listed below.
+
+Policy (CI red triage): a green merge followed by a red main means **fix main**. Find the owning PR from the range below and bisect by the failed jobs.
+
+- tested sha: f343c0e266336aee395f2612d8f62ca3b927528f
+- sweep: https://github.com/yotamleo/Himmel/actions/runs/37964772913
+- last red sweep: 2026-10-09 18:25 UTC
+- since last green: a1c73a992bd541e611a63ae8d639748ffc30d651
+
+Failed jobs (still unresolved):
+- failed: shell-unit (ubuntu-latest)
+
+<!-- main-red-failed: shell-unit (ubuntu-latest) -->
+REAL
+sweep
+has "gh issue create" "$log" "a pre-marker closed report does not block a new red"
+
+# The closed-issue lookup failing is never read as "no closed issue".
+newcase closed-lookup-fail
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+: > "$STUB/closed_list_fail"
+sweep
+if [ "$rc" -eq 1 ]; then ok "red + closed lookup failure -> exit 1"; else bad "red + closed lookup failure exit=$rc"; fi
+hasnt "gh issue create" "$log" "closed lookup failure never opens a report"
+
+# The close itself records the closing run id (and edits before it closes).
+newcase close-records-run
+printf 'success%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+has "main-red-closed-run: 900" "$out" "the close records the closing run id in the body"
+has "gh issue edit 7" "$log" "the close edits the body"
+has "gh issue close 7" "$log" "the close still closes"
+
+# 19. HIMMEL-5129: a re-run of the SAME run id (ordering guard is strict -gt)
+# must refresh the open issue, not be ignored as older.
+newcase order-equal-red
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 900 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+has "gh issue edit 7" "$log" "a re-run of the same run id refreshes the issue"
+
+newcase order-equal-green
+printf 'success%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 900 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+has "gh issue close 7" "$log" "a green re-run of the same run id still closes"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi

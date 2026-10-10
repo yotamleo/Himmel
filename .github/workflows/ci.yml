@@ -17,7 +17,7 @@ on:
   # hours on the green ones alone) and those runs competed with PR runs for the
   # account's 20 runner slots. Post-merge verification (HIMMEL-511) is now the
   # main-sweep cron below. Trade-off: a break that reached main surfaces up to
-  # 7 h later and spans every merge since the previous run; the cron run prints
+  # a nominal 7 h later and spans every merge since the previous run; the cron run prints
   # that range (step `Merge range since the previous main run`) and
   # main-sweep-red.yml names it in the main-red issue.
   # A run at an exact sha (a tag cut, a bisect) is a manual dispatch:

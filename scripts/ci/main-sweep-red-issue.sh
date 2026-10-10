@@ -150,6 +150,31 @@ if [ -n "$num" ]; then
   fi
 fi
 
+# HIMMEL-5129: the ordering guard above only sees an OPEN issue. A newer green
+# sweep closes the issue, so an older red sweep that finishes afterwards finds
+# none and would open a stale report. The close step therefore stamps the run id
+# into the issue body (main-red-closed-run) before closing; a red run with no
+# open issue reads the newest closed issue and stands down when that issue's
+# newest recorded run (closed-run, or the last red run for a hand close) is newer.
+if [ -z "$num" ] && [ -s "$TMP/failed" ]; then
+  if ! cnum="$(gh issue list --label "$LABEL" --state closed --limit 1 \
+      --json number --jq '.[0].number // empty' 2>/dev/null)"; then
+    echo "main-sweep-red-issue: could not query closed issues (gh lookup failed) -- not creating, to avoid a stale report. Retrying next sweep." >&2
+    exit 1
+  fi
+  if [ -n "$cnum" ]; then
+    if ! cbody="$(gh issue view "$cnum" --json body --jq .body 2>/dev/null)"; then
+      echo "main-sweep-red-issue: could not read closed issue #$cnum (gh failed) -- not creating." >&2
+      exit 1
+    fi
+    closed_run="$(printf '%s\n' "$cbody" | sed -n 's/^<!-- main-red-\(closed-run\|run\): \([0-9][0-9]*\) -->[[:space:]]*$/\2/p' | sort -n | tail -n 1)"
+    if [ -n "$closed_run" ] && [ "$closed_run" -gt "$RUN_ID" ]; then
+      echo "main-sweep-red-issue: closed #$cnum was last written by run $closed_run, newer than $RUN_ID -- ignoring this older red run."
+      exit 0
+    fi
+  fi
+fi
+
 # new set = (recorded minus passed-now) plus failed-now, one name per line.
 { grep -Fxv -f "$TMP/passed" "$TMP/recorded" 2>/dev/null; cat "$TMP/failed"; } | sort -u > "$TMP/newset"
 # grep -f with an empty pattern file matches nothing (so -v keeps everything);
@@ -237,6 +262,14 @@ fi
 if [ ! -s "$TMP/newset" ]; then
   echo "main-sweep-red-issue: every recorded failed job ran and passed -- closing #$num"
   mut=0
+  # Stamp the closing run id first; if that edit fails keep the issue open so
+  # the close is retried with the marker rather than closed without it.
+  { printf '%s\n' "$body"; echo ""; echo "<!-- main-red-closed-run: $RUN_ID -->"; } > "$TMP/closed-body.md"
+  cat "$TMP/closed-body.md"
+  if ! gh issue edit "$num" --body-file "$TMP/closed-body.md"; then
+    echo "main-sweep-red-issue: failed to record the closing run on #$num (see above) -- retries next sweep." >&2
+    exit 1
+  fi
   gh issue comment "$num" --body "Green as of $(now) at $SHA: every job that was red ran and passed in $RUN_URL. Closing." || mut=1
   gh issue close "$num" || mut=1
   if [ "$mut" -ne 0 ]; then
