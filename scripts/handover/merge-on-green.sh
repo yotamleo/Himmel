@@ -926,6 +926,8 @@ esac
 # Since HIMMEL-5113 main CI is a cron/dispatch sweep, not a per-push run, so
 # that run covers a RANGE of commits: the refusal names it (the run behind it
 # in the list is the previous sweep's head).
+#   - only push, schedule and workflow_dispatch runs count: `--branch main`
+#     also lists pull_request runs of a fork's branch named main.
 #   - newest completed run green          → proceed, nothing audited.
 #   - red, and this PR is the declared fix → proceed, audited. The declaration
 #     is a commit-message line in the PR: `Fixes-main-red: run=<run id>` (must
@@ -954,9 +956,12 @@ mr_rows=$("$GH" run list --repo "$nwo" --branch "$default_branch" --workflow CI 
     --jq '.[] | "\(.databaseId)|\(.status)|\(.conclusion)|\(.event)|\(.headSha)"' 2>/dev/null) || mr_rc=$?
 [ "$mr_rc" -eq 0 ] || main_red_refuse "cannot read $nwo's $default_branch CI runs (gh run list exit $mr_rc), so main's state is unverified" "phase=run-list rc=$mr_rc"
 mr_run="" mr_conc="" mr_head="" mr_base="" mr_seen=0 mr_limit=50
-while IFS='|' read -r mr_id mr_status mr_c _ mr_sha; do
+while IFS='|' read -r mr_id mr_status mr_c mr_ev mr_sha; do
     [ -n "$mr_id" ] || continue
     mr_seen=$((mr_seen + 1))
+    # `--branch main` also matches pull_request runs from a fork whose branch
+    # is named main; only runs OF the default branch (push, cron, dispatch) count.
+    case "$mr_ev" in schedule | workflow_dispatch | push) ;; *) continue ;; esac
     [ "$mr_status" = completed ] || continue
     case "$mr_c" in cancelled | skipped | null | "") continue ;; esac
     if [ -n "$mr_run" ]; then mr_base=$mr_sha; break; fi

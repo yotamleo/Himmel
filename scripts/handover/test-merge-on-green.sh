@@ -349,7 +349,8 @@ repo_arg="${3:-}"
 api_path="${2:-}"
 json=""
 jqexpr=""
-while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; --jq) jqexpr="${2:-}";; esac; shift; done
+run_branch="" run_workflow=""
+while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; --jq) jqexpr="${2:-}";; --branch) run_branch="${2:-}";; --workflow) run_workflow="${2:-}";; esac; shift; done
 nwo="${STUB_NWO:-owner/repo}"
 def_files='[{"filename":"README.md"}]'
 case "$verb" in
@@ -522,6 +523,10 @@ case "$verb" in
         # below the fixture builder), so every pre-existing case sees a green main.
         [ "${STUB_RUN_LIST_FAIL:-0}" = "1" ] && { echo "gh: run list failed" >&2; exit 1; }
         [ -n "$jqexpr" ] || { echo "gh stub: 'run list' missing --jq" >&2; exit 93; }
+        # A real `gh run list` without these flags returns every branch's and
+        # workflow's runs, so a call that drops one must not see main's window.
+        [ "$run_branch" = "${STUB_DEFAULT_BRANCH-main}" ] || { echo "gh stub: 'run list' --branch '$run_branch' is not the default branch" >&2; exit 94; }
+        [ "$run_workflow" = "CI" ] || { echo "gh stub: 'run list' --workflow '$run_workflow' is not CI" >&2; exit 95; }
         printf '%s' "${STUB_RUN_LIST_JSON-${STUB_RUN_LIST_JSON_DEFAULT:-[]}}" | jq -r "$jqexpr" ;;
     "run view")
         [ "${STUB_RUN_VIEW_FAIL:-0}" = "1" ] && { echo "gh: run view failed" >&2; exit 1; }
@@ -3961,6 +3966,15 @@ done
 mog5115_cap="${mog5115_cap%,}]"
 STUB_RUN_LIST_JSON="$mog5115_cap" run_mog 22 "5115-r: 50 cancelled runs, none completed → exit 22"
 assert_audit_has "5115-r: audited as a run-list refusal" "phase=run-list seen=50"
+
+# 5115-s — a newer completed GREEN pull_request run (a fork PR from a branch
+# named main) on top of a RED schedule run must not hide the red; and a RED
+# pull_request run on top of a green schedule run must not block.
+STUB_RUN_LIST_JSON='[{"databaseId":400,"status":"completed","conclusion":"success","event":"pull_request","headSha":"dddddddddddd4444444444444444444444444444"},{"databaseId":300,"status":"completed","conclusion":"failure","event":"schedule","headSha":"aaaaaaaaaaaa1111111111111111111111111111"},{"databaseId":100,"status":"completed","conclusion":"success","event":"schedule","headSha":"cccccccccccc3333333333333333333333333333"}]' \
+    run_mog 22 "5115-s: green fork pull_request run does not hide a red schedule run → exit 22"
+assert_err_has "5115-s: the red run is the schedule run" "300"
+STUB_RUN_LIST_JSON='[{"databaseId":400,"status":"completed","conclusion":"failure","event":"pull_request_target","headSha":"dddddddddddd4444444444444444444444444444"},{"databaseId":300,"status":"completed","conclusion":"success","event":"schedule","headSha":"aaaaaaaaaaaa1111111111111111111111111111"}]' \
+    run_mog 0 "5115-s2: red fork pull_request_target run does not block a green main → merged"
 
 # 5115-j — an unreadable run list is unverified: refuse (fail closed).
 STUB_RUN_LIST_FAIL=1 run_mog 22 "5115-j: run list read fails → exit 22"
