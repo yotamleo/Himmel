@@ -64,8 +64,9 @@
 # copy class that is provably harmless (a plain literal name copied to a
 # plain literal name, `_plain_name_copy`, which still refuses a name that
 # exists under the payload's cwd as a symlink to the lift or its directory; a
-# proven cwd resolves such a link too, only a link that exists solely in the
-# cwd a `cd` moved to goes unseen). The remainder stays denied because
+# proven cwd resolves such a link too, as does the target of a literal
+# absolute `cd`/`pushd`; a relative or computed `cd` keeps the copy denied).
+# The remainder stays denied because
 # the member names or the resolved cwd are unknowable to a text layer: an
 # extraction under an unproven cwd, `ln` with a computed or relative source,
 # a computed extraction destination, and a glob that can match the lift's
@@ -956,8 +957,8 @@ _lit_name() {
 # source (which spill a directory's contents) never qualify. A destination that
 # already exists, under the payload's cwd, as a symlink (chain) to the lift or
 # to its state / .himmel / HOME directory is refused: the name is plain but
-# the write is not. Accepted ceiling: after a `cd` the real cwd is not the
-# payload's, so a link that exists only there is not seen.
+# the write is not. The same holds under each literal absolute `cd`/`pushd`
+# target; a relative or computed `cd`, `eval` and the like refuse the allow.
 _plain_name_copy() {
     local dest="$1" flags="$2" s
     shift 2
