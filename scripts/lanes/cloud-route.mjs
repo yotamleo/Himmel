@@ -219,8 +219,13 @@ function mergedPrs(keys) {
   const run = (extra) => JSON.parse(execFileSync(gh, ['pr', 'list', '--repo', REPO_SLUG, '--state', 'merged', '--json', 'number,title,body,mergedAt,files', ...extra], { encoding: 'utf8', timeout: 60000 }) || '[]');
   const since = new Date(Date.now() - STALE_DAYS * 86400e3).toISOString().slice(0, 10);
   const all = new Map();
+  // ponytail: the file-overlap window reads at most 200 PRs, so a busier fortnight can hide an overlap, upgrade path HIMMEL-5166 (paginate or search per file)
   for (const pr of run(['--limit', '200', '--search', `merged:>=${since}`])) all.set(pr.number, pr);
-  for (const k of keys) for (const pr of run(['--limit', '30', '--search', `${k} in:title,body`])) all.set(pr.number, pr);
+  for (const k of keys) {
+    const hits = run(['--limit', '30', '--search', `${k} in:title,body`]);
+    if (hits.length >= 30) throw new Error(`30 merged PRs match ${k} — the search may be truncated`);
+    for (const pr of hits) all.set(pr.number, pr);
+  }
   return [...all.values()];
 }
 

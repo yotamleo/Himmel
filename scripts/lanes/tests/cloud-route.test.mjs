@@ -358,6 +358,21 @@ test('BLOCKED: merged-PR list unavailable, so the ticket cannot be proven unfixe
   assert.equal(classifyTicket(T4686, ctx({ mergedUnknown: true })).class, 'BLOCKED');
 });
 
+test('CLI: a key search that returns a full page is BLOCKED, never CLOUD-OK on the omitted matches', () => {
+  const { dir, bucket, jira } = setup();
+  const page = JSON.stringify(Array.from({ length: 30 }, (_, i) => ({ number: 3000 + i, title: 'x', body: '', mergedAt: '2000-01-01T00:00:00Z', files: [] })));
+  const gh = stub(dir, 'gh4', `
+if [ "$1 $2" = "pr list" ] && printf '%s ' "$@" | grep -q -- 'in:title,body'; then echo '${page}'; exit 0; fi
+if [ "$1 $2" = "pr list" ] && printf '%s ' "$@" | grep -q -- '--state merged'; then echo '[]'; exit 0; fi
+if [ "$1 $2" = "pr list" ]; then exit 0; fi
+exit 1`);
+  const r = spawnSync(process.execPath, [CLI, '--classify-only', '--bucket', bucket, '--console', 'AD', 'HIMMEL-9001'], {
+    encoding: 'utf8', env: { ...process.env, CLOUD_ROUTE_JIRA_CMD: jira, CLOUD_ROUTE_GH_CMD: gh },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /HIMMEL-9001\tBLOCKED\t.*merged-PR list unavailable/);
+});
+
 test('CLI: a ticket whose files a merged PR touched prints VERIFY-LOCAL with the PR number and writes no brief', () => {
   const { dir, bucket, jira } = setup();
   const gh = stub(dir, 'gh3', `
