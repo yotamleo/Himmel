@@ -273,6 +273,8 @@ detail; the full map is in [`docs/README.md`](docs/README.md).
   lanes, queried live via `/lanes` —
   [`docs/glm-offload.md`](docs/glm-offload.md) +
   [`docs/tooling-catalog.md`](docs/tooling-catalog.md)
+- Cloud lane — `claude --cloud` sessions on your fork, environment recipe and
+  self-check — [`docs/setup/cloud-environment.md`](docs/setup/cloud-environment.md)
 - Token-free watchers — `/morning-report` (git/gh/jira state at ~zero
   tokens) and the `check-ci` merge-gate watcher —
   [`docs/commands-catalog.md`](docs/commands-catalog.md)

@@ -202,7 +202,8 @@ if [ "$RC" -eq 2 ]; then ok "unknown flag exits 2"; else bad "unknown flag rc=$R
 TEMPLATE="$ROOT/docs/handover/cloud-brief-template.md"
 RECIPE="$ROOT/docs/setup/cloud-environment.md"  # the operator's environment recipe (HIMMEL-4429)
 if [ -f "$RECIPE" ]; then ok "environment recipe exists"; else bad "environment recipe $RECIPE missing"; fi
-case "$(grep -h 'setup-env.sh' "$RECIPE" 2>/dev/null)" in *"--with-plugins || true"*) ok "recipe paste installs the plugin profile" ;; *) bad "recipe paste lacks '--with-plugins || true'" ;; esac
+# the recipe's paste is rendered by check-env.sh --print (HIMMEL-5163), not inlined
+case "$(grep -h 'setup-env.sh' "$ROOT/scripts/cloud/check-env.sh" 2>/dev/null)" in *"--with-plugins || true"*) ok "recipe paste installs the plugin profile" ;; *) bad "recipe paste lacks '--with-plugins || true'" ;; esac
 pastes="$(grep -h 'bash /tmp/himmel-setup/scripts/cloud/setup-env.sh' "$SETUP" "$TEMPLATE" "$RECIPE" 2>/dev/null)"
 unsafe="$(grep -v '|| true$' <<< "$pastes")"
 if [ -z "$pastes" ]; then

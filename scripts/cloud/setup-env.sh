@@ -224,4 +224,9 @@ else
 fi
 
 if [ "$failed" -ne 0 ]; then echo "setup-env: $failed step(s) failed" >&2; exit 1; fi
+
+# 11. Stamp the hash of this script, only after every step passed, so a
+# session's `check-env.sh` can tell a stale cached snapshot from the repo's
+# current script and an unfinished setup leaves no stamp (HIMMEL-5163).
+soft_step env-stamp record "scripts/cloud/check-env.sh --stamp" -- bash "$ROOT/scripts/cloud/check-env.sh" --stamp
 echo "setup-env: done (dry-run=$DRY)" >&2
