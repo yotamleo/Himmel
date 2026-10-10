@@ -125,7 +125,15 @@ if [ "$mode" = check ]; then
 else
   # User settings with every plugin and MCP server removed (qmd, obsidian, ...).
   if [ -f "$HOME/.claude/settings.json" ]; then
-    jq 'del(.enabledPlugins, .mcpServers, .enabledMcpjsonServers, .enableAllProjectMcpServers)' \
+    # HIMMEL-5077: claudex's classifier runs client-side on the codex model and over-reads
+    # the rm -rf deny rule; the row's own test scripts get an allow rule (resolved before
+    # the classifier) and own-file rewrites an autoMode.allow line. The deny list stays.
+    jq --arg lane "$LANE" --arg wt "$WT" --arg jwt "$JWT" \
+      'del(.enabledPlugins, .mcpServers, .enabledMcpjsonServers, .enableAllProjectMcpServers)
+       | if $lane == "claudex" then
+           .permissions.allow = (((.permissions.allow // []) + ["Bash(bash \($jwt)/lq-work/test-*.sh)", "Bash(bash \($wt)/lq-work/test-*.sh)"]) | unique)
+           | .autoMode.allow = ((.autoMode.allow // ["$defaults"]) + ["Editing or rewriting files inside the task'"'"'s own working directory (\($jwt)/lq-work) is routine work, not destruction: the row worktree is a disposable eval copy"])
+         else . end' \
       "$HOME/.claude/settings.json" >"$RUN/user-settings.json" || die "cannot filter the user settings"
     A+=(--ro-bind "$RUN/user-settings.json" "$HOME/.claude/settings.json")
   fi

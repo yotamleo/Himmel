@@ -143,6 +143,19 @@ check 'the export drops the eval kit and the handover stub, keeps the launcher' 
 check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
 sed 's/^LANE=.*/LANE=claudex/' "$TMP/root/rows/p01.env" >"$TMP/claudex.env"
 check 'a claudex row builds its jail (no API host to map)' 'bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1 && ! grep -q api "$TMP/root/run/p01/hosts"'
+# HIMMEL-5077: the claudex classifier runs client-side on the codex model, so the
+# jail user settings allow the row's own test scripts and say own-file rewrites are
+# routine; the deny list and every other lane's settings stay as they were.
+mkdir -p "$TMP/home5077/.claude"
+echo '{"permissions":{"allow":["Read"],"deny":["Bash(rm -rf *)"]},"autoMode":{"environment":["$defaults"]}}' >"$TMP/home5077/.claude/settings.json"
+HOME="$TMP/home5077" bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1
+CS="$TMP/root/run/p01/user-settings.json"; jwt="$TMP/repo/.claude/worktrees/lq-pilot-p01"
+want_allow="$(jq -nc --arg w "$wt" --arg j "$jwt" '["Read", "Bash(bash \($j)/lq-work/test-*.sh)", "Bash(bash \($w)/lq-work/test-*.sh)"] | sort')"
+check 'a claudex jail allows only the row'"'"'s own lq-work test scripts' '[ "$(jq -c ".permissions.allow | sort" "$CS" 2>/dev/null)" = "$want_allow" ]'
+check 'a claudex jail keeps the deny list untouched' '[ "$(jq -c ".permissions.deny" "$CS" 2>/dev/null)" = "[\"Bash(rm -rf *)\"]" ]'
+check 'a claudex jail keeps the classifier defaults and calls own lq-work rewrites routine' 'jq -e --arg j "$jwt" ".autoMode.allow[0] == \"\$defaults\" and (.autoMode.allow | length) == 2 and (.autoMode.allow[1] | contains(\$j + \"/lq-work\")) and .autoMode.environment == [\"\$defaults\"]" "$CS" >/dev/null 2>&1'
+HOME="$TMP/home5077" bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1
+check 'a deepseek jail gets no claudex allow rule' '[ "$(jq -c . "$CS")" = "$(jq -c . "$TMP/home5077/.claude/settings.json")" ]'
 cp "$wt/.git" "$TMP/dotgit"
 printf 'gitdir: %s\n' "$TMP/repo/.git" >"$wt/.git"
 check 'a worktree repointed at the primary .git is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
