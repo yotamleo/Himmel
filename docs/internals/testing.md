@@ -227,7 +227,8 @@ fails the check when:
 - a suite ran red;
 - a suite was left unrun.
 
-Push to main and the nightly schedule keep the full sweep. When a main-push
+The main cron sweep (HIMMEL-5113: `ci.yml` has no push-to-main trigger),
+a `workflow_dispatch` and the nightly schedule keep the full sweep. When a main
 sweep is red, the aggregator records
 `impacted-suites.sh --selector-miss` rows in the step summary and in the
 `selector-miss-ledger` artifact. Those rows name the red suites a PR run

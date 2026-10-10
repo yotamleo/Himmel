@@ -245,6 +245,88 @@ has "failed: shell-unit (ubuntu-latest)" "$out" "the failed aggregator is report
 has "failed: lint" "$out" "a timed-out non-shard job is reported failed"
 hasnt "failed: doc-invariants" "$out" "a plain cancelled job (no timeout note) is not reported failed"
 
+# 14. HIMMEL-5113: main has no push runs, so the range anchor is the newest earlier
+# green non-PR run on main, and a pull_request run whose head branch is named
+# `main` (a fork) is never the anchor.
+if command -v jq >/dev/null 2>&1; then
+  newcase cron-anchor
+  printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+  printf '%s\n' '{"workflow_runs":[{"id":850,"event":"pull_request","head_sha":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},{"id":800,"event":"schedule","head_sha":"dddddddddddddddddddddddddddddddddddddddd"}]}' > "$STUB/runs.json"
+  sweep
+  has "since last green: dddddddddddddddddddddddddddddddddddddddd" "$out" "range anchors on the newest earlier cron run, not a PR run"
+  hasnt "event=push" "$log" "the range lookup no longer filters on event=push"
+else
+  ok "SKIP cron-anchor case (jq not installed)"
+fi
+
+# 15. The nightly is also swept now: its windows legs (continue-on-error by
+# design) and the schedule-only guard-corpus-full job are not main's health.
+newcase nightly-only-jobs
+printf 'failure%sshell-unit (windows-latest)\nfailure%sbun-suites (windows-latest)\nfailure%sguard-corpus-full\nsuccess%sshell-unit (ubuntu-latest)\n' "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+if [ "$rc" -eq 0 ]; then ok "nightly-only reds exit 0"; else bad "nightly-only reds exit=$rc; out: $out"; fi
+hasnt "gh issue create" "$log" "a red windows leg / guard-corpus-full opens no main-red issue"
+
+# 16. HIMMEL-5113 judge R1: the nightly (any `(windows-latest` job, or a
+# non-skipped guard-corpus-full) runs the tier=all shell-unit, whose extended-only
+# reds are not main's fast-sweep health and go to shell-extended-nightly-issue.sh.
+# A red nightly opens nothing; a green nightly never closes an open main-red.
+newcase nightly-red
+printf 'success%sbun-suites (windows-latest)\nsuccess%sguard-corpus-full\nfailure%sshell-unit (ubuntu-latest)\n' "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+if [ "$rc" -eq 0 ]; then ok "red nightly exits 0"; else bad "red nightly exit=$rc; out: $out"; fi
+hasnt "gh issue create" "$log" "a red nightly (tier=all shell-unit) opens no main-red issue"
+
+newcase nightly-green-open
+printf 'success%sbun-suites (windows-latest)\nsuccess%sshell-unit (ubuntu-latest)\nsuccess%slint\n' "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-failed: shell-unit (ubuntu-latest) -->\n' > "$STUB/issue_body"
+sweep
+hasnt "gh issue close" "$log" "a green nightly never closes an open main-red issue"
+hasnt "gh issue comment" "$log" "a green nightly never touches the issue"
+
+newcase nightly-red-open
+printf 'failure%sshell-unit (ubuntu-latest)\nsuccess%sguard-corpus-full\n' "$tab" "$tab" > "$STUB/jobs.tsv"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+hasnt "gh issue edit" "$log" "a red nightly does not refresh an open issue"
+
+# A guard-corpus-full that was SKIPPED (the main sweep) does not make a run the
+# nightly; the filed body records the run id for the ordering guard below.
+newcase sweep-skipped-corpus
+printf 'skipped%sguard-corpus-full\nfailure%sshell-unit (ubuntu-latest)\n' "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+has "gh issue create" "$log" "a red sweep with a skipped guard-corpus-full still opens the issue"
+has "main-red-run: 900" "$out" "the report records the run id marker"
+
+# 17. HIMMEL-5113 judge R1b: an older run finishing late never closes or
+# refreshes a newer red (marker run id compared numerically).
+newcase order-older-green
+printf 'success%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 950 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+hasnt "gh issue close" "$log" "an older green run does not close a newer red"
+hasnt "gh issue comment" "$log" "an older run does not touch the issue"
+
+newcase order-older-red
+printf 'failure%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 950 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+hasnt "gh issue edit" "$log" "an older red run does not overwrite a newer report"
+
+newcase order-newer-green
+printf 'success%slint\n' "$tab" > "$STUB/jobs.tsv"
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa success https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf '7\n' > "$STUB/open_issue"
+printf 'old body\n<!-- main-red-run: 800 -->\n<!-- main-red-failed: lint -->\n' > "$STUB/issue_body"
+sweep
+has "gh issue close 7" "$log" "a newer green run closes the older red"
+
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
 echo "all checks passed."

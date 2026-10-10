@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/ci/test-ci-nightly-only-os.sh -- regression suite for HIMMEL-3853:
-# Windows is verified by the NIGHTLY (`schedule`) only (macOS by its own cadence
+# Windows is verified by the NIGHTLY cron only (macOS by its own cadence
 # workflow, macos-cadence.yml -- HIMMEL-3902). ci.yml has no
 # `force_all_os` dispatch input, so no manually dispatched run can occupy the
 # paid Windows/macOS runner slots (2026-09-29: per-PR dispatches held 14 of the
@@ -71,9 +71,11 @@ if not m:
 inner = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", " ".join(m.group(1).split()), re.DOTALL).group(1)
 inner = re.sub(r"fromJSON\((\x27[^\x27]*\x27)\)", lambda x: "json.loads(" + x.group(1) + ")", inner)
 inner = inner.replace("&&", " and ").replace("||", " or ")
-for ev in ("pull_request", "push", "workflow_dispatch", "schedule"):
+SCHED = {"schedule": "17 7 * * *", "schedule_main": "43 1,8,15,22 * * *"}
+for ev in ("pull_request", "workflow_dispatch", "schedule_main", "schedule"):
     try:
-        val = eval(inner, {"__builtins__": {}, "json": json}, {"github": NS(event_name=ev)})
+        gh = NS(event_name=("schedule" if ev.startswith("schedule") else ev), event=NS(schedule=SCHED.get(ev, "")))
+        val = eval(inner, {"__builtins__": {}, "json": json}, {"github": gh})
     except Exception as e:
         print("expression does not evaluate for %s: %r" % (ev, e), file=sys.stderr); sys.exit(1)
     print("%s=%s" % (ev, ",".join(val)))
@@ -88,7 +90,7 @@ check_matrix() {
     return
   fi
   local ev got
-  for ev in pull_request push workflow_dispatch; do
+  for ev in pull_request workflow_dispatch schedule_main; do
     got="$(sed -n "s/^$ev=//p" <<< "$out")"
     if [ "$got" = "ubuntu-latest" ]; then ok "$job: $ev runs ubuntu-latest only"
     else bad "$job: $ev matrix is '$got' (expected ubuntu-latest only)"; fi
@@ -104,14 +106,14 @@ check_matrix bun-suites "ubuntu-latest,windows-latest"
 # 4. SUITE_TIER_MODE=all (the full corpus) only on the nightly.
 tier="$(job_block shell-unit-shard | sed -n 's/^[[:space:]]*SUITE_TIER_MODE:[[:space:]]*//p')"
 case "$tier" in
-  "\${{ github.event_name == 'schedule' && 'all' || 'fast' }}")
-    ok "SUITE_TIER_MODE is 'all' on schedule only, 'fast' otherwise" ;;
+  "\${{ github.event.schedule == '17 7 * * *' && 'all' || 'fast' }}")
+    ok "SUITE_TIER_MODE is 'all' on the nightly cron only, 'fast' otherwise" ;;
   *) bad "SUITE_TIER_MODE expression is not schedule-only; got '$tier'" ;;
 esac
 
 # 5. The aggregator's nightly-only steps are keyed on schedule alone.
 agg="$(job_block shell-unit)"
-n_if="$(grep -c "github.event_name == 'schedule'" <<< "$agg")"
+n_if="$(grep -c "github.event.schedule == '17 7 \* \* \*'" <<< "$agg")"
 if [ "$n_if" -ge 2 ]; then ok "shell-unit's extended-tier issue steps are gated on schedule ($n_if if:s)"
 else bad "shell-unit has only $n_if schedule-gated steps (expected >= 2)"; fi
 
