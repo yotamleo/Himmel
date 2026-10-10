@@ -133,16 +133,20 @@ H_TPL=$(g rev-parse HEAD)
 # HIMMEL-5132: uninstall callers the case-sensitive, quote-blind rule missed,
 # and template root files test-vault-git.sh copies.
 g checkout -q -B lcps "$BASE"
+# The fence variable is assembled from parts so this file's own text never
+# matches test-uninstall-real-home-callers.sh's scan (the suite does the same).
+UN_A=HIMMEL; UN_B=_UNINSTALL_; UN_C=REAL_HOME
+UN_LOWER=$(printf '%s%s%s' "$UN_A" "$UN_B" "$UN_C" | tr '[:upper:]' '[:lower:]')
 # shellcheck disable=SC2016  # the planted text keeps a literal $env:
-printf '$env:himmel_uninstall_real_home = 1\n' > "$SB/scripts/tools/caller.ps1"
+printf '$env:%s = 1\n' "$UN_LOWER" > "$SB/scripts/tools/caller.ps1"
 g add -A; g commit -q -m "lowercase ps1 caller"
 H_LCPS=$(g rev-parse HEAD)
 g checkout -q -B qsplit "$BASE"
-printf 'export HIMMEL""_UNINSTALL_REAL_HOME=1\n' > "$SB/scripts/tools/split.sh"
+printf 'export %s""%s%s=1\n' "$UN_A" "$UN_B" "$UN_C" > "$SB/scripts/tools/split.sh"
 g add -A; g commit -q -m "quote-split caller"
 H_QSPLIT=$(g rev-parse HEAD)
 g checkout -q -B contsplit "$BASE"
-printf 'export HIMMEL_UNINSTALL_\\\nREAL_HOME=1\n' > "$SB/scripts/tools/cont.sh"
+printf 'export %s%s\\\n%s=1\n' "$UN_A" "$UN_B" "$UN_C" > "$SB/scripts/tools/cont.sh"
 g add -A; g commit -q -m "continuation-split caller"
 H_CONT=$(g rev-parse HEAD)
 H_TPLGI=$(branch tplgi templates/luna-second-brain/.gitignore '# edit')
