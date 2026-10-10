@@ -188,12 +188,13 @@ rep() {  # rep <string> <count> -- doubling, so building the payload is linear
     while [ "$k" -lt "$cnt" ]; do out+=$s; k=$(( k + 1 )); done
     printf '%s' "$out"
 }
-shape_row() {  # shape_row <member> <label> <unit> <small N> <big N> [<prefix> [<suffix>]]
-    local m=$1 label=$2 unit=$3 ns=$4 nb=$5 pre=${6:-echo } suf=${7:-} name small big
+shape_row() {  # shape_row <member> <label> <unit> <small N> <big N> [<prefix> [<suffix> [<closer>]]]
+    local m=$1 label=$2 unit=$3 ns=$4 nb=$5 pre=${6:-echo } suf=${7:-} cl=${8:-} name small big
     name=${m##*/}
     if [ ! -f "$ROOT/$m" ]; then fail "$name $label: wired member missing"; return; fi
-    payload "${pre}$(rep "$unit" "$ns")${suf}" "$SANDBOX/s.json"
-    payload "${pre}$(rep "$unit" "$nb")${suf}" "$SANDBOX/b.json"
+    # a closer, when given, is repeated N times after the unit run (nesting)
+    payload "${pre}$(rep "$unit" "$ns")$([ -n "$cl" ] && rep "$cl" "$ns")${suf}" "$SANDBOX/s.json"
+    payload "${pre}$(rep "$unit" "$nb")$([ -n "$cl" ] && rep "$cl" "$nb")${suf}" "$SANDBOX/b.json"
     BAD_RC=''
     min_ms "$m" "$SANDBOX/s.json"; small=$MS
     min_ms "$m" "$SANDBOX/b.json"; big=$MS
@@ -217,6 +218,7 @@ shape_row() {  # shape_row <member> <label> <unit> <small N> <big N> [<prefix> [
     shape_row scripts/hooks/require-quiet-run.sh 'quote-dense line' "'a b' " 2000 8000
     shape_row scripts/hooks/block-chokepoint-env-prefix.sh '${...} run with multibyte' '${V}é' 500 2000 'echo é'
     shape_row scripts/hooks/block-chokepoint-env-prefix.sh 'dense unmatched ${ openers' '${V:-' 2000 8000
+    shape_row scripts/hooks/block-chokepoint-env-prefix.sh 'deeply nested ${ with matching closers' '${V:-' 3000 12000 'echo ' '' '}'
     shape_row scripts/hooks/block-edit-live-settings.sh '$"..." name words' '~/.cl$"a"ude/x ' 500 2000 'echo ' '> /tmp/out.txt'
 }
 

@@ -1948,57 +1948,60 @@ _c_strip_expansion_openers() {
 }
 
 strip_brace_exp() {
-    local out="" piece before off hasbrace p k j nparts nsub
-    local olen=0 np=0 lastc=""
-    local -a pos parts sub
+    local piece seg k j nparts nsub cnt=0 np=0 idx q
+    local -a pos parts sub chunks isd
     pos=()
     # split at every `}` in one pass (a trailing `x` keeps a final empty piece)
     IFS='}' read -r -d '' -a parts <<< "$1x" || true
     nparts=${#parts[@]}
     parts[nparts - 1]=${parts[nparts - 1]%x$'\n'}
+    # The kept text is a stack of chunks, split at every `$`, so a closer
+    # drops an opener and its tail by popping chunks instead of re-slicing one
+    # long string (a per-closer prefix copy was quadratic, HIMMEL-5154). A
+    # chunk ends in `$` only when it is exactly `$` (isd=1), which is what a
+    # following `{` joins into a fresh opener.
     for ((k = 0; k < nparts; k++)); do
         piece=${parts[k]}
-        hasbrace=1
-        [ "$k" -lt $((nparts - 1)) ] || hasbrace=0
-        if [ "$lastc" = '$' ] && [ "${piece:0:1}" = '{' ]; then
-            pos[np]=$((olen - 1)); np=$((np + 1))
-        fi
-        # shellcheck disable=SC2016  # literal ${ glob pattern, not meant to expand
-        if [[ $piece == *'${'* ]]; then
-            # split at every `$` once: a segment that starts with `{` follows a
-            # `${` opener at the running offset (re-slicing the remainder per
-            # opener was quadratic in the opener count, HIMMEL-5154)
-            IFS='$' read -r -d '' -a sub <<< "${piece}x" || true
-            nsub=${#sub[@]}
-            sub[nsub - 1]=${sub[nsub - 1]%x$'\n'}
-            off=$((olen + ${#sub[0]}))
-            for ((j = 1; j < nsub; j++)); do
-                before=${sub[j]}
-                [ "${before:0:1}" = '{' ] && { pos[np]=$off; np=$((np + 1)); }
-                off=$((off + 1 + ${#before}))
-            done
-        fi
         if [ -n "$piece" ]; then
-            out+=$piece
-            olen=$((olen + ${#piece}))
-            lastc=${piece: -1}
+            if [ "$cnt" -gt 0 ] && [ "${isd[cnt - 1]}" = 1 ] && [ "${piece:0:1}" = '{' ]; then
+                pos[np]=$((cnt - 1)); np=$((np + 1))
+            fi
+            if [[ $piece == *'$'* ]]; then
+                IFS='$' read -r -d '' -a sub <<< "${piece}x" || true
+                nsub=${#sub[@]}
+                sub[nsub - 1]=${sub[nsub - 1]%x$'\n'}
+                if [ -n "${sub[0]}" ]; then
+                    chunks[cnt]=${sub[0]}; isd[cnt]=0; cnt=$((cnt + 1))
+                fi
+                for ((j = 1; j < nsub; j++)); do
+                    seg=${sub[j]}
+                    [ "${seg:0:1}" = '{' ] && { pos[np]=$cnt; np=$((np + 1)); }
+                    chunks[cnt]=\$$seg
+                    isd[cnt]=0
+                    [ -n "$seg" ] || isd[cnt]=1
+                    cnt=$((cnt + 1))
+                done
+            else
+                chunks[cnt]=$piece; isd[cnt]=0; cnt=$((cnt + 1))
+            fi
         fi
-        [ "$hasbrace" = 1 ] || break
+        [ "$k" -lt $((nparts - 1)) ] || break
         if [ "$np" -gt 0 ]; then
             np=$((np - 1))
-            p=${pos[np]}
-            out=${out:0:p}
-            olen=$p
-            lastc=""
-            [ "$p" -gt 0 ] && lastc=${out: -1}
+            idx=${pos[np]}
+            for ((q = cnt - 1; q >= idx; q--)); do
+                unset "chunks[$q]" "isd[$q]"
+            done
+            cnt=$idx
         else
-            out+='}'
-            olen=$((olen + 1))
-            lastc='}'
-            pos=()
+            chunks[cnt]='}'; isd[cnt]=0; cnt=$((cnt + 1))
         fi
     done
-    REPLY=$out
+    REPLY=""
+    if [ "$cnt" -gt 0 ]; then
+        local IFS=''
+        REPLY="${chunks[*]}"
+    fi
 }
 
 raw_mention() {
