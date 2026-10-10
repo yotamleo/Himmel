@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # Drift test for pr-check-context.sh's cr_guarded set (HIMMEL-3493).
 #
 # On a step-0 cr_diff_state=no verdict himmel_dir stays at the BRANCH, so

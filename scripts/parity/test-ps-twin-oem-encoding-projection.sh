@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # HIMMEL-2743/2803: run the real OEM guard in disposable private/public trees.
 # Projected generators now converge and stay checked; synthetic preserved-path
 # cases retain marker/path gating and preserve-list drift controls. Archive files

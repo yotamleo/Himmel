@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # test-ps-twin-oem-encoding.sh -- guard against the HIMMEL-2256 encoding class:
 # PowerShell decodes a CAPTURED native command's stdout using
 # [Console]::OutputEncoding, which on a default Windows install is the legacy

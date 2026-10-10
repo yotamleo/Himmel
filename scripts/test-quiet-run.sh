@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # Tests for scripts/quiet-run.sh's argv path guard (HIMMEL-2967): refuses
 # ".." path components in any argv element, and (label "suite" only) requires
 # a git-tracked test-*.sh, or (HIMMEL-4782) an untracked regular test-*.sh that

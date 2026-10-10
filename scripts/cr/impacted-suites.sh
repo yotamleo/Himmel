@@ -936,6 +936,35 @@ if [ -s "$pats" ]; then
     tr '\0' '\n' < "$work/grep.out" | sed "s/^${head_sha}://" >> "$found" || io_fail "reading the search result"
 fi
 
+# HIMMEL-5114: a tree-scan suite asserts a property of the WHOLE tree (every
+# .ps1, every launch site, every ledger), so a file it never names can still
+# break it, and the textual match above would skip it. A suite that carries the
+# header line `# selector: tree-scan` is therefore listed whenever the range adds,
+# deletes or renames any file. The marker is read at BOTH the merge-base and the
+# head, so a PR cannot narrow the set by removing a marker; a suite no longer in
+# the head tree is dropped. ponytail: a content-only edit to a scanned file does
+# not trigger it (the cost would be every PR), upgrade path is "always" if a
+# modify-only break is ever recorded.
+if ! tree_shape=$(git diff -z --diff-filter=AD --name-only --no-renames "$mb" "$head_sha" | tr '\0' '\n'); then
+    echo "impacted-suites.sh: git diff ${mb}..${head_sha} failed" >&2; exit 2
+fi
+if [ -n "$tree_shape" ]; then
+    for ts_rev in "$mb" "$head_sha"; do
+        ts_rc=0
+        git grep -z -l -E '^# selector: tree-scan$' "$ts_rev" -- \
+            ':(glob)**/test-*.sh' > "$work/treescan.out" || ts_rc=$?
+        if [ "$ts_rc" -gt 1 ]; then
+            echo "impacted-suites: git grep failed (rc=$ts_rc) — cannot tell which tree-scan suites exist" >&2
+            exit 2
+        fi
+        tr '\0' '\n' < "$work/treescan.out" | sed "s/^${ts_rev}://" > "$work/treescan.paths" || io_fail "reading the tree-scan list"
+        while IFS= read -r ts; do
+            [ -n "$ts" ] || continue
+            if grep -Fxq -- "$ts" <<< "$tree"; then printf '%s\n' "$ts" >> "$found" || io_fail "recording a tree-scan suite"; fi
+        done < "$work/treescan.paths"
+    done
+fi
+
 impacted="$work/impacted"
 if [ "$shell_only" -eq 1 ]; then
     grep_rc=0

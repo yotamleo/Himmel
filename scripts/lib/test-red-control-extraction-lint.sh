@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # scripts/lib/test-red-control-extraction-lint.sh -- unit tests for
 # red-control-extraction-lint.sh (HIMMEL-3018), PLUS the repo-wide gate
 # itself: T9 below runs the lint over the real scripts/ tree and FAILS the
