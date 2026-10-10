@@ -140,6 +140,7 @@ check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; a
 check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | grep -qxF "$TMP/vault"'
 check 'sandbox never binds the primary checkout; the repo is its tracked export' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qxF "$TMP/repo" && after --ro-bind 2 | grep -qxF "$TMP/root/repo"'
 check 'the export drops the eval kit and the handover stub, keeps the launcher' '[ ! -e "$TMP/root/repo/scripts/eval" ] && [ ! -e "$TMP/root/repo/handovers" ] && [ -f "$TMP/root/repo/scripts/claude-deepseek" ] && [ ! -e "$TMP/root/repo/.env" ]'
+check 'a deepseek jail copies no claudex allow hook' '[ ! -e "$TMP/root/run/p01/lq-allow-hook.sh" ]'
 check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
 sed 's/^LANE=.*/LANE=claudex/' "$TMP/root/rows/p01.env" >"$TMP/claudex.env"
 check 'a claudex row builds its jail (no API host to map)' 'bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1 && ! grep -q api "$TMP/root/run/p01/hosts"'
@@ -165,6 +166,23 @@ check 'the hook gives a test- directory traversal no allow' '[ -n "$H" ] && ! al
 check 'the hook gives a symlinked test script pointing outside lq-work no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-link.sh"'
 check 'the hook gives a chained or substituted command no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh; rm -rf x" && ! allows "bash $wt/lq-work/test-ok.sh && true" && ! allows "bash $wt/lq-work/test-ok.sh | cat" && ! allows "bash \$(echo $wt/lq-work/test-ok.sh)" && ! allows "bash $wt/lq-work/test-ok.sh x"'
 check 'the hook gives a non-test name or a script outside lq-work no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/build.sh" && ! allows "bash $wt/other/test-ok.sh" && ! allows "sh $wt/lq-work/test-ok.sh" && ! allows "rm -rf $wt/lq-work"'
+check 'the hook gives a newline chain no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh"$'"'"'\n'"'"'"true"'
+check 'the hook gives a trailing background operator no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh &"'
+check 'the hook gives an env prefix no allow' '[ -n "$H" ] && ! allows "FOO=x bash $wt/lq-work/test-ok.sh"'
+check 'the hook gives bash -c no allow' '[ -n "$H" ] && ! allows "bash -c bash $wt/lq-work/test-ok.sh"'
+check 'the hook gives a trailing newline no opinion' '[ -n "$H" ] && [ -z "$(hook "bash $wt/lq-work/test-ok.sh"$'"'"'\n'"'"')" ]'
+# Keep NUL in JSON: a shell argument cannot carry it. Each raw control byte must
+# produce no opinion and exit 0, not disappear in command substitution.
+control_hook() { jq -nc --arg c "bash $wt/lq-work/test-ok.sh" --argjson n "$1" '{tool_name:"Bash",tool_input:{command:($c + ([$n] | implode))}}' | bash -c "$H" 2>/dev/null; }
+check 'the hook gives an embedded NUL no opinion' '[ -n "$H" ] && [ -z "$(jq -nc --arg c "bash $wt/lq-work/test-ok.sh" '\''{tool_name:"Bash",tool_input:{command:($c | sub("test-ok"; "test-\u0000ok"))}}'\'' | bash -c "$H" 2>/dev/null)" ]'
+check 'the hook gives every ASCII control character no opinion and exits 0' '[ -n "$H" ] && (for n in $(seq 0 31); do out=$(control_hook "$n"); rc=$?; [ "$rc" = 0 ] && [ -z "$out" ] || exit 1; done)'
+# Emulate the jail mount with a symlinked base, not a symlinked lq-work.
+mkdir -p "$(dirname "$jwt")"; ln -s "$wt" "$jwt"
+check 'the hook allows the jail spelling of the row test script' 'allows "bash $jwt/lq-work/test-ok.sh"'
+rm -f "$jwt"
+mv "$wt/lq-work" "$wt/lq-work-real"; ln -s "$wt/lq-work-real" "$wt/lq-work"
+check 'the hook gives a symlinked lq-work directory no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh"'
+rm -f "$wt/lq-work"; mv "$wt/lq-work-real" "$wt/lq-work"
 check 'the hook says nothing at all outside an allow (no deny, no ask)' '[ -n "$H" ] && [ -z "$(hook "bash $wt/lq-work/build.sh")" ] && [ -z "$(printf "not json" | bash -c "$H" 2>/dev/null)" ]'
 rm -rf "$wt/lq-work" "$wt/other"; rm -f "$TMP/outside.sh"
 HOME="$TMP/home5077" bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1

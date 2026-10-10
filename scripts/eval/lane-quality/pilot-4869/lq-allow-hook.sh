@@ -6,7 +6,7 @@
 # directly in a non-symlink lq-work. Anything else: no output, exit 0 (no opinion, so
 # the permission rules and the classifier decide as before). Never denies.
 set -u
-cmd="$(jq -r '.tool_input.command // empty' 2>/dev/null)" || exit 0
+cmd="$(jq -r '.tool_input.command // empty | select(test("[\u0000-\u001f]") | not)' 2>/dev/null)" || exit 0
 case "$cmd" in "bash "?*) ;; *) exit 0 ;; esac
 p="${cmd#bash }"
 # one plain path: no space, quote, glob, $, ;, &, |, <, >, backtick, newline
