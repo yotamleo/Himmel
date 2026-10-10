@@ -61,6 +61,9 @@ printf '#!/usr/bin/env bash\n# drives tools/foo.sh\nexit 0\n' > "$SB/scripts/tes
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/scripts/test-bar.sh"
 printf '#!/usr/bin/env bash\n# selector: tree-scan\nexit 0\n' > "$SB/scripts/test-tree.sh"
 printf '# doc\n' > "$SB/docs/note.md"
+mkdir -p "$SB/templates/luna-second-brain/scripts"
+printf '# tpl\n' > "$SB/templates/luna-second-brain/scripts/setup.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/templates/luna-second-brain/scripts/test-vault-git.sh"
 g add -A; g commit -q -m "chore: pre-selector"
 PRE=$(g rev-parse HEAD)
 
@@ -109,6 +112,16 @@ g checkout -q -B renamed "$BASE"
 g mv "$SB/scripts/tools/foo.sh" "$SB/scripts/tools/foo2.sh"
 g commit -q -m "rename a file"
 H_REN=$(g rev-parse HEAD)
+# HIMMEL-5122: a typechange (regular file -> symlink) and a template-script edit.
+g checkout -q -B typed "$BASE"
+rm -f "$SB/scripts/tools/foo.sh"
+ln -s ../test-bar.sh "$SB/scripts/tools/foo.sh"
+g commit -q -am "typechange a file"
+H_TYP=$(g rev-parse HEAD)
+g checkout -q -B tpl "$BASE"
+printf '# edit\n' >> "$SB/templates/luna-second-brain/scripts/setup.sh"
+g commit -q -am "edit a template script"
+H_TPL=$(g rev-parse HEAD)
 g checkout -q "$BASE" 2>/dev/null
 
 sel() { (cd "$SB" && bash "$SEL" "$@" 2>&1); }
@@ -219,6 +232,20 @@ if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \
   pass "IS14: a content-only edit does not select the tree-scan suite"
 else fail "IS14: rc=$rc out: $out"; fi
 
+# --- IS16 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_TYP"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'suite scripts/test-tree.sh'; then
+  pass "IS16: a typechange selects the tree-scan suite"
+else fail "IS16: rc=$rc out: $out"; fi
+
+# --- IS17 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_TPL"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \
+   && grepq "$out" -x 'suite templates/luna-second-brain/scripts/test-vault-git.sh' \
+   && ! grepq "$out" -x 'suite scripts/test-bar.sh'; then
+  pass "IS17: a template script edit selects test-vault-git.sh"
+else fail "IS17: rc=$rc out: $out"; fi
+
 # --- IS15 -------------------------------------------------------------------
 # Lint: a suite that enumerates the REAL repo tree (git ls-files / ls-tree /
 # find rooted at the repo variable) must carry the marker, or an added file it
@@ -230,14 +257,33 @@ if ! suite_list=$(git -C "$SRC_ROOT" ls-files -- 'scripts/**/test-*.sh' 'scripts
   unmarked=" (git ls-files failed or listed no suites)"
   suite_list=""
 fi
+# HIMMEL-5122: the root-variable regex below matches any $ROOT / $root /
+# $repo_root / $repoNN, so it also reaches suites that find/ls-files a FIXTURE
+# root. Every suite it flags is listed here with why it is not marked.
+#   real tree, left unmarked on purpose (cost; HIMMEL-5123 follow-up if a
+#   --selector-miss row names one): test-adopt, test-versioned-layout,
+#   test-gitattributes-no-driver, test-uninstall-real-home-callers.
+#   real tree, owned by an open PR (marker is HIMMEL-5123 item 1, after PR
+#   2276): test-run-shell-tests. Real tree, already selected by scan_roots rows:
+#   test-pr-check-run (scripts/*.sh), test-check-plugin-drift (*package.json).
+#   fixture / sandbox root, not the repo tree: the rest.
+IS15_ALLOW=" scripts/test-adopt.sh scripts/himmelctl/test/test-versioned-layout.sh
+ scripts/hooks/test-gitattributes-no-driver.sh scripts/test-uninstall-real-home-callers.sh
+ scripts/ci/test-run-shell-tests.sh scripts/cr/test-pr-check-run.sh scripts/test-check-plugin-drift.sh
+ scripts/cr/test-pr-check-rounds.sh scripts/handover/console-kit/test-go.sh
+ scripts/handover/console/test-console.sh scripts/handover/test-breadcrumb.sh
+ scripts/handover/test-queue-lock.sh scripts/lanes/bench/scorecard/test-agg-burn.sh
+ scripts/luna/test-graphmap-cadence.sh scripts/luna/test-qmd-cadence.sh
+ scripts/release/test-tarball-vs-clone.sh scripts/test-tmp-reap.sh scripts/test-uninstall.sh "
 while IFS= read -r ts; do
   [ -n "$ts" ] || continue
   if [ ! -r "$SRC_ROOT/$ts" ]; then unmarked="$unmarked $ts(unreadable)"; continue; fi
   grep -qx '# selector: tree-scan' "$SRC_ROOT/$ts" && continue
+  case "$IS15_ALLOW" in *[[:space:]]"$ts"[[:space:]]*) continue ;; esac
   walks=$(grep -vE '^[[:space:]]*#' "$SRC_ROOT/$ts" \
        | grep -E '(ls-files|ls-tree|find )' \
        | grep -vE 'ls-files -s|--error-unmatch' \
-       | grep -E '\$\{?(REPO|REPO_ROOT|SRC_ROOT)\}?|, *repo\b' || true)
+       | grep -iE '\$\{?[A-Za-z_]*(repo|root)[A-Za-z_0-9]*\}?|, *repo\b' || true)
   if [ -n "$walks" ]; then unmarked="$unmarked $ts"; fi
 done <<< "$suite_list"
 if [ -z "$unmarked" ]; then
