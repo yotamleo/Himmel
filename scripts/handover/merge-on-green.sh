@@ -163,10 +163,12 @@
 #       console-GO gate, before any mutation, on --dry-run too.
 #   22  main-red gate (HIMMEL-5115): the newest COMPLETED, non-cancelled run
 #       of the CI workflow on the default branch is red and the PR is not its
-#       declared fix (a commit-message line `Fixes-main-red: run=<id>` or
-#       `suite=<failed job or test-*.sh>`, verified against that run). Also
-#       when the run list, the PR's commits or the red run's failed log cannot
-#       be read. No completed run at all is allowed (audited). The message
+#       declared fix: a commit-message line `Fixes-main-red: run=<id>` or
+#       `suite=<a failed job name without spaces, or any .sh named on an
+#       ##[error] line of its log>` verified against that run (a job name with
+#       spaces needs run=<id>), or a console fix-GO for that run
+#       (go.sh --fix-main-red, HIMMEL-5134). Also when the run list, the PR's
+#       commits or the red run's failed log cannot be read. No completed run at all is allowed (audited). The message
 #       names the run and the commit range it covered. After the trust-path
 #       gate, before any mutation, on --dry-run too.
 #

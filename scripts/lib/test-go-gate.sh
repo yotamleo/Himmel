@@ -359,6 +359,15 @@ rc=0; fx_gate 96 "$PINSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "7g: an ordinary GO mac verified as a fix-GO"
 rc=0; fx_gate 92 "$PINSHA" o/r 'x;1' >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 2 ] || fail "7h: a non-numeric run id was accepted"
+# 7i. a fix-GO body sitting at the ordinary GO path never passes go_gate
+fx_write 97 "$PINSHA" "$FXRUN" o/r
+cp "$FXROOT/.locks/go/fix-main-red.97.$PINSHA.$FXRUN" "$FXROOT/.locks/go/97.$PINSHA"
+rc=0; HOME="$PINHOME" bash -c '. "$1"; go_gate "$2" "$3" "$4" "$5"' _ "$GO_GATE_SRC" 97 "$PINSHA" "$FXROOT" o/r >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7i: a fix-GO body at the ordinary GO path passed go_gate (rc=$rc)"
+# 7j. head moved: a fix-GO for one head does not pass for another head
+OTHERSHA=$(printf '%s' "$PINSHA" | tr '0-9a-f' '1-9a-f0')
+rc=0; fx_gate 92 "$OTHERSHA" o/r "$FXRUN" >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 2 ] || fail "7j: a fix-GO for head $PINSHA passed for a moved head (rc=$rc)"
 
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
