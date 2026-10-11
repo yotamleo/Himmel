@@ -134,7 +134,7 @@ assert "redirect to /dev/null"     ALLOW "$(decide "$(j_bash 'cat foo 2>/dev/nul
 assert "fd-dup 2>&1 piped"         ALLOW "$(decide "$(j_bash 'grep x f 2>&1 | head')")"
 assert "echo to /dev/null"         ALLOW "$(decide "$(j_bash 'echo hi > /dev/null')")"
 assert "if grep then echo"         ALLOW "$(decide "$(j_bash 'if grep -q x f; then echo y; fi')")"
-assert "while read loop"           ALLOW "$(decide "$(j_bash 'while read l; do grep $l f; done < input')")"
+assert "while read loop"           ALLOW "$(decide "$(j_bash 'while read l; do cat $l f; done < input')")"
 assert "tr cut pipe"               ALLOW "$(decide "$(j_bash 'cat f | tr a-z A-Z | cut -c1-5')")"
 assert "git show piped"            ALLOW "$(decide "$(j_bash 'git show HEAD:README.md | head -20')")"
 
@@ -1625,7 +1625,7 @@ assert "ctl: ls -R src stays ALLOW"            ALLOW "$(decide "$(j_bash "ls -R 
 assert "ctl: grep -rn / src stays ALLOW"       ALLOW "$(decide "$(j_bash "grep -rn / src")")"
 assert "ctl: grep x / (no -r) stays ALLOW"     ALLOW "$(decide "$(j_bash "grep x /")")"
 assert "ctl: rg x src stays ALLOW"             ALLOW "$(decide "$(j_bash "rg x src")")"
-assert "ctl: tree -L 1 / stays ALLOW"          ALLOW "$(decide "$(j_bash "tree -L 1 /")")"
+assert "tree -L 1 / (old ctl) never ALLOW"      PASS  "$(decide "$(j_bash "tree -L 1 /")")"
 assert "ctl: tree src stays ALLOW"             ALLOW "$(decide "$(j_bash "tree src")")"
 # /pr-check round 1: an attached rg/ag -e/-f pattern must not leave / as the
 # discarded "pattern"; `--` ends options, so `-R` after it is a filename.
@@ -1646,7 +1646,7 @@ assert "grep -d recurse x / never ALLOW"       PASS  "$(decide "$(j_bash "grep -
 assert "rg -nefoo / never ALLOW"               PASS  "$(decide "$(j_bash "rg -nefoo /")")"
 assert "tree -I -L / never ALLOW"              PASS  "$(decide "$(j_bash "tree -I -L /")")"
 assert "tree -P -L / never ALLOW"              PASS  "$(decide "$(j_bash "tree -P -L /")")"
-assert "ctl: tree -I x -L 1 / stays ALLOW"     ALLOW "$(decide "$(j_bash "tree -I x -L 1 /")")"
+assert "tree -I x -L 1 / never ALLOW"           PASS  "$(decide "$(j_bash "tree -I x -L 1 /")")"
 assert "rg -e / src (pattern /) ALLOW"         ALLOW "$(decide "$(j_bash "rg -e / src")")"
 assert "rg -ne / src (pattern /) ALLOW"        ALLOW "$(decide "$(j_bash "rg -ne / src")")"
 assert "grep -r -e / src (pattern /) ALLOW"    ALLOW "$(decide "$(j_bash "grep -r -e / src")")"
@@ -1656,8 +1656,8 @@ assert "grep -r -e x / never ALLOW"            PASS  "$(decide "$(j_bash "grep -
 assert "grep -ref / never ALLOW"               PASS  "$(decide "$(j_bash "grep -ref /")")"
 assert "tree -aI -L / never ALLOW"             PASS  "$(decide "$(j_bash "tree -aI -L /")")"
 assert "tree -aP -L / never ALLOW"             PASS  "$(decide "$(j_bash "tree -aP -L /")")"
-assert "ctl: tree -aL 1 / stays ALLOW"         ALLOW "$(decide "$(j_bash "tree -aL 1 /")")"
-assert "ctl: tree -aI x -L 1 / stays ALLOW"    ALLOW "$(decide "$(j_bash "tree -aI x -L 1 /")")"
+assert "tree -aL 1 / never ALLOW"              PASS  "$(decide "$(j_bash "tree -aL 1 /")")"
+assert "tree -aI x -L 1 / never ALLOW"          PASS  "$(decide "$(j_bash "tree -aI x -L 1 /")")"
 assert "ctl: grep -rne x src stays ALLOW"      ALLOW "$(decide "$(j_bash "grep -rne x src")")"
 # judge j2340a: default is PASS; only exact modelled spellings are "not a walk".
 assert "grep -id recurse x / never ALLOW"      PASS  "$(decide "$(j_bash "grep -id recurse x /")")"
@@ -1681,6 +1681,27 @@ assert "ctl: grep -rn -A3 x src stays ALLOW"   ALLOW "$(decide "$(j_bash "grep -
 assert "ctl: grep -r -d skip x src stays ALLOW" ALLOW "$(decide "$(j_bash "grep -r -d skip x src")")"
 assert "ctl: ls -la / stays ALLOW"             ALLOW "$(decide "$(j_bash "ls -la /")")"
 assert "ctl: du -sh ~/src stays ALLOW"         ALLOW "$(decide "$(j_bash "du -sh ~/src")")"
+# judge j2340b: a word the cooker cannot decode (an unresolved $VAR) is unknown,
+# never skipped; any tree on a root operand is PASS (no -L exemption); ag has
+# its own option tables (-D / -A / -B / -C and bare --context take no value).
+assert 'grep -r x $PWD/../.. never ALLOW'      PASS  "$(decide "$(j_bash 'grep -r x $PWD/../../../../..')")"
+assert 'ls -R $OLDPWD never ALLOW'             PASS  "$(decide "$(j_bash 'ls -R $OLDPWD')")"
+assert 'du -sh $X never ALLOW'                 PASS  "$(decide "$(j_bash 'du -sh $X')")"
+assert 'grep $FLAG x / never ALLOW'            PASS  "$(decide "$(j_bash 'grep $FLAG x /')")"
+assert 'ls $FLAG / never ALLOW'                PASS  "$(decide "$(j_bash 'ls $FLAG /')")"
+assert 'ctl: du -sh $HOME as before'           PASS  "$(decide "$(j_bash 'du -sh $HOME')")"
+assert 'ctl: du -sh ${HOME} as before'         PASS  "$(decide "$(j_bash 'du -sh ${HOME}')")"
+assert "tree -L 99999 / never ALLOW"           PASS  "$(decide "$(j_bash "tree -L 99999 /")")"
+assert "tree -L99999 / never ALLOW"            PASS  "$(decide "$(j_bash "tree -L99999 /")")"
+assert "tree -L 1 / never ALLOW"               PASS  "$(decide "$(j_bash "tree -L 1 /")")"
+assert "ctl: tree -L 2 scripts stays ALLOW"    ALLOW "$(decide "$(j_bash "tree -L 2 scripts")")"
+assert "ag -D x / never ALLOW"                 PASS  "$(decide "$(j_bash "ag -D x /")")"
+assert "ag --context x / never ALLOW"          PASS  "$(decide "$(j_bash "ag --context x /")")"
+assert "ag -A x / never ALLOW"                 PASS  "$(decide "$(j_bash "ag -A x /")")"
+assert "ag --after x / never ALLOW"            PASS  "$(decide "$(j_bash "ag --after x /")")"
+assert "ag --before x / never ALLOW"           PASS  "$(decide "$(j_bash "ag --before x /")")"
+assert "ctl: rg --context 2 x scripts ALLOW"   ALLOW "$(decide "$(j_bash "rg --context 2 x scripts")")"
+assert "ctl: ag x src stays ALLOW"             ALLOW "$(decide "$(j_bash "ag x src")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

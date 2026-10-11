@@ -885,7 +885,7 @@ is_redirect_word() {
 
 # HIMMEL-5088: du / ls -R / grep -r / rg / tree on the filesystem root walk the
 # whole disk just like `find /`. Verdict: PASS (never ALLOW), not DENY -- a
-# bounded walk (`tree -L 1 /`) and an attended prompt are legitimate, and only
+# bounded walk (`tree -L 1 /`, PASS too) and an attended prompt are legitimate, and only
 # find carries the unattended-orphan history behind HIMMEL-2121's deny.
 #
 # Default is "walks" (PASS). A segment is "not a walk" only when EVERY option
@@ -909,7 +909,7 @@ sw_apply_val() {  # $1 value kind (d|D|n|x), $2 the option's value
 }
 
 segment_walks_root() {
-    local base j total tok raw opt k c rest kind vkind=x nov val rl have_e=0 level=0 dd=0 vskip=0
+    local base j total tok raw opt k c rest kind vkind=x nov val rl have_e=0 dd=0 vskip=0
     local -a a ops opr
     TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
     [ "$RB_STATUS" = bin ] || return 1
@@ -918,7 +918,7 @@ segment_walks_root() {
     case "$base" in
         du)               SW_REC=1; nov='shckmbxaSlHLPAz0'; val='dBtX'; rl='' ;;
         rg|ripgrep)       SW_REC=1; nov='iSsnNuvwxcHIlLFpaoqzP0b'; val='efgtTmABCjdEMr'; rl='' ;;
-        ag)               SW_REC=1; nov='iSsnNuvwxcHlLFQaozfr'; val='gGpABCmDW'; rl='' ;;
+        ag)               SW_REC=1; nov='iSsnNuvwxcHlLFQaozfrABCD'; val='gGpmW'; rl='' ;;
         tree)             SW_REC=1; nov='adlfiqNQpugshDFvrtcnCxA'; val='LIPoHT'; rl='' ;;
         ls)               nov='aAcCdFfgGhHiklLmnoprsStuUvxX1'; val=''; rl='R' ;;
         grep|egrep|fgrep) nov='iInvwxcLlqsHhoaEFGPzZbTUV0123456789'; val='efmABCdD'; rl='rR' ;;
@@ -927,7 +927,9 @@ segment_walks_root() {
     a=("${RB_TOKENS[@]}"); total=${#a[@]}; ops=(); opr=()
     for ((j = RB_IDX + 1; j < total; j++)); do
         raw="${a[$j]}"
-        shell_word_value "$raw" || continue
+        # a word the cooker cannot decode (an unresolved $VAR, ANSI-C quotes,
+        # a brace list) may hide an option or a root operand: unknown -> PASS
+        shell_word_value "$raw" || { SW_UNK=1; continue; }
         tok="$SW_VALUE"
         tok="${tok%$'\r'}"                    # a CRLF line ending is not a glued CR
         [ -n "$tok" ] || continue
@@ -958,7 +960,15 @@ segment_walks_root() {
                             --ignore-case|--no-ignore-case|--invert-match|--word-regexp|--line-regexp|--count|--files-with-matches|--files-without-match|--line-number|--no-messages|--with-filename|--no-filename|--quiet|--silent|--only-matching|--text|--extended-regexp|--fixed-strings|--basic-regexp|--perl-regexp|--null|--color|--color=*|--include=*|--exclude=*|--exclude-dir=*|--max-count=*|--binary-files=*|--after-context=*|--before-context=*|--context=*) ;;
                             *) SW_UNK=1 ;;
                         esac ;;
-                    rg|ripgrep|ag) case "$tok" in
+                    ag) case "$tok" in
+                            # ag's own tables: -D/--debug and a bare --context/--after/--before
+                            # (and -A/-B/-C) take NO value; a value is attached with `=`.
+                            --depth|--max-count|--width|--workers|--ignore|--ignore-dir|--path-to-ignore|--file-search-regex) vskip=1; vkind=x ;;
+                            --depth=*|--max-count=*|--width=*|--workers=*|--ignore=*|--ignore-dir=*|--path-to-ignore=*|--file-search-regex=*|--context=*|--after=*|--before=*) ;;
+                            --context|--after|--before|--hidden|--unrestricted|--ignore-case|--smart-case|--case-sensitive|--fixed-strings|--literal|--word-regexp|--invert-match|--count|--files-with-matches|--files-without-matches|--line-numbers|--numbers|--no-numbers|--column|--nocolumn|--color|--nocolor|--heading|--noheading|--stats|--follow|--nofollow|--search-binary|--skip-vcs-ignores|--all-text|--null|--silent|--vimgrep|--debug) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    rg|ripgrep) case "$tok" in
                             --files|--type-list) have_e=1 ;;
                             --regexp|--file) have_e=1; vskip=1; vkind=x ;;
                             --regexp=*|--file=*) have_e=1 ;;
@@ -997,7 +1007,6 @@ segment_walks_root() {
                                 grep:d|egrep:d|fgrep:d) kind=d ;;
                                 grep:D|egrep:D|fgrep:D) kind=D ;;
                                 grep:[mABC]|egrep:[mABC]|fgrep:[mABC]) kind=n ;;
-                                tree:L) level=1 ;;
                             esac
                             rest="${opt:$k}"
                             if [ -n "$rest" ]; then sw_apply_val "$kind" "$rest"; else vskip=1; vkind="$kind"; fi
@@ -1017,7 +1026,6 @@ segment_walks_root() {
     esac
     [ "$SW_UNK" -eq 1 ] && return 0
     [ "$SW_REC" -eq 1 ] || return 1
-    if [ "$level" -eq 1 ] && [ "$base" = tree ]; then return 1; fi
     for ((j = 0; j < ${#ops[@]}; j++)); do
         tok="${ops[$j]}"; raw="${opr[$j]}"
         case "$raw" in *'*'*|*'?'*|*'['*|*'{'*) return 0 ;; esac
