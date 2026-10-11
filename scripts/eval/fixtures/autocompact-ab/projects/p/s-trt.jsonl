@@ -1,0 +1,3 @@
+{"type":"custom-title","customTitle":"HIMMEL-9002-N902-trt-2026-10-11","sessionId":"s-trt","timestamp":"2026-10-11T09:00:00Z"}
+{"type":"assistant","timestamp":"2026-10-11T09:00:00Z","message":{"id":"msg_A","role":"assistant","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":2,"cache_read_input_tokens":4000,"cache_creation_input_tokens":1000,"output_tokens":200}}}
+{"type":"assistant","timestamp":"2026-10-11T09:40:00Z","message":{"id":"msg_B","role":"assistant","content":[{"type":"text","text":"y"}],"usage":{"input_tokens":1,"cache_read_input_tokens":8000,"cache_creation_input_tokens":0,"output_tokens":400}}}

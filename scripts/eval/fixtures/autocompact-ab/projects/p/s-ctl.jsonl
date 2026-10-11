@@ -1,0 +1,6 @@
+{"type":"custom-title","customTitle":"HIMMEL-9001-N901-ctl-2026-10-11","sessionId":"s-ctl","timestamp":"2026-10-11T10:00:00Z"}
+{"type":"assistant","timestamp":"2026-10-11T10:00:00Z","message":{"id":"msg_A","role":"assistant","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200,"output_tokens":50}}}
+{"type":"assistant","timestamp":"2026-10-11T10:00:01Z","message":{"id":"msg_A","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}],"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200,"output_tokens":50}}}
+{"type":"assistant","timestamp":"2026-10-11T10:10:00Z","message":{"id":"msg_B","role":"assistant","content":[{"type":"text","text":"y"}],"usage":{"input_tokens":1,"cache_read_input_tokens":2000,"cache_creation_input_tokens":0,"output_tokens":100}}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-10-11T10:10:30Z","compactMetadata":{"trigger":"auto","preTokens":170000,"postTokens":9000}}
+{"type":"assistant","timestamp":"2026-10-11T10:30:00Z","message":{"id":"msg_C","role":"assistant","content":[{"type":"text","text":"z"}],"usage":{"input_tokens":0,"cache_read_input_tokens":500,"cache_creation_input_tokens":300,"output_tokens":150}}}

@@ -167,6 +167,21 @@ bash "$SCRIPT" add "$m8" "$l1" >/dev/null 2>&1; rc=$?
 check '7d. re-adding with no flags stays a no-op (rc 0)' 0 "$rc"
 check '7d. still one row' 1 "$(jq '.legs | length' "$m8")"
 
+# HIMMEL-5193: an optional autocompact A/B arm is stored, validated and conflict-checked.
+m9="$tmp/m9.json"
+bash "$SCRIPT" add "$m9" --arm 400k "$l1" >/dev/null 2>&1; rc=$?
+check '7e. add --arm 400k (rc 0)' 0 "$rc"
+check '7e. the arm is stored' 400k "$(jq -r '.legs[0].arm' "$m9")"
+bash "$SCRIPT" add "$m9" "$l2" >/dev/null 2>&1
+check '7e. a leg added with no --arm carries no arm key' false "$(jq '.legs[1] | has("arm")' "$m9")"
+bash "$SCRIPT" add "$m9" --arm 300k "$l3" >/dev/null 2>&1; rc=$?
+check '7e. a bad --arm value is a usage error (rc 2)' 2 "$rc"
+bash "$SCRIPT" add "$m9" --arm 200k "$l1" >/dev/null 2>&1; rc=$?
+check '7e. re-adding with a different arm is refused (rc 1)' 1 "$rc"
+check '7e. the refused re-add leaves the arm alone' 400k "$(jq -r '.legs[0].arm' "$m9")"
+bash "$SCRIPT" add "$m9" --arm 400k "$l1" >/dev/null 2>&1; rc=$?
+check '7e. re-adding with the same arm stays a no-op (rc 0)' 0 "$rc"
+
 # 8. usage.
 bash "$SCRIPT" >/dev/null 2>&1; rc=$?
 check '8. no verb is a usage error (rc 2)' 2 "$rc"

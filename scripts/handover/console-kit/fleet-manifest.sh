@@ -4,7 +4,7 @@
 # on every sample, so a dispatch or a wrap edits one file instead of the console
 # restarting its waiter with a new 10-15 path --legs argv.
 #
-#   fleet-manifest.sh add    <manifest> <leg doc>... [--lane <lane>] [--lockless]
+#   fleet-manifest.sh add    <manifest> <leg doc>... [--lane <lane>] [--lockless] [--arm 200k|400k]
 #   fleet-manifest.sh remove <manifest> <leg doc | label>...
 #   fleet-manifest.sh list   <manifest>                      one doc per line
 #
@@ -19,6 +19,8 @@
 # (an eval/pilot row that holds no queue lock: tick reports NOLOCK and judges it by
 # tail marker only). A manifest written before this carries neither key and reads
 # as lane `unknown`, not lockless. A doc already listed is left alone, flags and all.
+# HIMMEL-5193: add also stores an optional `arm` (200k|400k, the autocompact A/B
+# arm the leg launched on); a leg added with no --arm carries no `arm` key.
 # Only `legs[].doc` drives tick; label (leg-identity.sh's N<k>) is what remove
 # matches and what a human reads. Any other key, top-level or per leg, is
 # carried through every rewrite untouched, so HIMMEL-1873's wider leg manifest
@@ -48,7 +50,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'USAGE'
-usage: fleet-manifest.sh add    <manifest> <leg doc>... [--lane <lane>] [--lockless]
+usage: fleet-manifest.sh add    <manifest> <leg doc>... [--lane <lane>] [--lockless] [--arm 200k|400k]
        fleet-manifest.sh remove <manifest> <leg doc | label>...
        fleet-manifest.sh list   <manifest>
 USAGE
@@ -79,7 +81,7 @@ case "$verb" in
     *) usage >&2; exit 2 ;;
 esac
 
-lane=unknown; lockless=false; lane_given=false
+lane=unknown; lockless=false; lane_given=false; arm=""
 if [ "$verb" = add ]; then
     # --lane/--lockless may sit anywhere among the docs; the docs are re-collected
     # one per line so a doc with whitespace is refused below, not word-split.
@@ -93,6 +95,13 @@ if [ "$verb" = add ]; then
                 esac
                 lane="$2"; lane_given=true; shift 2 ;;
             --lockless) lockless=true; shift ;;
+            --arm)
+                [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+                case "$2" in
+                    200k|400k) arm="$2" ;;
+                    *) echo "fleet-manifest: --arm must be 200k or 400k: $2" >&2; exit 2 ;;
+                esac
+                shift 2 ;;
             *)
                 case "$1" in
                     *$'\n'*) echo "fleet-manifest: leg doc must not contain a newline: $1" >&2; exit 2 ;;
@@ -139,14 +148,14 @@ for arg in "$@"; do
         label="$(leg_label "$arg")"
         # Re-adding a listed doc never rewrites its row: flags that would change the
         # stored lane or lockless are refused, not silently ignored.
-        conflict="$(printf '%s\n' "$cur" | jq -r --arg d "$arg" --arg ln "$lane" --argjson lg "$lane_given" --argjson ll "$lockless" \
-            '[.legs[] | select(.doc == $d) | select(($lg and ((.lane // "unknown") != $ln)) or ($ll and (.lockless != true)))] | length')" || exit 1
+        conflict="$(printf '%s\n' "$cur" | jq -r --arg d "$arg" --arg ln "$lane" --argjson lg "$lane_given" --argjson ll "$lockless" --arg ar "$arm" \
+            '[.legs[] | select(.doc == $d) | select(($lg and ((.lane // "unknown") != $ln)) or ($ll and (.lockless != true)) or ($ar != "" and ((.arm // "") != $ar)))] | length')" || exit 1
         if [ "$conflict" -gt 0 ]; then
-            echo "fleet-manifest: $arg is already listed with a different lane/lockless; remove it first, then add it again: $arg" >&2
+            echo "fleet-manifest: $arg is already listed with a different lane/lockless/arm; remove it first, then add it again: $arg" >&2
             exit 1
         fi
-        cur="$(printf '%s\n' "$cur" | jq --arg d "$arg" --arg l "$label" --arg t "$now" --arg ln "$lane" --argjson ll "$lockless" \
-            'if any(.legs[]; .doc == $d) then . else .legs += [{doc: $d, label: $l, added: $t, lane: $ln} + (if $ll then {lockless: true} else {} end)] end')" || exit 1
+        cur="$(printf '%s\n' "$cur" | jq --arg d "$arg" --arg l "$label" --arg t "$now" --arg ln "$lane" --argjson ll "$lockless" --arg ar "$arm" \
+            'if any(.legs[]; .doc == $d) then . else .legs += [{doc: $d, label: $l, added: $t, lane: $ln} + (if $ll then {lockless: true} else {} end) + (if $ar != "" then {arm: $ar} else {} end)] end')" || exit 1
     else
         cur="$(printf '%s\n' "$cur" | jq --arg a "$arg" \
             '.legs |= map(select(.doc != $a and .label != $a))')" || exit 1

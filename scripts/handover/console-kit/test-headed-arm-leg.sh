@@ -557,6 +557,42 @@ contains "dry-run LEG_CONTEXT=1m, sanctioned Context line: reports context=1m (o
 contains "dry-run LEG_CONTEXT=1m, sanctioned Context line: reports the reason" "$out" "HIMMEL-3581 sanctioned 1m leg test"
 contains "dry-run LEG_CONTEXT=1m, sanctioned Context line: exports CONSOLE_CONTEXT=1m before the exec" "$out" "CONSOLE_CONTEXT=1m"
 
+# --- HIMMEL-5193: the audited autocompact A/B arm (LEG_AUTOCOMPACT_AB) -----
+# 400000 needs the brief ruling line, standard context and a valid value; 200000
+# is the control arm; the default (unset) stays 200000 for everyone not opted in.
+doc_ab_none="$tmp/ab-doc-none.md"
+printf '%s\n' '# fixture brief, no Context line' > "$doc_ab_none"
+doc_ab_empty="$tmp/ab-doc-empty.md"
+printf '%s\n' '# fixture brief' '> **Context:** ab-400k — operator-ruling: ' > "$doc_ab_empty"
+doc_ab_ok="$tmp/ab-doc-ok.md"
+printf '%s\n' '# fixture brief' '> **Context:** ab-400k — operator-ruling: HIMMEL-5193' > "$doc_ab_ok"
+
+for d in "$doc_ab_none" "$doc_ab_empty"; do
+    rc=0; out="$(LEG_AUTOCOMPACT_AB=400000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$d" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+    check "ab arm 400000, $(basename "$d"): refused with exit 2" "$rc" "2"
+    not_contains "ab arm 400000, $(basename "$d"): no 400000 arm reported" "$out" "ab-arm=400k"
+done
+rc=0; out="$(LEG_AUTOCOMPACT_AB=300000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "ab arm 300000 (not 200000/400000): refused with exit 2" "$rc" "2"
+rc=0; out="$(LEG_CONTEXT=1m LEG_AUTOCOMPACT_AB=400000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "ab arm 400000 with LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
+rc=0; out="$(LEG_AUTOCOMPACT_AB=400000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "ab arm 400000, ruling line: accepted (exit 0)" "$rc" "0"
+contains "ab arm 400000, ruling line: reports ab-arm=400k autocompact=400000" "$out" "ab-arm=400k autocompact=400000"
+contains "ab arm 400000, ruling line: exports HIMMEL_LEG_AUTOCOMPACT=400000" "$out" "HIMMEL_LEG_AUTOCOMPACT=400000"
+rc=0; out="$(LEG_AUTOCOMPACT_AB=200000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_none" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "ab arm 200000 (control), no ruling line: accepted (exit 0)" "$rc" "0"
+contains "ab arm 200000 (control): reports ab-arm=200k autocompact=200000" "$out" "ab-arm=200k autocompact=200000"
+rc=0; out="$(LEG_CONTEXT=1m LEG_AUTOCOMPACT_AB=200000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_none" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "ab arm 200000 (control) with LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
+not_contains "ab arm 200000 with LEG_CONTEXT=1m: no control arm recorded" "$out" "ab-arm=200k"
+rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "no LEG_AUTOCOMPACT_AB, ruling line present: default unchanged (exit 0)" "$rc" "0"
+not_contains "no LEG_AUTOCOMPACT_AB: no ab arm reported" "$out" "ab-arm="
+not_contains "no LEG_AUTOCOMPACT_AB: no 400000 ceiling" "$out" "autocompact=400000"
+rc=0; out="$(HEADED_ARM_AB_AUTOCOMPACT=400000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+not_contains "ambient HEADED_ARM_AB_AUTOCOMPACT is not honoured" "$out" "ab-arm=400k"
+
 # Proves the ACCEPTED argv (not just this wrapper's own dry-run report) really
 # carries --autocompact auto and a [1m]-suffixed model - headed-arm.sh is
 # read-only for this ticket, so this drives its own --dry-run directly with
