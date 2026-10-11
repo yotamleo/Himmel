@@ -513,6 +513,11 @@ row "4545 c\\d abs\\ with\\ space then cp to link"    deny  "c\\d $T/c\\ wl; cp 
 row "4545 pu\\shd 'abs with space' then cp statelink" deny  "pu\\shd '$T/c wl' && cp $T/src/other.txt statelink" "$T"
 row "4545 c''d 'abs with ;' then cp to link"         deny  "c''d '$T/c;wl' && cp $T/src/other.txt plainlink" "$T"
 row "4545 c''d 'abs with space' then cp, no link"    allow "c''d '$T/c wl' && cp $T/src/other.txt nolink" "$T"
+# codex-1 (round 3): a sourced file runs in this shell and may cd.
+row "4545 source file then cp to plain name"         deny  "n=\$(date +%H); source $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
+row "4545 dot file then cp to plain name"            deny  "n=\$(date +%H); . $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
+row "4545 quoted s''ource then cp to plain name"     deny  "n=\$(date +%H); s''ource $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
+row "4545 ANSI-C dot then cp to plain name"          deny  "n=\$(date +%H); \$'\\x2e' $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
 row "4545 \$( ) then cp to plain name, no link"      allow "echo \$(printf x); cp $T/src/other.txt nolink" "$T/cwl"
 row "4545 rsync --log-file= link after \$( )"        deny  "n=\$(date +%H); rsync -a --log-file=plainlink $T/src/other.txt out.txt" "$T/cwl"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or

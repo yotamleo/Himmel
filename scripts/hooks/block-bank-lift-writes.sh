@@ -999,6 +999,9 @@ _plain_name_copy() {
         IFS=$'\037' read -r -a wtk <<<"$wline"
         wn=${#wtk[@]} wi=0 wout=""
         while [ "$wi" -lt "$wn" ]; do
+            # `source` / `.` run a file in THIS shell, so it may change the
+            # cwd out of sight (codex-1, round 3): never qualifies.
+            case "${wtk[$wi]}" in source|.) return 1 ;; esac
             if [ "${wtk[$wi]}" = cd ] || [ "${wtk[$wi]}" = pushd ]; then
                 wj=$((wi + 1))
                 [ "${wtk[$wj]-}" = -- ] && wj=$((wj + 1))
