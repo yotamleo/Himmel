@@ -1921,9 +1921,26 @@ for v in \
     'git config alias.rb "!scripts/cr/write-verdicts.sh"' \
     'git config alias.rb !scripts/cr/write-verdicts.sh' \
     'git config alias.ci "commit -F scripts/cr/write-verdicts.sh"' \
+    'GIT_EDITOR+=scripts/cr/write-verdicts.sh git commit' \
+    'GIT_SEQUENCE_EDITOR+=scripts/cr/write-verdicts.sh git rebase -i main' \
+    'export EDITOR+=scripts/cr/write-verdicts.sh; git commit' \
+    'printf -v GIT_EDITOR %s scripts/cr/write-verdicts.sh; export GIT_EDITOR; git commit' \
+    'GIT_PAGER=scripts/cr/write-verdicts.sh git log' \
+    'PAGER=scripts/cr/write-verdicts.sh git log' \
+    'GIT_SSH_COMMAND=scripts/cr/write-verdicts.sh git fetch' \
+    'GIT_EXTERNAL_DIFF=scripts/cr/write-verdicts.sh git diff' \
+    'git config core.pager scripts/cr/write-verdicts.sh' \
+    'git config pager.log scripts/cr/write-verdicts.sh' \
+    'git config core.fsmonitor scripts/cr/write-verdicts.sh' \
+    'git config core.sshCommand scripts/cr/write-verdicts.sh' \
+    'git config diff.external scripts/cr/write-verdicts.sh'; do
+    run "HIMMEL-5170 editor/alias hook [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# Already denied on base (HIMMEL-5102 one-call -c exec keys): controls, not RED.
+for v in \
     'git -c sequence.editor=scripts/cr/write-verdicts.sh rebase -i main' \
     'git -c core.editor=scripts/cr/write-verdicts.sh commit'; do
-    run "HIMMEL-5170 editor/alias hook [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    run "HIMMEL-5170 already-denied control [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # Controls: an ordinary config write and an editor that names no guarded writer.
 for v in \

@@ -1161,13 +1161,22 @@ if [ "$mentions" = 1 ]; then
     # nocasematch: builtins only, so a missing tool cannot empty it into a no-op.
     shopt -s nocasematch
     edhook=0
-    # Key shapes, not the bare word: a path like .../git-editor/scripts is no key.
-    case "$flat" in *editor=* | *visual=* | *.editor* | *alias.*) edhook=1 ;; esac
+    # The NAME, whatever follows it (=, +=, printf -v, export, read): the same
+    # exec-key names as the -c list above. A name must start a word or follow
+    # _ . or a quote, so a path like .../git-editor/scripts is no key.
+    edflat=" $flat"
+    # A bare skill name (a --grep pattern) is no executable: the writer must
+    # be spelled as a script path or a .sh file for git to run it.
+    case "$edflat" in *.sh* | *scripts/* | *cr/* | *handover/*) ;; *) edflat= ;; esac
+    for edn in editor visual pager fsmonitor sshcommand ssh_command textconv external filter; do
+        case "$edflat" in *[\ \"\'_.]"$edn"*) edhook=1; break ;; esac
+    done
+    case "$edflat" in *alias.* | *.command*) edhook=1 ;; esac
     shopt -u nocasematch
     if [ "$edhook" = 1 ]; then
         shown=${cmd//$'\n'/ }
         shown=${shown:0:200}
-        deny "the command names a guarded script and sets a git editor or alias hook (GIT_SEQUENCE_EDITOR, GIT_EDITOR, EDITOR, VISUAL, sequence.editor, core.editor, alias.*): git would run the script unread; run the script as its own literal command (HIMMEL-5170)."
+        deny "the command names a guarded script and names a git editor, pager, ssh, external-diff or alias hook (GIT_SEQUENCE_EDITOR, GIT_EDITOR, EDITOR, VISUAL, GIT_PAGER, core.pager, core.fsmonitor, alias.*, ...): git would run the script unread; run the script as its own literal command (HIMMEL-5170)."
     fi
 fi
 
