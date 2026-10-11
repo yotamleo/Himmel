@@ -106,6 +106,24 @@ printf -- '- 10:00 WRAPPED — done\n' > "$tmp/notes-random.md"
 python3 -I "$SUT" --doc "$tmp/notes-random.md" --projects "$FX/projects" --json 2> "$tmp/w.err" > /dev/null
 check "identity fallback warns on stderr" 1 "$(grep -c 'leg-identity' "$tmp/w.err")"
 
+# HIMMEL-5196: only the RESUME successor is listed; its parent (not named -RESUME)
+# is found through leg-identity, so handoffs and transcripts are still counted
+printf '{"schema":1,"legs":[{"doc":"%s","arm":"400k"}]}\n' "$res" > "$tmp/so.json"
+python3 -I "$SUT" --manifest "$tmp/so.json" --projects "$FX/projects" --all --json > "$tmp/so.out" 2>/dev/null
+check "successor-only: one row, the parent leg" HIMMEL-9002-N902-trt-2026-10-11 "$(jq -r '.legs[0].leg' "$tmp/so.out")"
+check "successor-only: parent doc is in the chain" 2 "$(jq '.legs[0].chain | length' "$tmp/so.out")"
+check "successor-only: handoff counted" 1 "$(jq '.legs[0].handoffs' "$tmp/so.out")"
+check "successor-only: both transcripts counted" 2 "$(jq '.legs[0].transcripts' "$tmp/so.out")"
+check "successor-only: unlisted parent keeps the chain unproven" unproven "$(jq -r '.legs[0].arm' "$tmp/so.out")"
+# HIMMEL-5196: a compact boundary copied into a resumed transcript counts once
+mkdir -p "$tmp/dd/p"; cp "$FX/projects/p/s-trt.jsonl" "$FX/projects/p/s-trt-resume.jsonl" "$tmp/dd/p/"
+b1='{"type":"system","subtype":"compact_boundary","uuid":"bnd-1","timestamp":"2026-10-11T09:30:00Z","compactMetadata":{"trigger":"auto","preTokens":150000}}'
+b2='{"type":"system","subtype":"compact_boundary","uuid":"bnd-2","timestamp":"2026-10-11T09:55:00Z","compactMetadata":{"trigger":"auto","preTokens":160000}}'
+printf '%s\n' "$b1" >> "$tmp/dd/p/s-trt.jsonl"
+printf '%s\n%s\n' "$b1" "$b2" >> "$tmp/dd/p/s-trt-resume.jsonl"
+python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$tmp/dd" --json > "$tmp/dd.out" 2>/dev/null
+check "copied-history boundary counts once (bnd-1 + bnd-2)" 2 "$(jq "$t | .compactions | length" "$tmp/dd.out")"
+
 # text mode prints the arm summary table; no input is a usage error
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" > "$tmp/t.txt" 2>/dev/null
 check "text report carries the arm summary" 1 "$(grep -c '^arm summary' "$tmp/t.txt")"

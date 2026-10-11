@@ -99,7 +99,7 @@ def ts(s):
 
 
 def parse_transcripts(paths):
-    calls, comps, stamps = {}, [], []
+    calls, comps, stamps, seen_b = {}, [], [], set()
     for path in paths:
         last_ctx = 0
         for line in open(path, errors="replace"):
@@ -112,6 +112,12 @@ def parse_transcripts(paths):
                 stamps.append(t)
             if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
                 meta = row.get("compactMetadata") or {}
+                # a resumed transcript carries its parent's history: the same
+                # boundary (uuid, else timestamp + level) is one compaction
+                bkey = row.get("uuid") or (row.get("timestamp"), meta.get("preTokens"))
+                if bkey in seen_b:
+                    continue
+                seen_b.add(bkey)
                 comps.append({"trigger": meta.get("trigger"),
                               "tokens": meta.get("preTokens") or last_ctx})
                 continue
@@ -193,12 +199,31 @@ def resume_siblings(doc):
             if not os.path.basename(r)[len(lead):len(lead) + 1].isdigit()]
 
 
+def parent_docs(doc):
+    """Docs beside `doc` that ARE the leg itself (leg-identity label == base),
+    whatever their naming: a listed RESUME successor does not follow the parent's
+    -RESUME glob, so its parent brief is found here, never by a local regex."""
+    m = STEM.match(os.path.basename(doc))
+    if not m:
+        return []
+    lead = "%s-%s" % (m.group(1), m.group(2))
+    pat = os.path.join(os.path.dirname(doc), "%s*.md" % lead)
+    out = []
+    for p in glob.glob(pat):
+        if os.path.basename(p)[len(lead):len(lead) + 1].isdigit():
+            continue
+        label, base, _ = identity(p)
+        if label == base:
+            out.append(p)
+    return out
+
+
 def chain_rows(members, projects, claimed):
     """members: {doc: {manifest arms}} sharing one TICKET-N<k>; `claimed` is the
     set of transcript paths earlier rows already own. One row per leg."""
     docs = {doc: None for doc in members}
     for doc in list(docs):
-        for r in resume_siblings(doc):
+        for r in resume_siblings(doc) + parent_docs(doc):
             docs.setdefault(r, None)
     info = {}
     for doc in docs:
