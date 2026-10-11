@@ -1165,6 +1165,47 @@ pobf_put() {
     esac
 }
 
+# pobf_xopt <command> <stage text> -- HIMMEL-4402: rc 0 (void relief) when a
+# relieved stage carries an option that takes an executable. Run on every
+# stage and again on a substitution's continuation, which inherits its
+# interrupted stage's class but not its option check. Default-void: a git
+# long option not listed as non-executing voids relief; any stage voids on a
+# word naming an option that runs a program (--pager, --exec, -O, -x, -X ...).
+# git-env-ok: no git invocation; "git" is only a word matched in the screened command text
+# ponytail: a closed non-executing list for git; a new safe git option is
+# over-denied until listed, never under-denied, HIMMEL-4402.
+POBF_GIT_SAFE=' --oneline --stat --name-only --name-status --no-color --color --count --line-number --max-count --all --since --until --after --before --author --committer --grep --format --pretty --abbrev --abbrev-commit --short --porcelain --branch --cached --others --exclude-standard --ignore-case --files-with-matches --files-without-match --fixed-strings --extended-regexp --basic-regexp --perl-regexp --word-regexp --invert-match --no-index --untracked --show-toplevel --git-dir --abbrev-ref --verify --heads --tags --quiet --null --heading --break --and --or --not --all-match --recurse-submodules --text --full-name --first-parent --merges --no-merges --reverse --skip --diff-filter --follow --decorate --graph --date --shortstat --numstat --summary --patch --no-patch --stdin --revs-only --no-flags --flags --sq --default --symbolic --symbolic-full-name --is-inside-work-tree --is-bare-repository --show-cdup --show-prefix --git-common-dir --absolute-git-dir --deleted --modified --ignored --directory --error-unmatch --eol --stage --unmerged --killed '
+# getopt_long and git parse-options accept any unambiguous prefix of a long
+# option (`sort --compr=cat`, `git grep --open-files=less`): a long word whose
+# name is a non-empty prefix of one of these voids relief (an ambiguous prefix
+# is a usage error, so failing closed on every prefix is safe). ripgrep does not
+# abbreviate; its exact --pre match stays in the stage classifier.
+POBF_XOPT_LONG='open-files-in-pager pager paginate exec ext-diff textconv output upload-pack receive-pack pre compress editor config-env'
+pobf_xopt() {
+    local w n p
+    for w in $2; do
+        if [[ $w == --* ]]; then
+            n=${w%%=*}; n=${n#--}
+            if [ -n "$n" ]; then
+                for p in $POBF_XOPT_LONG; do
+                    case "$p" in "$n"*) return 0 ;; esac
+                done
+            fi
+        fi
+        case "$w" in
+            # A backslash or a quote left in an option word is a spelling the two
+            # readings do not model (`--pr\e` is `--pre` to bash): void, fail-closed.
+            -*\\*|-*\'*|-*\"*) return 0 ;;
+            --) ;;  # not a stop: `-e --` makes it an option ARGUMENT, options still follow
+            --open-files-in-pager*|--pager*|--paginate*|--exec*|--ext-diff*|--textconv*|--output*|--upload-pack*|--receive-pack*|--pre|--pre=*|--compress*|--editor*|--config-env*) return 0 ;;
+            --*) [ "$1" = git ] || continue
+                 case "$POBF_GIT_SAFE" in *" ${w%%=*} "*) ;; *) return 0 ;; esac ;;
+            -*) [[ $w =~ ^-[^-]*[OxX] ]] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # Every command name pobf_relief gives relief to (plus sed/awk, which lost
 # theirs); a function may not shadow one.
 POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du jq basename dirname realpath readlink test tr column nl tac rev fold fmt paste rm find git bash sh zsh dash ksh mksh gh printf sort rg sed gsed awk gawk mawk python python3 node perl ruby command builtin time'
@@ -1217,7 +1258,7 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # shellcheck disable=SC2016,SC1003,SC2295
 pobf_relief() {
     local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' ap wr=0
-    local PX p tl rd=0 ea sa eo=${2-} z
+    local PX p tl rd=0 ea sa eo=${2-} z xr cx
     local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO XP ED
     local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' T3=$'\003' T5=$'\005' TAB=$'\t'
     # Each scan cuts at the first special char with a glob (the prefix up to
@@ -1240,7 +1281,7 @@ pobf_relief() {
     local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
     local re_fp="(^|[^[:alnum:]_])(functions|dis_functions|aliases|dis_aliases|galiases|dis_galiases|saliases|dis_saliases|commands|BASH_ALIASES|BASH_CMDS|fpath|FPATH|enable|autoload)([^[:alnum:]_]|\$)"
     local re_sa="(^|[^[:alnum:]_])set([[:blank:]]+[-+][[:alnum:]]*)*[[:blank:]]+[-+][[:alnum:]]*A"
-    local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
+    local re_ix="readpipe|passthru|proc_open|syscall|fork|Open3|system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
     case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
     t=${t//\\$NL/}
     while IFS= read -r L; do
@@ -1488,8 +1529,15 @@ pobf_relief() {
         done
         case "$c" in /bin/*|/usr/bin/*) c=${c##*/} ;; esac
         pobf_exp "${ST[j]}" p; x=$PX; XP[j]=$x
-        cls=0
+        # HIMMEL-4402: mode p pads each quoted token with blanks, so a
+        # quote-split option (-"O", --"open-files-in-pager"=) reads as
+        # separate words; the shell joins it. Classify on BOTH readings
+        # and keep the lower class (void if either reading matches).
+        pobf_exp "${ST[j]}" r; xr=$PX
+        cx=9
         FL[j]=0
+        for x in "${XP[j]}" "$xr"; do
+        cls=0
         case "$c" in
             ls|cat|grep|egrep|fgrep|head|tail|wc|echo|diff|uniq|cut|stat|file|du|jq|basename|dirname|realpath|readlink|tr|column|nl|tac|rev|fold|fmt|paste|rm) cls=2 ;;
             # test -v 'a[$(cmd)]' expands the subscript.
@@ -1510,9 +1558,16 @@ pobf_relief() {
             gh) [[ $x =~ extension|ext[[:space:]]|codespace|ssh|browse|alias|config ]] || cls=1 ;;
             printf) case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
             sort) case "$x" in *--compress*) ;; *) cls=2 ;; esac ;;
-            rg) case "$x" in *--pre*) ;; *) cls=2 ;; esac ;;
-            python|python3|node|perl|ruby) [[ $x =~ $re_ix ]] || cls=1 ;;
+            # rg: only the exact --pre / --pre=CMD runs a program (--pretty and
+            # --pre-glob do not); pobf_xopt below also voids on a word spelled so.
+            rg) [[ $x =~ (^|[[:space:]])--pre([[:space:]=]|$) ]] || cls=2 ;;
+            python|python3|node) [[ $x =~ $re_ix ]] || cls=1 ;;
+            # perl's and ruby's open run a command when the name starts/ends with |.
+            perl|ruby) [[ $x =~ $re_ix || $x =~ open ]] || cls=1 ;;
         esac
+        [ "$cls" -lt "$cx" ] && cx=$cls
+        done
+        cls=$cx; x=${XP[j]}
         # An assignment prefix (PAGER=, GIT_PAGER=, GH_BROWSER=, ...) can name a
         # program the command then runs; only a shell on a literal script keeps
         # its relief (BASH_ENV/ENV/PATH are refused above).
@@ -1522,6 +1577,9 @@ pobf_relief() {
         if [ "${CO[j]-}" -ge 0 ] 2>/dev/null && [ "${CO[j]}" -lt "$j" ]; then
             cls=${CL[CO[j]]}; c=${CW[CO[j]]}; c2=${C2[CO[j]]}; ED[j]=${ED[CO[j]]}
         fi
+        # HIMMEL-4402: any relieved stage, and a continuation (which inherits
+        # its parent's class), voids on an option that takes an executable.
+        [ "$cls" != 0 ] && { pobf_xopt "$c" "$x" || pobf_xopt "$c" "$xr"; } && cls=0
         CL[j]=$cls; CW[j]=$c; C2[j]=$c2
         [ "$cls" = 2 ] && FL[j]=1
         j=$((j + 1))

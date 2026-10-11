@@ -2143,6 +2143,71 @@ MOG_HEAD=${MOG_VAR:0:3}
 MOG_TAIL=${MOG_VAR:3}
 assert_deny "5181 seam name split by \$ + popped \${x} + {y}" "$(j "${MOG_HEAD}\$\${x}{y}${MOG_TAIL}=1 bash $MERGE_ON_GREEN")"
 
+# --- HIMMEL-4402 (1685 round 9): two shapes kept read-only relief beside an
+# obfuscated chokepoint path. (1) A substitution's continuation stage
+# inherited its parent's class without the executable-option check; (2) the
+# interpreter executing-builtin list lacked readpipe. The sweep rows are the
+# other interpreters' executing builtins; each must void relief.
+OBF="/r/w/scrip?s/$CK/g?.sh"
+for F in "git grep \"\$(printf needle)\" --open-files-in-pager='$OBF'" \
+         "git grep \"\$(printf needle)\" -O'$OBF'" \
+         "git grep \"\$(printf needle)\" --pager='$OBF'" \
+         "git log \$(printf x) --exec='$OBF'" \
+         "git grep \`printf needle\` --open-files-in-pager='$OBF'" \
+         "printf needle | git grep --future-exec-opt='$OBF' x" \
+         "printf needle | git grep -O '$OBF' x" \
+         "printf needle | git grep -e -- --open-files-in-pager='$OBF'" \
+         "git grep -e -- --open-files-in-pager='$OBF'" \
+         "git grep \"\$(printf needle)\" -e -- --open-files-in-pager='$OBF'" \
+         "perl -e 'readpipe(\"$OBF\")'" \
+         "perl -e 'open(F, \"$OBF|\")'" \
+         "ruby -e 'IO.popen(\"$OBF\")'" \
+         "ruby -e '%x($OBF)'" \
+         "ruby -e 'spawn(\"$OBF\")'" \
+         "ruby -e 'system(\"$OBF\")'" \
+         "awk 'BEGIN{system(\"$OBF\")}'" \
+         "php -r 'shell_exec(\"$OBF\");'" \
+         "php -r 'passthru(\"$OBF\");'" \
+         "php -r 'proc_open(\"$OBF\", [], \$p);'" \
+         "python3 -c 'import os; os.system(\"$OBF\")'" \
+         "python3 -c 'import subprocess; subprocess.run([\"$OBF\"])'" \
+         "node -e 'require(\"child_process\").execSync(\"$OBF\")'" \
+         "git grep -\"O\"'$OBF' needle" \
+         "git grep --\"open-files-in-pager\"='$OBF' needle" \
+         "printf needle | git grep -\"O\"'$OBF' x" \
+         "rg --p\"r\"e='$OBF' needle" \
+         "ruby -e 'open(\"|$OBF\")'" \
+         "perl -e 'syscall(1, \"$OBF\")'" \
+         "perl -e 'fork && exec(\"$OBF\")'"; do
+    assert_deny "4402 pobf relief voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
+done
+# CR round on 2346: bash dequotes a backslash-escaped option name (--pr\e is
+# --pre), so an option word that still carries a backslash or a quote after
+# the readings voids relief for its stage.
+for F in "rg --pr\\e='$OBF' needle" \
+         "sort --compr\\ess-program='$OBF' needle" \
+         "rg --\"pr\"\\e='$OBF' needle" \
+         "printf needle | rg --pr\\e='$OBF' x"; do
+    assert_deny "4402 backslash option voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
+done
+assert_allow "4402 control: rg --pretty with no escapes keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; rg --pretty needle -- '$OBF'")"
+# Console ruling on 2346: getopt_long and git parse-options accept any
+# unambiguous long-option prefix, so any prefix of a program-running option
+# voids relief (an ambiguous one is a usage error; fail closed on all).
+for F in "sort --compr='$OBF' needle" \
+         "git grep --open-files='$OBF' needle" \
+         "git diff --ext='$OBF' needle" \
+         "git log --ext='$OBF' needle" \
+         "sort -S 1 --co='$OBF' needle" \
+         "sort --c='$OBF' needle" \
+         "printf needle | sort --compr='$OBF' x"; do
+    assert_deny "4402 abbreviated long option voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
+done
+assert_allow "4402 control: sort --check keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; sort --check needle -- '$OBF'")"
+# Controls: a read-only git stage with listed options keeps relief.
+assert_allow "4402 control: git grep with listed options keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; git grep -n --count needle -- '$OBF'")"
+assert_allow "4402 control: continuation with no option keeps relief"  "$(j "unset HIMMEL_CONSOLE_LEG; git grep \"\$(printf needle)\" -- '$OBF'")"
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
