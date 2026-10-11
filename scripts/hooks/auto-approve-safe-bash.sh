@@ -403,11 +403,21 @@ tokenize_seg_words() {
             # HIMMEL-5034: split on bash's IFS word separators (space, tab,
             # newline); FF, VT and U+2028 are word bytes to bash, so a root
             # walk needs a real separator.
-            # ponytail: also splits on CR where bash does not (safe direction:
-            # a bash word still starts with its first sub-token, so a leading
-            # flag stays visible); revisit when any flag check relies on a
-            # word's END or suffix rather than its prefix (HIMMEL-3886).
-            " "|$'\t'|$'\n'|$'\r')
+            # ponytail: splits on CR where bash does not, so a CR-separated
+            # `find / <CR>-maxdepth 1` read as a bounded find (HIMMEL-5088:
+            # the old "safe direction" claim was false for -maxdepth, whose
+            # presence is a SAFE signal). The root-walk checks tokenize with
+            # TOK_CR_WORD=1 (CR is a word byte, as in bash); every other
+            # reader keeps the CR split so CRLF inputs keep their verdict.
+            # Revisit when a flag check that gates ALLOW reads a word's END
+            # or suffix (HIMMEL-3886).
+            $'\r')
+                if [ "${TOK_CR_WORD:-0}" = 1 ]; then
+                    word+="$c"; have=1
+                elif [ "$have" -eq 1 ]; then
+                    RB_TOKENS+=("$word"); word=""; have=0
+                fi ;;
+            " "|$'\t'|$'\n')
                 if [ "$have" -eq 1 ]; then
                     RB_TOKENS+=("$word"); word=""; have=0
                 fi ;;
@@ -752,7 +762,7 @@ brace_word_is_rootwalk() {
 }
 
 segment_is_rootwalk_find() {
-    resolve_seg_binary "$1"
+    TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
     [ "$RB_STATUS" = bin ] || return 1
     case "$RB_BIN" in
         find|find.exe|*/find|*/find.exe) ;;
@@ -873,6 +883,163 @@ is_redirect_word() {
     [[ "$pre" =~ ^([0-9]*|&)$ ]]
 }
 
+# HIMMEL-5088: du / ls -R / grep -r / rg / tree on the filesystem root walk the
+# whole disk just like `find /`. Verdict: PASS (never ALLOW), not DENY -- a
+# bounded walk (`tree -L 1 /`, PASS too) and an attended prompt are legitimate, and only
+# find carries the unattended-orphan history behind HIMMEL-2121's deny.
+#
+# Default is "walks" (PASS). A segment is "not a walk" only when EVERY option
+# is an exact, modelled spelling for that binary (value-taking ones included),
+# nothing is CR-glued, and, when the binary recurses, no operand is a root, a
+# glob, a `..` path or an unresolved $/%/~user word. An unknown long option
+# (any abbreviation), an unknown short letter in a cluster or a glued CR all
+# fall to PASS: an over-PASS costs one prompt, an ALLOW of a walk is the defect.
+# Tokenized with CR as a word byte (bash's view); `~` and `~/x` stay allowed.
+# ponytail: the shared tokenizer splits on CR where bash does not, so a reader
+# that gates ALLOW on a CR-glued operand sees it as an option; only the
+# root-walk checks read CR as a word byte, upgrade: make CR a word byte in
+# every ALLOW-gating reader once test-crlf-boundary.sh tolerates it (HIMMEL-3886).
+SW_REC=0 SW_UNK=0
+sw_apply_val() {  # $1 value kind (d|D|n|x), $2 the option's value
+    case "$1" in
+        d) case "$2" in recurse) SW_REC=1 ;; read|skip) ;; *) SW_UNK=1 ;; esac ;;
+        D) case "$2" in read|skip) ;; *) SW_UNK=1 ;; esac ;;
+        n) case "$2" in ''|*[!0-9]*) SW_UNK=1 ;; esac ;;
+    esac
+}
+
+segment_walks_root() {
+    local base j total tok raw opt k c rest kind vkind=x nov val rl have_e=0 dd=0 vskip=0
+    local -a a ops opr
+    TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
+    [ "$RB_STATUS" = bin ] || return 1
+    base="${RB_BIN##*/}"
+    SW_REC=0; SW_UNK=0
+    case "$base" in
+        du)               SW_REC=1; nov='shckmbxaSlHLPAz0'; val='dBtX'; rl='' ;;
+        rg|ripgrep)       SW_REC=1; nov='iSsnNuvwxcHIlLFpaoqzP0b'; val='efgtTmABCjdEMr'; rl='' ;;
+        ag)               SW_REC=1; nov='iSsnNuvwxcHlLFQaozfrABCD'; val='gGpmW'; rl='' ;;
+        tree)             SW_REC=1; nov='adlfiqNQpugshDFvrtcnCxA'; val='LIPoHT'; rl='' ;;
+        ls)               nov='aAcCdFfgGhHiklLmnoprsStuUvxX1'; val=''; rl='R' ;;
+        grep|egrep|fgrep) nov='iInvwxcLlqsHhoaEFGPzZbTUV0123456789'; val='efmABCdD'; rl='rR' ;;
+        *) return 1 ;;
+    esac
+    a=("${RB_TOKENS[@]}"); total=${#a[@]}; ops=(); opr=()
+    for ((j = RB_IDX + 1; j < total; j++)); do
+        raw="${a[$j]}"
+        # a word the cooker cannot decode (an unresolved $VAR, ANSI-C quotes,
+        # a brace list) may hide an option or a root operand: unknown -> PASS
+        shell_word_value "$raw" || { SW_UNK=1; continue; }
+        tok="$SW_VALUE"
+        tok="${tok%$'\r'}"                    # a CR ending a word is a line ending, but a lone CR is still a word
+        case "$tok" in *$'\r'*) SW_UNK=1 ;; esac
+        if [ "$vskip" -eq 1 ]; then           # the value of a value-taking option
+            vskip=0; sw_apply_val "$vkind" "$tok"
+            continue
+        fi
+        if [ "$dd" -eq 1 ]; then              # after `--` every word is an operand
+            is_redirect_word "$raw" "$tok" || { ops+=("$tok"); opr+=("$raw"); }
+            continue
+        fi
+        case "$tok" in
+            --) dd=1 ;;
+            --*)
+                case "$base" in
+                    ls) case "$tok" in
+                            --recursive) SW_REC=1 ;;
+                            --all|--almost-all|--human-readable|--classify|--directory|--reverse|--size|--inode|--dereference|--group-directories-first|--numeric-uid-gid|--color|--color=*|--sort=*|--time-style=*|--format=*|--width=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    grep|egrep|fgrep) case "$tok" in
+                            --recursive|--dereference-recursive|--directories=recurse) SW_REC=1 ;;
+                            --directories=read|--directories=skip) ;;
+                            --directories) vskip=1; vkind=d ;;
+                            --regexp|--file) have_e=1; vskip=1; vkind=x ;;
+                            --regexp=*|--file=*) have_e=1 ;;
+                            --ignore-case|--no-ignore-case|--invert-match|--word-regexp|--line-regexp|--count|--files-with-matches|--files-without-match|--line-number|--no-messages|--with-filename|--no-filename|--quiet|--silent|--only-matching|--text|--extended-regexp|--fixed-strings|--basic-regexp|--perl-regexp|--null|--color|--color=*|--include=*|--exclude=*|--exclude-dir=*|--max-count=*|--binary-files=*|--after-context=*|--before-context=*|--context=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    ag) case "$tok" in
+                            # ag's own tables: -D/--debug and a bare --context/--after/--before
+                            # (and -A/-B/-C) take NO value; a value is attached with `=`.
+                            --depth|--max-count|--width|--workers|--ignore|--ignore-dir|--path-to-ignore|--file-search-regex) vskip=1; vkind=x ;;
+                            --depth=*|--max-count=*|--width=*|--workers=*|--ignore=*|--ignore-dir=*|--path-to-ignore=*|--file-search-regex=*|--context=*|--after=*|--before=*) ;;
+                            --context|--after|--before|--hidden|--unrestricted|--ignore-case|--smart-case|--case-sensitive|--fixed-strings|--literal|--word-regexp|--invert-match|--count|--files-with-matches|--files-without-matches|--line-numbers|--numbers|--no-numbers|--column|--nocolumn|--color|--nocolor|--heading|--noheading|--stats|--follow|--nofollow|--search-binary|--skip-vcs-ignores|--all-text|--null|--silent|--vimgrep|--debug) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    rg|ripgrep) case "$tok" in
+                            --files|--type-list) have_e=1 ;;
+                            --regexp|--file) have_e=1; vskip=1; vkind=x ;;
+                            --regexp=*|--file=*) have_e=1 ;;
+                            --glob|--iglob|--type|--type-not|--max-depth|--max-count|--after-context|--before-context|--context|--threads|--replace|--max-filesize|--depth) vskip=1; vkind=x ;;
+                            --glob=*|--iglob=*|--type=*|--type-not=*|--max-depth=*|--max-count=*|--after-context=*|--before-context=*|--context=*|--threads=*|--replace=*|--max-filesize=*|--depth=*) ;;
+                            --hidden|--no-ignore|--no-ignore-vcs|--ignore-case|--smart-case|--case-sensitive|--line-number|--no-line-number|--count|--files-with-matches|--files-without-match|--fixed-strings|--word-regexp|--invert-match|--no-heading|--heading|--color|--color=*|--no-messages|--follow|--text|--column|--vimgrep|--json|--stats|--quiet|--unrestricted|--only-matching|--null) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    tree) case "$tok" in
+                            --dirsfirst|--noreport|--prune|--du|--inodes|--device|--gitignore|--matchdirs|--nolinks) ;;
+                            --charset|--filelimit|--timefmt|--sort) vskip=1; vkind=x ;;
+                            --charset=*|--filelimit=*|--timefmt=*|--sort=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    du) case "$tok" in
+                            --summarize|--human-readable|--total|--apparent-size|--one-file-system|--dereference|--si|--all|--count-links|--separate-dirs|--bytes|--time|--max-depth=*|--block-size=*|--exclude=*|--time=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                esac ;;
+            -*)
+                # short cluster: the first value-taking letter ends it; what follows
+                # is its attached value, and the NEXT word is the value only when
+                # that letter is the last char. An unmodelled letter is PASS.
+                opt="${tok#-}"; k=0
+                while [ "$k" -lt "${#opt}" ]; do
+                    c="${opt:$k:1}"; k=$((k + 1))
+                    if [ -n "$rl" ]; then
+                        case "$rl" in *"$c"*) SW_REC=1; continue ;; esac
+                    fi
+                    case "$nov" in *"$c"*) continue ;; esac
+                    case "$val" in
+                        *"$c"*)
+                            kind=x
+                            case "$base:$c" in
+                                grep:[ef]|egrep:[ef]|fgrep:[ef]|rg:[ef]|ripgrep:[ef]|ag:g) have_e=1 ;;
+                                grep:d|egrep:d|fgrep:d) kind=d ;;
+                                grep:D|egrep:D|fgrep:D) kind=D ;;
+                                grep:[mABC]|egrep:[mABC]|fgrep:[mABC]) kind=n ;;
+                            esac
+                            rest="${opt:$k}"
+                            if [ -n "$rest" ]; then sw_apply_val "$kind" "$rest"; else vskip=1; vkind="$kind"; fi
+                            break ;;
+                    esac
+                    SW_UNK=1; break
+                done ;;
+            *) is_redirect_word "$raw" "$tok" || { ops+=("$tok"); opr+=("$raw"); } ;;
+        esac
+    done
+    case "$base" in
+        grep|egrep|fgrep|rg|ripgrep|ag)
+            # the first positional is the pattern unless -e/-f/-g supplied it
+            if [ "$have_e" -eq 0 ] && [ "${#ops[@]}" -gt 0 ]; then
+                ops=("${ops[@]:1}"); opr=("${opr[@]:1}")
+            fi ;;
+    esac
+    [ "$SW_UNK" -eq 1 ] && return 0
+    [ "$SW_REC" -eq 1 ] || return 1
+    for ((j = 0; j < ${#ops[@]}; j++)); do
+        tok="${ops[$j]}"; raw="${opr[$j]}"
+        case "$raw" in *'*'*|*'?'*|*'['*|*'{'*) return 0 ;; esac
+        case "$tok" in *..*) return 0 ;; esac
+        # shellcheck disable=SC2088 # a literal ~, never expanded
+        case "$tok" in
+            '~'|'~/'*) continue ;;
+            '~'*|'$'*|'%'*) return 0 ;;
+        esac
+        path_textually_resolves_to_root "$tok" && return 0
+        is_root_anchor "$tok" && return 0
+    done
+    return 1
+}
+
 segment_is_safe() {
     resolve_seg_binary "$1"
     # HIMMEL-4780: the JIRA_PROJECT_KEY= prefix is approvable on node only.
@@ -885,6 +1052,9 @@ segment_is_safe() {
     esac
     local -a a=("${RB_TOKENS[@]}")
     local n=${#a[@]} i="$RB_IDX" bin="$RB_BIN"
+
+    # HIMMEL-5088: a whole-filesystem walker never ALLOWs (it falls to a prompt).
+    if segment_walks_root "$1"; then return 1; fi
 
     if is_safe_bin "$bin"; then
         local k
@@ -1710,7 +1880,8 @@ esac
 # but bash splits words only on space, tab and newline, so a raw FF or VT
 # makes them see different words than the shell runs. No allow for those
 # bytes. CR is left to tokenize_seg_words' ponytail note (CRLF inputs must
-# keep their verdict, test-crlf-boundary.sh).
+# keep their verdict, test-crlf-boundary.sh; the root-walk checks read CR as a
+# word byte, HIMMEL-5088).
 # HIMMEL-4967: abstain AFTER the root-walk DENY below, never before it -- an
 # early exit would downgrade that deny to no opinion.
 abstain=0
