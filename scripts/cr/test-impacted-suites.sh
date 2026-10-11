@@ -880,16 +880,56 @@ trap 'rm -rf "$FX" "$SHIM" "$SHIM2" "$SHD" "$BIG" "$SHIM3"' EXIT
 printf '#!/usr/bin/env bash\nd="$(%s "$@")" || exit $?\nif [ -n "${PRECREATE_DIR:-}" ]; then mkdir "$d/$PRECREATE_DIR" || exit 1; fi\nprintf "%%s\\n" "$d"\n' "$(command -v mktemp)" > "$SHIM3/mktemp"
 chmod +x "$SHIM3/mktemp"
 change scripts/lib/clo-lib.sh
-for name in tree changed suites patterns found seen front srcpats asgpats dirpats \
-            hit.src.raw hit.dir.raw hit.asg.raw hit.src hit.dir hit.asg src.out next \
-            varsrc.raw varsrc content-rules grep.out; do
-    out="$( cd "$FX" && PRECREATE_DIR="$name" PATH="$SHIM3:$PATH" bash "$IS" "$range" 2>/dev/null )"; rc=$?
-    if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "create of the scratch file '$name' that cannot open -> rc 2, no list"; else fail "create of '$name' that cannot open: rc=$rc out=$out"; fi
-done
-out="$( cd "$FX" && PRECREATE_DIR=shell PATH="$SHIM3:$PATH" bash "$IS" "$range" --shell 2>/dev/null )"; rc=$?
-if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "--shell: the shell-suite filter file that cannot open -> rc 2, no list"; else fail "--shell filter file: rc=$rc out=$out"; fi
-out="$( cd "$FX" && PRECREATE_DIR=impacted PATH="$SHIM3:$PATH" bash "$IS" "$range" 2>/dev/null )"; rc=$?
-if [ "$rc" -eq 2 ] && [ -z "$out" ]; then pass "the impacted-list file that cannot open -> rc 2, no list"; else fail "impacted-list file: rc=$rc out=$out"; fi
+out="$( cd "$FX" && PRECREATE_DIR=unused PATH="$SHIM3:$PATH" bash "$IS" "$range" 2>"$SHIM3/err" )"; rc=$?
+if [ "$rc" -eq 0 ] && [ -n "$out" ] && [ ! -s "$SHIM3/err" ]; then pass "unused scratch directory: shim permits rc 0 and a non-empty list (36a control)"; else fail "36a control: rc=$rc out=$out err=$(cat "$SHIM3/err")"; fi
+# For grep.out and *.raw, rc 2/no list alone pins only the fail-closed outcome:
+# a later read also fails after a removed create check. The diagnostic below
+# additionally pins the expected first failing step, not just that outcome.
+while IFS='|' read -r name step; do
+    out="$( cd "$FX" && PRECREATE_DIR="$name" PATH="$SHIM3:$PATH" bash "$IS" "$range" 2>"$SHIM3/err" )"; rc=$?
+    err="$(cat "$SHIM3/err")"
+    if [ "$rc" -eq 2 ] && [ -z "$out" ] && grepq "$err" -F "impacted-suites: $step failed — cannot trust the impacted list"; then pass "scratch '$name' cannot open -> rc 2, no list, named step"; else fail "scratch '$name': rc=$rc out=$out err=$err (wanted $step)"; fi
+done <<'EOF'
+tree|writing the tree listing
+changed|writing the changed-file list
+suites|creating the suite list
+patterns|writing a needle
+found|recording a scan-root suite
+seen|seeding the source closure
+front|seeding the source closure
+srcpats|writing a source-edge pattern
+asgpats|writing an assignment pattern
+dirpats|writing a directive pattern
+hit.src.raw|creating the walking the source closure hit list
+hit.dir.raw|creating the reading shellcheck source directives hit list
+hit.asg.raw|creating the reading variable assignments hit list
+hit.src|reading walking the source closure
+hit.dir|reading reading shellcheck source directives
+hit.asg|reading reading variable assignments
+src.out|merging source-closure hits
+next|growing the source closure
+varsrc.raw|creating the variable-sourcer list
+varsrc|listing variable-sourcing files
+content-rules|writing the content rules
+grep.out|creating the search result file
+EOF
+out="$( cd "$FX" && PRECREATE_DIR=shell PATH="$SHIM3:$PATH" bash "$IS" "$range" --shell 2>"$SHIM3/err" )"; rc=$?
+err="$(cat "$SHIM3/err")"
+if [ "$rc" -eq 2 ] && [ -z "$out" ] && grepq "$err" -F 'impacted-suites: creating the shell-suite list failed'; then pass "--shell: filter file cannot open -> rc 2, no list, named step"; else fail "--shell filter file: rc=$rc out=$out err=$err"; fi
+out="$( cd "$FX" && PRECREATE_DIR=impacted PATH="$SHIM3:$PATH" bash "$IS" "$range" 2>"$SHIM3/err" )"; rc=$?
+err="$(cat "$SHIM3/err")"
+if [ "$rc" -eq 2 ] && [ -z "$out" ] && grepq "$err" -F 'impacted-suites: sorting the impacted list failed'; then pass "impacted-list file cannot open -> rc 2, no list, named step"; else fail "impacted-list file: rc=$rc out=$out err=$err"; fi
+
+# --- 36b. HIMMEL-5178: final stdout write must fail closed ------------------
+# /dev/full rejects writes, but can be opened: the failure must reach the final
+# cat, not the shell redirect. Dropping cat's || io_fail returns rc 0 instead.
+if [ -c /dev/full ]; then
+    ( cd "$FX" && bash "$IS" "$range" >/dev/full 2>"$SHIM3/err" ); rc=$?
+    err="$(cat "$SHIM3/err")"
+    if [ "$rc" -eq 2 ] && grepq "$err" -F 'impacted-suites: listing the impacted suites failed'; then pass "final stdout write fails -> rc 2, named listing step"; else fail "final stdout write: rc=$rc err=$err"; fi
+else
+    echo "SKIP 36b: /dev/full is unavailable on this platform"
+fi
 
 # --- HIMMEL-4781: no range argument defaults to merge-base(default)..HEAD ----
 # The default branch is resolved by scripts/lib/cr-default-base.sh (origin/HEAD,
@@ -933,7 +973,11 @@ fi
 if grepq "$err" -F 'pass an explicit range' && ! grepq "$err" -F 'unshallow'; then pass "unrelated history: error asks for an explicit range, not --unshallow"; else fail "unrelated history: wrong remedy in: $err"; fi
 # (e) the same in a shallow clone: --unshallow is the remedy.
 SHD="$(fixture_mktemp_dir)" || exit 1
-trap 'rm -rf "$FX" "$SHIM" "$SHIM2" "$SHD"' EXIT
+trap 'rm -rf "$FX" "$SHIM" "$SHIM2" "$SHD" "$BIG" "$SHIM3"' EXIT
+# HIMMEL-5178: this replacement must retain the earlier fixture cleanup.
+# Source-level assertion; CI also runs the actual EXIT trap.
+exit_trap="$(trap -p EXIT)"
+if grepq "$exit_trap" -F '"$BIG"' && grepq "$exit_trap" -F '"$SHIM3"'; then pass "active EXIT trap retains BIG and SHIM3 cleanup"; else fail "active EXIT trap drops earlier fixtures: $exit_trap"; fi
 SH="$SHD/c"
 git clone -q --depth 1 "file://$FX" "$SH"
 git -C "$SH" symbolic-ref -d refs/remotes/origin/HEAD
