@@ -88,7 +88,23 @@ check "unlabelled leg is not in the summary" 0 "$(jq '.summary | length' "$tmp/u
 # --all includes the unwrapped leg
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" --all --json > "$tmp/a.json" 2>/dev/null
 check "--all includes the unwrapped leg" 3 "$(jq '.legs | length' "$tmp/a.json")"
-check "--all: transcript-less leg is unmeasured, not averaged" "1 1" "$(jq -r '.summary[] | select(.arm=="400k") | "\(.legs) \(.unmeasured)"' "$tmp/a.json")"
+check "--all: an open leg is listed but not in the means" "1 0" "$(jq -r '.summary[] | select(.arm=="400k") | "\(.legs) \(.unmeasured)"' "$tmp/a.json")"
+python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" --all > "$tmp/at.txt" 2>/dev/null
+check "--all text table marks the open leg" 1 "$(grep -c 'HIMMEL-9003.* open ' "$tmp/at.txt")"
+check "--all text table marks a wrapped leg" 1 "$(grep -c 'HIMMEL-9001.* wrapped ' "$tmp/at.txt")"
+
+# a chain doc nobody listed (found only by the RESUME glob) has no arm record: unproven
+printf '{"schema":1,"legs":[{"doc":"%s","arm":"400k"}]}\n' "$trt" > "$tmp/g.json"
+python3 -I "$SUT" --manifest "$tmp/g.json" --projects "$FX/projects" --json > "$tmp/g.out" 2>/dev/null
+check "glob-only successor: chain is unproven" unproven "$(jq -r "$t | .arm" "$tmp/g.out")"
+mkdir -p "$tmp/pr"; cp "$trt" "$tmp/pr/HIMMEL-9002-N902-trt-RESUME.md"; cp "$res" "$tmp/pr/"
+printf '{"schema":1,"legs":[{"doc":"%s","arm":"400k"}]}\n' "$tmp/pr/HIMMEL-9002-N902b-trt-RESUME.md" > "$tmp/pm.json"
+python3 -I "$SUT" --manifest "$tmp/pm.json" --projects "$FX/projects" --json > "$tmp/pm.out" 2>/dev/null
+check "unlisted -RESUME parent: chain is unproven" unproven "$(jq -r '.legs[0].arm' "$tmp/pm.out")"
+# a doc name leg-identity cannot place warns instead of silently grouping by stem
+printf -- '- 10:00 WRAPPED — done\n' > "$tmp/notes-random.md"
+python3 -I "$SUT" --doc "$tmp/notes-random.md" --projects "$FX/projects" --json 2> "$tmp/w.err" > /dev/null
+check "identity fallback warns on stderr" 1 "$(grep -c 'leg-identity' "$tmp/w.err")"
 
 # text mode prints the arm summary table; no input is a usage error
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" > "$tmp/t.txt" 2>/dev/null

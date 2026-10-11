@@ -97,7 +97,9 @@ is opt-in and audited:
   one row per `TICKET-N<k>` (`scripts/lib/leg-identity.sh`): a RESUME successor
   folds into its parent's row, the leg is wrapped when the last doc of the
   chain is, and every transcript is counted once. A chain whose listed docs
-  carry different manifest arms is `unproven` and left out of the summary. A
+  carry different manifest arms, or that holds a doc the manifest never listed,
+  is `unproven` and left out of the summary; `--all` marks open legs and never
+  averages them. A
   leg with no matching transcript is counted as `unmeasured` and left out of
   the arm means.
 

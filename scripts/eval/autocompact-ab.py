@@ -10,9 +10,10 @@
 # One row per TICKET-N<k> (scripts/lib/leg-identity.sh): a RESUME successor,
 # listed or found beside its parent, folds into the parent's row, and the leg is
 # wrapped when the LAST doc in the chain ends in WRAPPED. Only wrapped legs are
-# reported unless --all. The arm is the manifest `arm` (the launcher's record);
-# a leg without one is `unlabelled`, and a chain whose listed docs carry
-# different arms is `unproven`; both are left out of the arm summary. The
+# reported unless --all, and --all rows are marked open and never averaged. The
+# arm is the manifest `arm` (the launcher's record); a leg without one is
+# `unlabelled`, and a chain whose listed docs carry different arms, or that
+# holds a doc nobody listed, is `unproven`; both are left out of the summary. The
 # brief's `ab-400k` line is not evidence: a 200000 launch can carry it.
 # Legs with no matching transcript are `unmeasured` and left out of the means.
 #
@@ -140,22 +141,37 @@ LEG_IDENTITY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "lib", "leg-identity.sh")
 
 
+_IDENTITY_CACHE = {}
+
+
 def identity(doc):
     """(label, base, session names) from scripts/lib/leg-identity.sh, the one
-    derivation of a leg's identity; never a local regex."""
-    try:
-        out = subprocess.run(
-            ["bash", "-c", 'source "$1"; leg_identity "$2"; leg_base "$2"', "_", LEG_IDENTITY, doc],
-            capture_output=True, text=True, timeout=30).stdout.split("\n")
-        label, _, names = out[0].partition("\t")
-        base = out[1] if len(out) > 1 and out[1] else label
-        if label:
-            return label, base, [n for n in names.split(",") if n]
-    except (OSError, subprocess.SubprocessError):
-        pass
+    derivation of a leg's identity; never a local regex. Warns on stderr when
+    the call fails or the doc name is not a leg doc (the stem is its own leg)."""
+    if doc in _IDENTITY_CACHE:
+        return _IDENTITY_CACHE[doc]
     stem = os.path.basename(doc)
     stem = stem[:-3] if stem.endswith(".md") else stem
-    return stem, stem, [stem]
+    res, why = None, None
+    try:
+        p = subprocess.run(
+            ["bash", "-c", 'source "$1"; leg_identity "$2"; leg_base "$2"', "_", LEG_IDENTITY, doc],
+            capture_output=True, text=True, timeout=30)
+        out = p.stdout.split("\n")
+        label, _, names = out[0].partition("\t")
+        base = out[1] if len(out) > 1 and out[1] else label
+        if p.returncode == 0 and label:
+            res = (label, base, [n for n in names.split(",") if n])
+            if label == stem:
+                why = "not a leg doc name, grouped by its own stem"
+        else:
+            why = "call failed (rc=%d)" % p.returncode
+    except (OSError, subprocess.SubprocessError) as e:
+        why = "call failed (%s)" % e
+    if why:
+        print("autocompact-ab: leg-identity: %s: %s" % (stem, why), file=sys.stderr)
+    _IDENTITY_CACHE[doc] = res or (stem, stem, [stem])
+    return _IDENTITY_CACHE[doc]
 
 
 def chain_key(doc, base):
@@ -206,8 +222,9 @@ def chain_rows(members, projects, claimed):
     # (a doc carried with two different arms is a contradiction, not a record)
     arms = set()
     for p, _ in parsed:
-        if p in members:
-            arms |= members[p] or {None}
+        # a chain doc nobody listed (found only by the RESUME glob) carries no
+        # launch record: it makes the chain unproven, never inherits an arm
+        arms |= (members[p] or {None}) if p in members else {None}
     if len(arms) == 1:
         arm = next(iter(arms)) or "unlabelled"
     else:
@@ -311,18 +328,19 @@ def main():
         elif r["wrapped"] or a.all:
             rows.append(r)
 
-    summ = summary(rows)
+    # open legs (--all) are listed for inspection, never averaged into the arms
+    summ = summary([r for r in rows if r["wrapped"]])
     if a.json:
         print(json.dumps({"legs": rows, "summary": summ}, indent=2))
         return 0
 
-    print("%-52s %-10s %5s %-24s %4s %9s %9s %9s %9s %8s %7s %-5s %3s %6s" % (
-        "leg", "arm", "comp", "compaction-levels", "hand", "cache-rd", "cache-cr",
+    print("%-52s %-8s %-10s %5s %-24s %4s %9s %9s %9s %9s %8s %7s %-5s %3s %6s" % (
+        "leg", "state", "arm", "comp", "compaction-levels", "hand", "cache-rd", "cache-cr",
         "uncached", "cost-eq", "wall-min", "out/trn", "ci-1st", "rev", "pr"))
     for r in rows:
         lv = ",".join(fmt_tok(c["tokens"]) for c in r["compactions"]) or "-"
-        print("%-52s %-10s %5d %-24s %4d %9s %9s %9s %9s %8.1f %7.0f %-5s %3d %6s" % (
-            r["leg"][:52], r["arm"], len(r["compactions"]), lv, r["handoffs"],
+        print("%-52s %-8s %-10s %5d %-24s %4d %9s %9s %9s %9s %8.1f %7.0f %-5s %3d %6s" % (
+            r["leg"][:52], "wrapped" if r["wrapped"] else "open", r["arm"], len(r["compactions"]), lv, r["handoffs"],
             fmt_tok(r["cache_read"]), fmt_tok(r["cache_create"]), fmt_tok(r["uncached"]),
             fmt_tok(r["cost_eq"]), r["wall_s"] / 60.0, r["mean_out_per_turn"],
             r["ci_first_try"], r["review_rounds"], r["pr"] or "-"))
