@@ -113,6 +113,10 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
+if [ "$SEED_ONLY" -eq 1 ] && [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+  echo "claude-codex: --seed-only and --preflight-only are mutually exclusive (the probe skips the seed)." >&2
+  exit 2
+fi
 
 CFG="${HOME}/.config/claude-codex"
 

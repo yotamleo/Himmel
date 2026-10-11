@@ -263,6 +263,9 @@ for l in deepseek codex; do
     check "the $l launcher accepts a current, read-only seed without rewriting it" '[ "$rc" = 0 ] && printf "%s\n" "$out" | grep -qx "argv=hello" && ! printf "%s\n" "$out" | grep -qi "seed failed\|FAILED to"'
   fi
 done
+lane_home codex
+out="$(lane_run codex --seed-only --preflight-only)"; rc=$?
+check "the codex launcher refuses --seed-only with --preflight-only and seeds nothing" '[ "$rc" = 2 ] && [ ! -e "$TMP/lh-codex/.claude-codex/.seeded" ]'
 lane_home deepseek
 lane_run deepseek --seed-only >/dev/null
 cs5183="$TMP/lh-deepseek/.claude-deepseek/settings.json"
