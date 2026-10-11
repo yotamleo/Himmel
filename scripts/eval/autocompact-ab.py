@@ -177,11 +177,10 @@ def resume_siblings(doc):
             if not os.path.basename(r)[len(lead):len(lead) + 1].isdigit()]
 
 
-def chain_rows(members, projects):
-    """members: [(doc, manifest_arm)] sharing one TICKET-N<k>. One row per leg."""
-    docs = {}
-    for doc, arm in members:
-        docs[doc] = docs.get(doc) or arm
+def chain_rows(members, projects, claimed):
+    """members: {doc: {manifest arms}} sharing one TICKET-N<k>; `claimed` is the
+    set of transcript paths earlier rows already own. One row per leg."""
+    docs = {doc: None for doc in members}
     for doc in list(docs):
         for r in resume_siblings(doc):
             docs.setdefault(r, None)
@@ -204,10 +203,13 @@ def chain_rows(members, projects):
     # evidence (a 200000 launch can carry it), so it is never a fallback. A
     # successor folds into its parent only on an equal manifest arm; a chain
     # whose listed docs disagree (or lack the record) is arm-unproven.
-    listed = {m[0] for m in members}
-    arms = [docs[p] for p, _ in parsed if p in listed]
-    if len(set(arms)) == 1:
-        arm = arms[0] or "unlabelled"
+    # (a doc carried with two different arms is a contradiction, not a record)
+    arms = set()
+    for p, _ in parsed:
+        if p in members:
+            arms |= members[p] or {None}
+    if len(arms) == 1:
+        arm = next(iter(arms)) or "unlabelled"
     else:
         arm = "unproven"
     names, seen_n = [], set()
@@ -222,7 +224,9 @@ def chain_rows(members, projects):
            "wrapped": bool(last) and last[-1][0] == "WRAPPED",
            "handoffs": len(parsed) - 1}
     row.update(pr_outcome(markers))
-    paths = find_transcripts(projects, names)
+    # a session titled for two legs belongs to the first row that claims it
+    paths = [p for p in find_transcripts(projects, names) if p not in claimed]
+    claimed.update(paths)
     row["transcripts"] = len(paths)
     row.update(parse_transcripts(paths))
     return row
@@ -296,10 +300,12 @@ def main():
         if key not in groups:
             groups[key] = {}
             order.append(key)
-        groups[key][doc] = groups[key].get(doc) or arm
-    rows = []
+        groups[key].setdefault(doc, set())
+        if arm:
+            groups[key][doc].add(arm)
+    rows, claimed = [], set()
     for key in order:
-        r = chain_rows(list(groups[key].items()), a.projects)
+        r = chain_rows(groups[key], a.projects, claimed)
         if r is None:
             print("autocompact-ab: unreadable leg doc, skipped: %s" % key[1], file=sys.stderr)
         elif r["wrapped"] or a.all:

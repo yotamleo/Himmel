@@ -48,6 +48,18 @@ python3 -I "$SUT" --manifest "$tmp/mm.json" --projects "$FX/projects" --json > "
 check "arm-mismatched successor: one row" 1 "$(jq "[$t] | length" "$tmp/mm.out")"
 check "arm-mismatched successor: arm unproven" unproven "$(jq -r "$t | .arm" "$tmp/mm.out")"
 check "arm-mismatched successor: out of the summary" "200k" "$(jq -r '[.summary[].arm] | join(",")' "$tmp/mm.out")"
+# the SAME doc carried with contradictory arms (two manifests) is arm-unproven
+printf '{"schema":1,"legs":[{"doc":"%s","arm":"400k"}]}\n' "$trt" > "$tmp/c1.json"
+printf '{"schema":1,"legs":[{"doc":"%s","arm":"200k"}]}\n' "$trt" > "$tmp/c2.json"
+python3 -I "$SUT" --manifest "$tmp/c1.json" --manifest "$tmp/c2.json" --projects "$FX/projects" --json > "$tmp/cc.out" 2>/dev/null
+check "contradictory arms for one doc: unproven" unproven "$(jq -r '.legs[0].arm' "$tmp/cc.out")"
+check "contradictory arms for one doc: out of the summary" 0 "$(jq '.summary | length' "$tmp/cc.out")"
+# a session titled for two legs is counted in the first row only
+mkdir -p "$tmp/proj/p"; cp "$FX/projects/p/s-ctl.jsonl" "$tmp/proj/p/s-ctl.jsonl"
+printf '{"type":"custom-title","customTitle":"HIMMEL-9003-N903-open-2026-10-11"}\n' >> "$tmp/proj/p/s-ctl.jsonl"
+python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$tmp/proj" --all --json > "$tmp/sh.json" 2>/dev/null
+check "shared session: first leg owns it" 1 "$(jq "$c | .transcripts" "$tmp/sh.json")"
+check "shared session: second leg does not recount it" 0 "$(jq '.legs[] | select(.leg | startswith("HIMMEL-9003")) | .transcripts' "$tmp/sh.json")"
 python3 -I "$SUT" --doc "$trt" --projects "$FX/projects" --json > "$tmp/b.json" 2>/dev/null
 check "brief ruling line alone is not evidence of the arm" unlabelled "$(jq -r '.legs[0].arm' "$tmp/b.json")"
 cp "$FX/docs/HIMMEL-9002-N902b-trt-RESUME.md" "$tmp/HIMMEL-9002-N9020-other-RESUME.md"
