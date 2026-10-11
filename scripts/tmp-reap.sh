@@ -304,6 +304,10 @@ if [ -d "$CLAUDE_ROOT" ]; then
     for d in "$@"; do
         jlive=0; jage="$JUDGE_AGE"
         case "$(judge_holder "$d")" in live) jlive=1 ;; dead) jage=0 ;; esac
+        # HIMMEL-5165: a verdict written from this dir (write-verdict.sh drops .verdict-written) means
+        # the judge is finished with it, so a live holder (an in-process judge shares its console's
+        # long-lived pid) no longer keeps it. A regular file only; the in_use and preserve checks still apply.
+        if [ -f "$d/.verdict-written" ] && [ ! -L "$d/.verdict-written" ]; then jlive=0; jage=0; fi
         consider 2 judge "${d##*/}" "$d" "$jage" "$jlive"
     done
 fi

@@ -63,7 +63,21 @@ if [ -s "$DIR/.holder" ]; then
         [ "$op" != "$holder" ] && [ "$os" != "-" ] && [ "$(pstart "$op")" = "$os" ] \
             && die "$DIR is held by live pid $op; use another suffix"
     ;; esac
+    # HIMMEL-5173: the SAME live holder asking again (two in-process judges under one console
+    # share its pid) must not share a dir that already has contents: the first verdict's
+    # release marker would delete the second judge's evidence. An empty dir is still reusable.
+    if [ "$op" = "$holder" ] && [ "$os" != "-" ] && [ "$os" = "$start" ]; then
+        for f in "$DIR"/* "$DIR"/.[!.]* "$DIR"/..?*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            [ "${f##*/}" = ".holder" ] && continue
+            die "$DIR is already in use by this holder (has contents); use another suffix"
+        done
+    fi
 fi
+# HIMMEL-5165: a dir whose verdict is written is released to tmp-reap.sh and may be deleted at any
+# moment; reusing it would race the reaper, so the caller picks another suffix instead
+[ -f "$DIR/.verdict-written" ] && [ ! -L "$DIR/.verdict-written" ] \
+    && die "$DIR already released by a written verdict; use another suffix"
 printf '%s %s\n' "$holder" "$start" > "$DIR/.holder" 2>/dev/null || die "cannot write $DIR/.holder"
 [ -s "$DIR/.holder" ] || die "holder file empty: $DIR/.holder"
 printf '%s\n' "$DIR"

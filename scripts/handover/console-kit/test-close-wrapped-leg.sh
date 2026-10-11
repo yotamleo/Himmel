@@ -237,7 +237,7 @@ run() { # run <doc> - runs the script under test with every stub wired
         CWL_SUBTREE_MODE="${CWL_SUBTREE_MODE:-closable}" \
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
         END_SESSION_WIKI_BIN="${CWL_ESW_BIN:-/bin/true}" \
-        CLOSE_WRAPPED_LEG_PROJECTS_DIR="${CWL_PROJECTS_DIR:-$W/no-such-projects-dir}" \
+        CLOSE_WRAPPED_LEG_PROJECTS_DIR="${CWL_PROJECTS_DIR-$W/no-such-projects-dir}" \
         LIVE_SUBAGENTS_BIN="${CWL_LIVE_SUBAGENTS_BIN:-$LSA_STUB}" \
         bash "$SCRIPT" "$@"
 }
@@ -1142,6 +1142,27 @@ rc=0; out=$(lsa_run "$DOC" 2>&1) || rc=$?
 check "subagents: leg child finished -> rc 0" "$rc" "0"
 exact_count "subagents: leg child finished -> TERM sent" "$(cat "$CALLS")" "kill -TERM 240" "1"
 rm -f "$W/sessions/230.json" "$W/sessions/240.json"
+
+# --- 25c. a claudex leg's config dir (HIMMEL-5182) ---------------------------
+# A claudex leg runs with CLAUDE_CONFIG_DIR=<home>/.claude-codex, so its
+# sessions/<pid>.json and projects/ live there, not under the console's
+# ~/.claude. The close reads the pid's /proc/<pid>/environ for it. No override
+# env is set (CWL_PROJECTS_DIR="" and an empty sessions-dir override fall
+# through), and HOME is a fake whose ~/.claude holds nothing.
+CX_HOME="$W/cx-home"; CX_CFG="$CX_HOME/.claude-codex"
+CX_SID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+mkdir -p "$CX_CFG/sessions" "$CX_CFG/projects/-fake/$CX_SID/subagents" "$CX_HOME/.claude"
+printf '{"type":"user","timestamp":"2026-10-09T00:00:00.000Z"}\n' > "$CX_CFG/projects/-fake/$CX_SID.jsonl"
+printf '{"pid":240,"sessionId":"%s"}\n' "$CX_SID" > "$CX_CFG/sessions/240.json"
+printf 'HOME=%s\0CLAUDE_CONFIG_DIR=%s\0' "$CX_HOME" "$CX_CFG" > "$W/proc/240/environ"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(HOME="$CX_HOME" CLOSE_WRAPPED_LEG_SESSIONS_DIR="" CWL_PROJECTS_DIR="" \
+    CWL_LIVE_SUBAGENTS_BIN="$HERE/live-subagents.sh" LEG_DIGEST_STEP_BIN="$W/no-such-digest-step.sh" run "$DOC" 2>&1) || rc=$?
+check "claudex: session id + projects read from the leg's own CLAUDE_CONFIG_DIR -> rc 0" "$rc" "0"
+exact_count "claudex: TERM sent" "$(cat "$CALLS")" "kill -TERM 240" "1"
+not_contains "claudex: no 'no usable session id'" "$out" "no usable session id"
+rm -rf "$W/proc/240/environ"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
 post_handovers=absent

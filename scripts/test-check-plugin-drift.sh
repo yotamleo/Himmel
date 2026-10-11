@@ -314,6 +314,94 @@ noop_out="$(cd "$W_BUMP" && bash "$SCRIPT" --bump-required 2>&1)"; noop_rc=$?
 if [ "$noop_rc" -eq 0 ]; then ok "--bump-required (staged): no plugin changes -> pass"; else bad "--bump-required (staged): no-op case failed (rc=$noop_rc): $noop_out"; fi
 rm -rf -- "$W_BUMP"
 
+# HIMMEL-5177: replay #2331/#2334's competing 0.4.60 -> 0.4.61 bumps.
+# Manifest copied from e65befe4^:marketplace/plugins/himmel-ops/.claude-plugin/plugin.json;
+# e65befe4 (#2331) changed only its version to 0.4.61, also used by #2334.
+W_CURRENT="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-current.XXXXXX")" || exit 1
+(
+  set -e
+  cd "$W_CURRENT"
+  git init -q
+  git config user.email test@example.com
+  git config user.name test
+  mkdir -p marketplace/plugins/himmel-ops/.claude-plugin
+  cat > marketplace/plugins/himmel-ops/.claude-plugin/plugin.json <<'JSON'
+{
+  "name": "himmel-ops",
+  "version": "0.4.60",
+  "description": "Harness-meta operational skills for himmel. Load-on-trigger guardrail-recovery playbook (stuck-playbook) that surfaces escape-hatches when an auto-mode write is denied, a Bash command falls through to the classifier, a permission prompt hangs, or a pre-push gate fails — so operational/troubleshooting rules stay out of the always-on root CLAUDE.md (HIMMEL-211). Plus the minerva pipeline skill (/minerva): brainstorm→critic→spec→critic→plan with adversarial critic loops between stages (HIMMEL-428); and memory-compound (/memory-compound): lean-invoke compaction of the per-project auto-memory into qmd-searchable luna/himmel reference notes with a findability gate (HIMMEL-569).",
+  "author": {
+    "name": "yotamleo"
+  },
+  "keywords": [
+    "himmel",
+    "guardrails",
+    "operational",
+    "stuck",
+    "load-on-trigger",
+    "minerva",
+    "pipeline",
+    "memory-compound",
+    "auto-memory"
+  ]
+}
+JSON
+  git add -A
+  git commit -q -m 'chore: seed real 0.4.60 manifest'
+  git branch stored-base
+  git checkout -q -b current-base
+  sed 's/0.4.60/0.4.61/' marketplace/plugins/himmel-ops/.claude-plugin/plugin.json > manifest.tmp
+  mv manifest.tmp marketplace/plugins/himmel-ops/.claude-plugin/plugin.json
+  printf '# merged sibling change\n' > marketplace/plugins/himmel-ops/sibling.md
+  mkdir -p marketplace/plugins/base-only/.claude-plugin
+  printf '{"name":"base-only","version":"1.0.0"}\n' > marketplace/plugins/base-only/.claude-plugin/plugin.json
+  git add -A
+  git commit -q -m 'fix: replay merged PR 2331 bump'
+  git checkout -q -b competing-pr stored-base
+  sed 's/0.4.60/0.4.61/' marketplace/plugins/himmel-ops/.claude-plugin/plugin.json > manifest.tmp
+  mv manifest.tmp marketplace/plugins/himmel-ops/.claude-plugin/plugin.json
+  printf '# competing PR change\n' > marketplace/plugins/himmel-ops/competing.md
+  git add -A
+  git commit -q -m 'fix: replay PR 2334 same bump'
+  git remote add origin "$W_CURRENT"
+)
+# Execute the real job's run body, not a parallel implementation of its policy.
+# The old inline job interpolates the stored base; the new block uses env.
+current_job="$(python3 -I - "$ROOT/.github/workflows/ci.yml" <<'PY'
+import re, sys
+text = open(sys.argv[1]).read()
+job = text.split('  plugin-version-bump:\n', 1)[1].split('\n  lint:', 1)[0]
+match = re.search(r'^        run: (.*)$', job, re.M)
+body = match.group(1)
+if body == '|':
+    body = '\n'.join(line[10:] for line in job[match.end():].splitlines()[1:] if line.startswith('          '))
+print(body.replace('${{ github.event.pull_request.base.sha }}', 'stored-base'))
+PY
+)"
+run_current_job() {
+  (cd "$W_CURRENT" && BASE_BRANCH="${1:-current-base}" bash -e -c "$current_job")
+}
+# The checker path in the workflow is relative to the checkout, not the fixture.
+mkdir -p "$W_CURRENT/scripts/lib"
+cp "$SCRIPT" "$W_CURRENT/scripts/check-plugin-drift.sh"
+cp "$ROOT/scripts/lib/vm-mode.sh" "$W_CURRENT/scripts/lib/vm-mode.sh"
+stored_out="$(cd "$W_CURRENT" && bash "$SCRIPT" --bump-required stored-base 2>&1)"; stored_rc=$?
+if [ "$stored_rc" -eq 0 ]; then ok "current-base replay: old stored-base gate accepts duplicate bump"; else bad "stored-base control failed: $stored_out"; fi
+current_out="$(run_current_job 2>&1)"; current_rc=$?
+if [ "$current_rc" -eq 1 ] && grepq "$current_out" 'version.*still 0.4.61'; then ok "current-base job rejects the already-merged 0.4.61 bump"; else bad "current-base job accepted duplicate bump (rc=$current_rc): $current_out"; fi
+(
+  cd "$W_CURRENT" || exit 1
+  sed 's/0.4.61/0.4.62/' marketplace/plugins/himmel-ops/.claude-plugin/plugin.json > manifest.tmp
+  mv manifest.tmp marketplace/plugins/himmel-ops/.claude-plugin/plugin.json
+  git add marketplace
+  git commit -q -m 'fix: bump above current base'
+)
+current_out="$(run_current_job 2>&1)"; current_rc=$?
+if [ "$current_rc" -eq 0 ]; then ok "current-base job accepts a fresh bump and ignores base-only plugins"; else bad "current-base fresh bump failed (rc=$current_rc): $current_out"; fi
+current_out="$(run_current_job missing-base 2>&1)"; current_rc=$?
+if [ "$current_rc" -ne 0 ] && ! grepq "$current_out" 'every changed plugin bumped'; then ok "current-base job fails closed on fetch failure, even with a cached base ref"; else bad "current-base job ignored fetch failure (rc=$current_rc): $current_out"; fi
+rm -rf -- "$W_CURRENT"
+
 # 4. End-to-end: the script runs to completion with a sane exit code —
 #    0 (all current / fail-open), 2 (drift), or 3 (incomplete). Anything else
 #    (1, 127, crash) fails.

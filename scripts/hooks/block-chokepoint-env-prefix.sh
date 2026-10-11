@@ -1738,9 +1738,7 @@ raw_obfuscated() {
     # --init-file take a value; a short cluster holding c runs a command
     # string, which needs a path or PATH to reach one). Any other --long
     # option, and a bare --, is skipped (J1685: --norc, --restricted).
-    d=${t//\$\(\(/}
-    d=${d//\$\(/}
-    d=${d//\$\{/}
+    _c_strip_expansion_openers "$t"; d=$REPLY
     # `.` counts only in command position (prose has ". ("): after a
     # separator or `$(`, then any keyword, precommand or VAR=x prefix.
     # `source` counts as any word. The shell may be an absolute path
@@ -1904,7 +1902,7 @@ names_base() {
 # must still match U+3000 and the other Unicode spaces an IFS can split on.
 raw_strip() {
     local LC_ALL=C
-    local re='^(.*)\$\{[^}]*\}(.*)$' t="$1" u
+    local t="$1"
     t=${t//\\$'\r\n'/}
     t=${t//\\$'\n'/}
     t=${t//[\'\"\\]/}
@@ -1927,10 +1925,83 @@ raw_strip() {
                 t=${t//"$sp"/ }
             done ;;
     esac
-    u=$t
-    while [[ $u =~ $re ]]; do u="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+    strip_brace_exp "$t"
     RAW_T=$t
-    RAW_U=$u
+    RAW_U=$REPLY
+}
+
+# HIMMEL-5154: the result of deleting, again and again, the rightmost
+# `${...}` (an opener, then no `}`, then the closer) until none is left. The
+# per-delete regex rescan of the whole string was quadratic in the number of
+# expansions; this single left-to-right pass keeps a stack of the `${`
+# openers since the last retained `}` and drops the nearest one when a `}`
+# arrives, which yields the same string (also when a delete joins a `$` and a
+# `{` into a fresh opener). Result in REPLY. Callers run under LC_ALL=C.
+# Literal-pattern deletions of `$((`, `$(` and `${`, in C: in a UTF-8 locale a
+# `${s//lit/}` over multibyte text is quadratic (HIMMEL-5154); the patterns are
+# ASCII, so bytes give the same string. Result in REPLY.
+_c_strip_expansion_openers() {
+    local LC_ALL=C
+    local x=${1//\$\(\(/}
+    x=${x//\$\(/}
+    REPLY=${x//\$\{/}
+}
+
+strip_brace_exp() {
+    local piece seg k j nparts nsub cnt=0 np=0 idx q
+    local -a pos parts sub chunks isd
+    pos=()
+    # split at every `}` in one pass (a trailing `x` keeps a final empty piece)
+    IFS='}' read -r -d '' -a parts <<< "$1x" || true
+    nparts=${#parts[@]}
+    parts[nparts - 1]=${parts[nparts - 1]%x$'\n'}
+    # The kept text is a stack of chunks, split at every `$`, so a closer
+    # drops an opener and its tail by popping chunks instead of re-slicing one
+    # long string (a per-closer prefix copy was quadratic, HIMMEL-5154). A
+    # chunk ends in `$` only when it is exactly `$` (isd=1), which is what a
+    # following `{` joins into a fresh opener.
+    for ((k = 0; k < nparts; k++)); do
+        piece=${parts[k]}
+        if [ -n "$piece" ]; then
+            if [ "$cnt" -gt 0 ] && [ "${isd[cnt - 1]}" = 1 ] && [ "${piece:0:1}" = '{' ]; then
+                pos[np]=$((cnt - 1)); np=$((np + 1))
+            fi
+            if [[ $piece == *'$'* ]]; then
+                IFS='$' read -r -d '' -a sub <<< "${piece}x" || true
+                nsub=${#sub[@]}
+                sub[nsub - 1]=${sub[nsub - 1]%x$'\n'}
+                if [ -n "${sub[0]}" ]; then
+                    chunks[cnt]=${sub[0]}; isd[cnt]=0; cnt=$((cnt + 1))
+                fi
+                for ((j = 1; j < nsub; j++)); do
+                    seg=${sub[j]}
+                    [ "${seg:0:1}" = '{' ] && { pos[np]=$cnt; np=$((np + 1)); }
+                    chunks[cnt]=\$$seg
+                    isd[cnt]=0
+                    [ -n "$seg" ] || isd[cnt]=1
+                    cnt=$((cnt + 1))
+                done
+            else
+                chunks[cnt]=$piece; isd[cnt]=0; cnt=$((cnt + 1))
+            fi
+        fi
+        [ "$k" -lt $((nparts - 1)) ] || break
+        if [ "$np" -gt 0 ]; then
+            np=$((np - 1))
+            idx=${pos[np]}
+            for ((q = cnt - 1; q >= idx; q--)); do
+                unset "chunks[$q]" "isd[$q]"
+            done
+            cnt=$idx
+        else
+            chunks[cnt]='}'; isd[cnt]=0; cnt=$((cnt + 1))
+        fi
+    done
+    REPLY=""
+    if [ "$cnt" -gt 0 ]; then
+        local IFS=''
+        REPLY="${chunks[*]}"
+    fi
 }
 
 raw_mention() {

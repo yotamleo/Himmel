@@ -46,34 +46,32 @@ _flake_urldecode() {
 # Repo and repo, or r and r.git, are different directories. A file:// URL is that
 # local path, so file:///srv/r.git is /srv/r.git and never /srv/r (HIMMEL-5156);
 # its scheme is case-insensitive and its path is percent-decoded (HIMMEL-5157).
-# file://host/path (host not localhost) is another machine's path: it is kept as
-# //host/path, host lowercased, and never joined under <base> (HIMMEL-5157).
+# file://host/path drops the host like git does (git reads the path and ignores
+# the host), so file://host/srv/r is /srv/r (HIMMEL-5169).
 # A relative local path is resolved against <base> when one is given, so
 # ../r.git from two different parents is two ids (HIMMEL-5156); an absolute one
 # has its . and .. and doubled slashes collapsed, so /srv/x/../r.git is
 # /srv/r.git (HIMMEL-5157).
 _flake_norm_url() {
-  local _u="$1" _b="${2:-}" _s="" _h _r _p _d="" _net=0 _host=0
+  local _u="$1" _b="${2:-}" _s="" _h _r _p _d="" _net=0
   case "$_u" in
     [Ff][Ii][Ll][Ee]://*)
-      _u=$(_flake_urldecode "${_u#???????}")
+      # a sentinel x rides every substitution so a decoded trailing newline
+      # is part of the path (HIMMEL-5161)
+      _u=$(_flake_urldecode "${_u#???????}"; printf x); _u=${_u%x}
       case "$_u" in
         /*) ;;
-        [Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]/*) _u=/${_u#*/} ;;
-        *)
-          _h=${_u%%/*}; _r=${_u#"$_h"}
-          _u="//$(printf '%s' "$_h" | tr '[:upper:]' '[:lower:]')$_r"; _host=1 ;;
+        */*) _u=/${_u#*/} ;;
+        *) _u=/ ;;
       esac ;;
     *://*) _s=$(printf '%s' "${_u%%://*}" | tr '[:upper:]' '[:lower:]'); _u=${_u#*://}; _net=1 ;;
     *) case "${_u%%/*}" in *:*) _u="${_u%%:*}/${_u#*:}"; _net=1 ;; esac ;;
   esac
   if [ "$_net" = 0 ]; then
-    if [ "$_host" = 0 ]; then
-      case "$_u" in
-        /*) _u=$(_flake_join "$_u" "") ;;
-        *) [ -n "$_b" ] && _u=$(_flake_join "$_b" "$_u") ;;
-      esac
-    fi
+    case "$_u" in
+      /*) _u=$(_flake_join "$_u" ""; printf x); _u=${_u%x} ;;
+      *) [ -n "$_b" ] && { _u=$(_flake_join "$_b" "$_u"; printf x); _u=${_u%x}; } ;;
+    esac
     printf '%s' "${_u%/}"
     return 0
   fi
@@ -96,7 +94,10 @@ _flake_norm_url() {
 # parent), not <dir>, so a linked worktree keeps its checkout's id.
 _flake_repo_id() {
   local _url _common _base
-  _url=$(git -C "$1" config --get remote.origin.url 2>/dev/null)
+  # a sentinel x keeps a literal trailing newline of the origin (HIMMEL-5169);
+  # config --get ends the value with one newline of its own
+  _url=$(git -C "$1" config --get remote.origin.url 2>/dev/null; printf x)
+  _url=${_url%x}; _url=${_url%$'\n'}
   _common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
   if [ -n "$_url" ]; then
     case "${_common:-}" in
@@ -105,7 +106,7 @@ _flake_repo_id() {
       *)
         # a separate git dir: the main checkout is this top-level, but only when
         # <dir> is that checkout; a linked worktree of such a repo cannot name it
-        # (ponytail: HIMMEL-5157, resolved against the git dir there, revisit if a fleet repo
+        # (ponytail: HIMMEL-5169, resolved against the git dir there, revisit if a fleet repo
         # uses --separate-git-dir with linked worktrees)
         if [ "$(git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null)" = "$_common" ]; then
           _base=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)

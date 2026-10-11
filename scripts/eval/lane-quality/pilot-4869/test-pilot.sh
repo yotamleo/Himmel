@@ -140,9 +140,53 @@ check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; a
 check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | grep -qxF "$TMP/vault"'
 check 'sandbox never binds the primary checkout; the repo is its tracked export' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qxF "$TMP/repo" && after --ro-bind 2 | grep -qxF "$TMP/root/repo"'
 check 'the export drops the eval kit and the handover stub, keeps the launcher' '[ ! -e "$TMP/root/repo/scripts/eval" ] && [ ! -e "$TMP/root/repo/handovers" ] && [ -f "$TMP/root/repo/scripts/claude-deepseek" ] && [ ! -e "$TMP/root/repo/.env" ]'
+check 'a deepseek jail copies no claudex allow hook' '[ ! -e "$TMP/root/run/p01/lq-allow-hook.sh" ]'
 check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
 sed 's/^LANE=.*/LANE=claudex/' "$TMP/root/rows/p01.env" >"$TMP/claudex.env"
 check 'a claudex row builds its jail (no API host to map)' 'bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1 && ! grep -q api "$TMP/root/run/p01/hosts"'
+# HIMMEL-5077: the claudex classifier runs client-side on the codex model, so the
+# jail user settings carry a jail-only PreToolUse hook that allows exactly the row's
+# own lq-work test scripts (a permissions.allow glob would let `*` cross `/` and `..`),
+# and say lq-work rewrites are routine; the deny list and every other lane stay as were.
+mkdir -p "$TMP/home5077/.claude"
+echo '{"permissions":{"allow":["Read"],"deny":["Bash(rm -rf *)"]},"autoMode":{"environment":["$defaults"]}}' >"$TMP/home5077/.claude/settings.json"
+HOME="$TMP/home5077" bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1
+CS="$TMP/root/run/p01/user-settings.json"; jwt="$TMP/repo/.claude/worktrees/lq-pilot-p01"
+check 'a claudex jail adds no permissions.allow rule (the glob crossed / and ..)' '[ "$(jq -c ".permissions.allow" "$CS" 2>/dev/null)" = "[\"Read\"]" ]'
+check 'a claudex jail keeps the deny list untouched' '[ "$(jq -c ".permissions.deny" "$CS" 2>/dev/null)" = "[\"Bash(rm -rf *)\"]" ]'
+check 'a claudex jail keeps the classifier defaults and calls lq-work an eval copy' 'jq -e --arg j "$jwt" ".autoMode.allow[0] == \"\$defaults\" and (.autoMode.allow | length) == 2 and (.autoMode.allow[1] | contains(\$j + \"/lq-work\") and contains(\"lq-work is a disposable eval copy\") and (contains(\"row worktree\") | not)) and .autoMode.environment == [\"\$defaults\"]" "$CS" >/dev/null 2>&1'
+H="$(jq -r '[.hooks.PreToolUse[]? | select(.matcher == "Bash") | .hooks[0].command] | last // empty' "$CS" 2>/dev/null)"
+check 'a claudex jail registers a Bash PreToolUse hook that is a copy under the read-only run dir' '[ -n "$H" ] && [ -f "$TMP/root/run/p01/lq-allow-hook.sh" ] && printf "%s" "$H" | grep -qF "$TMP/root/run/p01/lq-allow-hook.sh"'
+hook() { jq -nc --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}' | bash -c "$H" 2>/dev/null; }
+allows() { [ -n "$H" ] && hook "$1" | jq -e '.hookSpecificOutput.permissionDecision == "allow"' >/dev/null 2>&1; }
+mkdir -p "$wt/lq-work" "$wt/other"; echo : >"$wt/lq-work/test-ok.sh"; echo : >"$wt/lq-work/build.sh"; echo : >"$wt/other/test-ok.sh"
+echo : >"$TMP/outside.sh"; ln -sf "$TMP/outside.sh" "$wt/lq-work/test-link.sh"
+check 'the hook allows the row'"'"'s own lq-work test script' 'allows "bash $wt/lq-work/test-ok.sh"'
+check 'the hook gives a test- directory traversal no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-/../../other/test-ok.sh" && ! allows "bash $wt/lq-work/../other/test-ok.sh"'
+check 'the hook gives a symlinked test script pointing outside lq-work no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-link.sh"'
+check 'the hook gives a chained or substituted command no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh; rm -rf x" && ! allows "bash $wt/lq-work/test-ok.sh && true" && ! allows "bash $wt/lq-work/test-ok.sh | cat" && ! allows "bash \$(echo $wt/lq-work/test-ok.sh)" && ! allows "bash $wt/lq-work/test-ok.sh x"'
+check 'the hook gives a non-test name or a script outside lq-work no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/build.sh" && ! allows "bash $wt/other/test-ok.sh" && ! allows "sh $wt/lq-work/test-ok.sh" && ! allows "rm -rf $wt/lq-work"'
+check 'the hook gives a newline chain no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh"$'"'"'\n'"'"'"true"'
+check 'the hook gives a trailing background operator no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh &"'
+check 'the hook gives an env prefix no allow' '[ -n "$H" ] && ! allows "FOO=x bash $wt/lq-work/test-ok.sh"'
+check 'the hook gives bash -c no allow' '[ -n "$H" ] && ! allows "bash -c bash $wt/lq-work/test-ok.sh"'
+check 'the hook gives a trailing newline no opinion' '[ -n "$H" ] && [ -z "$(hook "bash $wt/lq-work/test-ok.sh"$'"'"'\n'"'"')" ]'
+# Keep NUL in JSON: a shell argument cannot carry it. Each raw control byte must
+# produce no opinion and exit 0, not disappear in command substitution.
+control_hook() { jq -nc --arg c "bash $wt/lq-work/test-ok.sh" --argjson n "$1" '{tool_name:"Bash",tool_input:{command:($c + ([$n] | implode))}}' | bash -c "$H" 2>/dev/null; }
+check 'the hook gives an embedded NUL no opinion' '[ -n "$H" ] && [ -z "$(jq -nc --arg c "bash $wt/lq-work/test-ok.sh" '\''{tool_name:"Bash",tool_input:{command:($c | sub("test-ok"; "test-\u0000ok"))}}'\'' | bash -c "$H" 2>/dev/null)" ]'
+check 'the hook gives every ASCII control character no opinion and exits 0' '[ -n "$H" ] && (for n in $(seq 0 31); do out=$(control_hook "$n"); rc=$?; [ "$rc" = 0 ] && [ -z "$out" ] || exit 1; done)'
+# Emulate the jail mount with a symlinked base, not a symlinked lq-work.
+mkdir -p "$(dirname "$jwt")"; ln -s "$wt" "$jwt"
+check 'the hook allows the jail spelling of the row test script' 'allows "bash $jwt/lq-work/test-ok.sh"'
+rm -f "$jwt"
+mv "$wt/lq-work" "$wt/lq-work-real"; ln -s "$wt/lq-work-real" "$wt/lq-work"
+check 'the hook gives a symlinked lq-work directory no allow' '[ -n "$H" ] && ! allows "bash $wt/lq-work/test-ok.sh"'
+rm -f "$wt/lq-work"; mv "$wt/lq-work-real" "$wt/lq-work"
+check 'the hook says nothing at all outside an allow (no deny, no ask)' '[ -n "$H" ] && [ -z "$(hook "bash $wt/lq-work/build.sh")" ] && [ -z "$(printf "not json" | bash -c "$H" 2>/dev/null)" ]'
+rm -rf "$wt/lq-work" "$wt/other"; rm -f "$TMP/outside.sh"
+HOME="$TMP/home5077" bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1
+check 'a deepseek jail gets no claudex allow rule' '[ "$(jq -c . "$CS")" = "$(jq -c . "$TMP/home5077/.claude/settings.json")" ]'
 cp "$wt/.git" "$TMP/dotgit"
 printf 'gitdir: %s\n' "$TMP/repo/.git" >"$wt/.git"
 check 'a worktree repointed at the primary .git is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'

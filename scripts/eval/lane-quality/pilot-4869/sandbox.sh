@@ -125,7 +125,19 @@ if [ "$mode" = check ]; then
 else
   # User settings with every plugin and MCP server removed (qmd, obsidian, ...).
   if [ -f "$HOME/.claude/settings.json" ]; then
-    jq 'del(.enabledPlugins, .mcpServers, .enabledMcpjsonServers, .enableAllProjectMcpServers)' \
+    # HIMMEL-5077: claudex's classifier runs client-side on the codex model and over-reads
+    # the rm -rf deny rule. The row's own test scripts get a jail-only PreToolUse hook
+    # (lq-allow-hook.sh; a permissions.allow glob's `*` would cross `/` and `..`) and
+    # own-file rewrites an autoMode.allow line. The deny list stays.
+    if [ "$LANE" = claudex ]; then
+      cp "$HERE/lq-allow-hook.sh" "$RUN/lq-allow-hook.sh" || die "cannot copy the allow hook"
+    fi
+    jq --arg lane "$LANE" --arg wt "$WT" --arg jwt "$JWT" --arg hook "$RUN/lq-allow-hook.sh" \
+      'del(.enabledPlugins, .mcpServers, .enabledMcpjsonServers, .enableAllProjectMcpServers)
+       | if $lane == "claudex" then
+           .hooks.PreToolUse = ((.hooks.PreToolUse // []) + [{"matcher": "Bash", "hooks": [{"type": "command", "command": "bash \([$hook, $jwt, $wt] | map(@sh) | join(" "))"}]}])
+           | .autoMode.allow = ((.autoMode.allow // ["$defaults"]) + ["Editing or rewriting files inside the task'"'"'s own working directory (\($jwt)/lq-work) is routine work, not destruction: lq-work is a disposable eval copy"])
+         else . end' \
       "$HOME/.claude/settings.json" >"$RUN/user-settings.json" || die "cannot filter the user settings"
     A+=(--ro-bind "$RUN/user-settings.json" "$HOME/.claude/settings.json")
   fi

@@ -177,9 +177,9 @@ jobs:
   # sees STAGED files at commit time, over the whole PR range — so a commit
   # that changes a marketplace/plugins/<p>/ file without bumping that plugin's
   # plugin.json version is caught even when pre-commit was skipped/bypassed.
-  # fetch-depth: 0 → the base ref is reachable for the range diff. On `push`
-  # (post-merge to main) there's no PR base to diff against and nothing new to
-  # gate, so this only runs on pull_request.
+  # HIMMEL-5177: fetch the current base tip, not the stored event base SHA.
+  # Check the PR head, not a merge ref that may include a sibling's bump.
+  # Only pull_request runs have a PR's changes to gate.
   plugin-version-bump:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -188,8 +188,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
       - name: Every plugin file changed in the PR range bumped its version
-        run: bash scripts/check-plugin-drift.sh --bump-required "${{ github.event.pull_request.base.sha }}"
+        env:
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/plugin-bump-base"
+          bash scripts/check-plugin-drift.sh --bump-required refs/remotes/origin/plugin-bump-base
 
   lint:
     runs-on: ubuntu-latest

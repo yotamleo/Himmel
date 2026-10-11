@@ -420,4 +420,14 @@ else
     echo "write-verdict: writing '$TARGET' failed" >&2
     exit 5
 fi
+# HIMMEL-5165: the evidence sat in a judge dir (/tmp/claude-<uid>/j<PR>[a-z]/...): the verdict is
+# written, so release that dir to tmp-reap.sh even while its holder (an in-process judge shares
+# the console's pid) lives. HIMMEL-5173: only the PR's own dir (j<PR> or j<PR><a-z>, the --pr value)
+# is released; another PR's judge dir that held the evidence is left to its own verdict.
+# Best effort: the verdict is already on disk.
+jd_seg=${EVIDENCE#"$SCRATCH"/}; jd_seg=${jd_seg%%/*}
+case "$jd_seg" in
+    "j$PR"|"j$PR"[a-z])
+        { [ -L "$SCRATCH/$jd_seg/.verdict-written" ] || : > "$SCRATCH/$jd_seg/.verdict-written"; } 2>/dev/null || true ;;
+esac
 printf '%s\n' "$TARGET"

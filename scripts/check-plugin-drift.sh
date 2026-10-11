@@ -174,7 +174,9 @@ fi
 # exists for the network-free class above; this check is inherently
 # range-based, so its fixtures are throwaway git repos, not bare directories):
 #   - no arg:      staged diff (`git diff --cached`) — the pre-commit shape.
-#   - <base-ref>:  <base-ref>..HEAD — the CI/PR-range shape.
+#   - <base-ref>:  <base-ref>...HEAD selects the PR's changes, but versions
+#                  compare <base-ref> to HEAD (the current-base CI shape).
+#                  Base-only plugin changes must not demand a bump in this PR.
 #
 # No marketplace.json entry currently pins a "version" field for a
 # directory-sourced (local) plugin — only the two git-remote plugins
@@ -199,7 +201,7 @@ check_bump_required() {
       echo "ERR check-plugin-drift --bump-required: cannot resolve base ref '$base_ref'" >&2
       return 1
     fi
-    changed="$(git diff --name-only --diff-filter=ACMRD "${base_ref}..HEAD" -- "$rel")"; diff_rc=$?
+    changed="$(git diff --name-only --diff-filter=ACMRD "${base_ref}...HEAD" -- "$rel")"; diff_rc=$?
   else
     changed="$(git diff --cached --name-only --diff-filter=ACMRD -- "$rel")"; diff_rc=$?
   fi

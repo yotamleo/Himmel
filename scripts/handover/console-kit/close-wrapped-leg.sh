@@ -206,7 +206,22 @@ fi
 # so it is harmless if the leg's own SessionEnd ALSO manages to fire.
 TRANSCRIPT=""
 END_SESSION_WIKI="${END_SESSION_WIKI_BIN:-$HERE/../../hooks/end-session-wiki.sh}"
-PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
+# HIMMEL-5182: a claudex leg runs with CLAUDE_CONFIG_DIR=~/.claude-codex, so its
+# sessions/<pid>.json and projects/ are NOT under the console's config dir. Read
+# the matched pid's own CLAUDE_CONFIG_DIR from /proc/<pid>/environ; failing that,
+# the fleet manifest's lane (claudex -> ~/.claude-codex); else the console's.
+# The explicit CLOSE_WRAPPED_LEG_*_DIR overrides below still win.
+leg_cfg=""
+if [ -r "${CLAUDE_SESSIONS_PROC:-/proc}/$matched/environ" ]; then
+    leg_cfg=$(tr '\0' '\n' < "${CLAUDE_SESSIONS_PROC:-/proc}/$matched/environ" 2>/dev/null \
+        | sed -n 's/^CLAUDE_CONFIG_DIR=//p' | head -n 1)
+fi
+if [ -z "$leg_cfg" ] && [ -n "$FLEET_MANIFEST" ] && [ -r "$FLEET_MANIFEST" ] \
+    && [ "$(jq -r --arg d "$DOC" '[.legs[]? | select(.doc == $d) | .lane // "unknown"] | first // empty' "$FLEET_MANIFEST" 2>/dev/null)" = claudex ]; then
+    leg_cfg="$HOME/.claude-codex"
+fi
+LEG_CONFIG_DIR="${leg_cfg:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
+PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-$LEG_CONFIG_DIR/projects}"
 if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
     # The two-pass customTitle search lives in leg-transcripts.sh (HIMMEL-4670
     # P3), shared with leg-digest-step.sh --doc: same "exactly one" semantics.
@@ -248,7 +263,7 @@ fi
 # not a UUID: the transcript resolved above supplies it. The subagent gate
 # below and the leg's digest step both use it.
 digest_sid=""
-sessions_json="${CLOSE_WRAPPED_LEG_SESSIONS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions}/$matched.json"
+sessions_json="${CLOSE_WRAPPED_LEG_SESSIONS_DIR:-$LEG_CONFIG_DIR/sessions}/$matched.json"
 digest_sid=$(jq -r '.sessionId // empty' "$sessions_json" 2>/dev/null)
 case "$digest_sid" in
     ????????-????-????-????-????????????) ;;

@@ -108,3 +108,13 @@ that `git rev-parse --path-format=absolute --git-common-dir` prints; the leak ga
 forbids a literal home path here) and use the dir it prints; it
 writes the holder file `scripts/tmp-reap.sh` needs to tell your dir from a dead
 judge's (HIMMEL-4325). Never `mkdir` such a dir yourself.
+
+Scratch copies follow the same rule the brief template states (HIMMEL-5165,
+HIMMEL-5173): never `rsync`/`cp -a` the whole repo into `/tmp` (about 6 GB,
+tmpfs). Copy only `scripts/` plus the PR's changed files that still exist at
+its head (`git archive` rejects a deleted path), taken at the PR's
+head with `git archive <head> scripts/ <changed files> | tar -x -C <dir>`, not
+the primary checkout's `main`, or put the tree on disk under
+`~/.cache/himmel/verdicts/<qid>/`. An evidence file inside the PR's own
+`/tmp/claude-<uid>/j<PR>[a-z]/` dir is what releases that dir to the reaper
+once your verdict is written, so keep nothing there you still need after it.

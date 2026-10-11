@@ -442,6 +442,7 @@ _bwimc_quote_run() {
 # write as before; count case arms the way _bwimc_subst_paren_end does if a
 # real command hits it (HIMMEL-4145).
 _bwimc_blank_heredocs() {
+    local _ww="" _wb=0 _we=0
     local text="$1" nest="${2:-}"
     local nl=0 unsure=0 ncode="" nopen=0 allq=1 allgit=1
     local -a pd=()
@@ -465,31 +466,32 @@ _bwimc_blank_heredocs() {
             fi
             if [ "$check" = "$term" ]; then
                 active=0
-                out="${out}${line}"$'\n'
+                out+="${line}"$'\n'
             else
-                out="${out}"$'\n'
+                out+=""$'\n'
             fi
             continue
         fi
-        i=0; len=${#line}; prev=""
+        i=0; len=${#line}; prev=""; _wb=0; _we=0
         while [ "$i" -lt "$len" ]; do
             if [ -n "$_BWIMC_Q" ] && [ "$_BWIMC_ESC" = 0 ]; then
                 _bwimc_quote_run "$line" "$i" dq
                 if [ "$_BWIMC_RUN" -gt 0 ]; then
                     run="${line:$i:$_BWIMC_RUN}"
-                    [ "$nl" -eq 0 ] || ncode="${ncode}${run}"
+                    [ "$nl" -eq 0 ] || ncode+="${run}"
                     prev="${run: -1}"; _BWIMC_ACT=0; _BWIMC_DL=0
                     i=$((i+_BWIMC_RUN)); continue
                 fi
             fi
-            c="${line:$i:1}"
+            if [ "$i" -ge "$_we" ] || [ "$i" -lt "$_wb" ]; then _wb=$i; _ww="${line:$i:264}"; _we=$((i+256)); fi
+            c="${_ww:$((i-_wb)):1}"
             if [ -n "$nest" ] && [ "$_BWIMC_Q" = '"' ] && [ "$_BWIMC_ESC" = 0 ] && [ "$c" = '$' ] \
-               && [ "${line:$((i+1)):1}" = '(' ] && [ "${line:$((i+2)):1}" != '(' ]; then
+               && [ "${_ww:$((i-_wb+1)):1}" = '(' ] && [ "${_ww:$((i-_wb+2)):1}" != '(' ]; then
                 nl=$((nl+1)); pd[nl]=1; _BWIMC_Q=""; _BWIMC_DL=0
                 prev='('; i=$((i+2)); continue
             fi
             _bwimc_scan_step "$c"
-            [ "$nl" -eq 0 ] || ncode="${ncode}${c}"
+            [ "$nl" -eq 0 ] || ncode+="${c}"
             if [ "$nl" -gt 0 ] && [ "$_BWIMC_ACT" = 1 ]; then
                 case "$c" in
                     '#'|'`') unsure=1 ;;
@@ -510,7 +512,7 @@ _bwimc_blank_heredocs() {
                         ;;
                     '<')
                         if [ "$active" = 0 ] && [ -z "$pend_term" ] && [ "$prev" != '<' ] \
-                           && [ "${line:$((i+1)):1}" = '<' ] && [ "${line:$((i+2)):1}" != '<' ]; then
+                           && [ "${_ww:$((i-_wb+1)):1}" = '<' ] && [ "${_ww:$((i-_wb+2)):1}" != '<' ]; then
                             # J1285R Minor: `<<` inside an unclosed `((`/`$((`
                             # arithmetic context on this line (`$((1 << n))`,
                             # `(( x = y << z ))`) is a left-shift operator, not
@@ -577,8 +579,8 @@ _bwimc_blank_heredocs() {
         # backslash is line continuation, and consuming the newline here is
         # what stops the NEXT line's first character being read as escaped.
         [ "$active" = 1 ] || _bwimc_scan_step "$_BWIMC_NL"
-        [ "$nl" -eq 0 ] || ncode="${ncode}"$'\n'
-        out="${out}${line}"$'\n'
+        [ "$nl" -eq 0 ] || ncode+=""$'\n'
+        out+="${line}"$'\n'
     done <<< "$text"
     if [ -n "$nest" ]; then
         # shellcheck disable=SC2016  # literal `${` is the glob pattern
@@ -654,6 +656,7 @@ _bwimc_blank_heredocs() {
 _BWIMC_PIPE=$'\002'
 _bwimc_sp_pipe=0
 _bwimc_text_untrusted() {
+    local _ww="" _wb=0 _we=0
     local text="$1" i=0 c w="" wq=0 prevact="" nx act
     local len=${#text}
     _bwimc_scan_init
@@ -665,14 +668,15 @@ _bwimc_text_untrusted() {
                 i=$((i+_BWIMC_RUN)); continue
             fi
         fi
-        c="${text:$i:1}"
+        if [ "$i" -ge "$_we" ] || [ "$i" -lt "$_wb" ]; then _wb=$i; _ww="${text:$i:264}"; _we=$((i+256)); fi
+        c="${_ww:$((i-_wb)):1}"
         _bwimc_scan_step "$c"
         act="$_BWIMC_ACT"
         if [ "$act" = 1 ]; then
             case "$c" in
                 '('|')') return 0 ;;
                 '&')
-                    nx="${text:$((i+1)):1}"
+                    nx="${_ww:$((i-_wb+1)):1}"
                     case "$prevact$nx" in
                         '>'*|'<'*|*'>'|'&'*|*'&') ;;
                         *) return 0 ;;
@@ -688,7 +692,7 @@ _bwimc_text_untrusted() {
                     fi
                     w=""; wq=0
                     ;;
-                *) w="${w}${c}" ;;
+                *) w+="${c}" ;;
             esac
             prevact="$c"
         else
@@ -887,7 +891,7 @@ _bwimc_assign_flat() {
         if [ -n "$_BWIMC_Q" ] && [ "$_BWIMC_ESC" = 0 ]; then
             _bwimc_quote_run "$t" "$i" dq
             if [ "$_BWIMC_RUN" -gt 0 ]; then
-                o="${o}${t:$i:$_BWIMC_RUN}"; _BWIMC_ACT=0; _BWIMC_DL=0
+                o+="${t:$i:$_BWIMC_RUN}"; _BWIMC_ACT=0; _BWIMC_DL=0
                 i=$((i+_BWIMC_RUN)); continue
             fi
         fi
@@ -908,7 +912,7 @@ _bwimc_assign_flat() {
                 _bwimc_subst_paren_end "$t" "$st"
                 _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0
                 [ "$_BWIMC_PEND" -lt "$n" ] || return 0
-                _BWIMC_AF_CLEAN=0; o="${o}0"; i=$((_BWIMC_PEND+1)); continue
+                _BWIMC_AF_CLEAN=0; o+="0"; i=$((_BWIMC_PEND+1)); continue
             fi
             if [ "$c" = '$' ] && [ "$_BWIMC_DL" != 1 ] && { [ "${t:$((i+1)):1}" = '{' ] || [ "${t:$((i+1)):1}" = '[' ]; }; then
                 sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
@@ -927,7 +931,7 @@ _bwimc_assign_flat() {
                         '${ '|'${'$'\t'|'${'"$_BWIMC_NL"|'${|')
                             st=$((i+2)); [ "${t:$st:1}" != '|' ] || st=$((st+1))
                             _BWIMC_AF_CLEAN=0
-                            o="${o}\$(${t:$st:$((_BWIMC_PEND - st))})"; i=$((_BWIMC_PEND+1)); continue ;;
+                            o+="\$(${t:$st:$((_BWIMC_PEND - st))})"; i=$((_BWIMC_PEND+1)); continue ;;
                     esac
                     case "${t:$i:$((_BWIMC_PEND - i + 1))}" in
                         *[\|\;\&\(\)\<\>]*|*"$_BWIMC_NL"*)
@@ -936,7 +940,7 @@ _bwimc_assign_flat() {
                             case "${t:$i:$((_BWIMC_PEND - i + 1))}" in
                                 *[\'\"\\\(\)\#\`]*|*"$_BWIMC_NL"*) _BWIMC_AF_CLEAN=0 ;;
                             esac
-                            o="${o}\$_"; i=$((_BWIMC_PEND+1)); continue ;;
+                            o+="\$_"; i=$((_BWIMC_PEND+1)); continue ;;
                     esac
                 else
                     _BWIMC_AF_CLEAN=0
@@ -953,7 +957,7 @@ _bwimc_assign_flat() {
             fi
         fi
         _bwimc_scan_step "$c"
-        o="$o$c"; i=$((i+1))
+        o+="$c"; i=$((i+1))
     done
     _BWIMC_AF="$o"
 }
@@ -972,6 +976,7 @@ _BWIMC_FM_RE='^[[:space:]]*[A-Za-z0-9_./:,+@%-]+([[:space:]]+[A-Za-z0-9_./:,+@%-
 _BWIMC_FM_RW=' if then else elif fi do done case esac while until for select function in coproc export unset declare typeset readonly local alias unalias set shopt source . eval exec builtin enable hash trap '
 _BWIMC_FM_GITRO=' log status diff show rev-parse ls-files describe blame shortlog cat-file rev-list '
 _bwimc_flat_mask() {
+    local _ww="" _wb=0 _we=0
     local t="$_BWIMC_AF" n=${#_BWIMC_AF} i=0 c o="" seg="" prev="" w sl keep g
     [ "$_BWIMC_AF_CLEAN" = 1 ] || return 0
     _tolower_ascii "$1"
@@ -979,15 +984,16 @@ _bwimc_flat_mask() {
     case "$_TOLOWER_OUT" in *'#'*|*'<<'*|*'`'*|*cd*|*pushd*|*popd*) return 0 ;; esac
     _bwimc_scan_init
     while [ "$i" -le "$n" ]; do
-        c="${t:$i:1}"
+        if [ "$i" -ge "$_we" ] || [ "$i" -lt "$_wb" ]; then _wb=$i; _ww="${t:$i:264}"; _we=$((i+256)); fi
+        c="${_ww:$((i-_wb)):1}"
         if [ "$i" -lt "$n" ]; then
             _bwimc_scan_step "$c"
             if [ "$_BWIMC_ACT" != 1 ] || [ -n "$_BWIMC_Q" ]; then
-                seg="$seg$c"; i=$((i+1)); continue
+                seg+="$c"; i=$((i+1)); continue
             fi
             case "$c$prev" in
                 ';'*|'&'[!\<\>]|'&'|'|'[!\>]|'|'|"$_BWIMC_NL"*) ;;
-                *) [[ "$c" =~ [[:space:]] ]] || prev="$c"; seg="$seg$c"; i=$((i+1)); continue ;;
+                *) [[ "$c" =~ [[:space:]] ]] || prev="$c"; seg+="$c"; i=$((i+1)); continue ;;
             esac
         fi
         # end of a command: mask it when plain
@@ -1015,8 +1021,8 @@ _bwimc_flat_mask() {
             fi
             [ "$g" = 0 ] || [ "$g" = 4 ] || keep=1
         fi
-        if [ "$keep" = 1 ]; then o="$o$seg"; else o="$o :"; fi
-        o="$o$c"; seg=""; prev="$c"; i=$((i+1))
+        if [ "$keep" = 1 ]; then o+="$seg"; else o="$o :"; fi
+        o+="$c"; seg=""; prev="$c"; i=$((i+1))
     done
     _BWIMC_AF="$o"
 }
@@ -1062,10 +1068,10 @@ _bwimc_sp_word() {
             \')
                 q="${t:$((i+1))}"
                 case "$q" in *\'*) ;; *) _BWIMC_SPBAD=1; i=$n; break ;; esac
-                q="${q%%\'*}"; u="$u$q"; i=$((i+2+${#q})); continue ;;
+                q="${q%%\'*}"; u+="$q"; i=$((i+2+${#q})); continue ;;
             \"|\$)
                 if [ "$c" = '$' ]; then
-                    [ "${t:$((i+1)):1}" = "'" ] || { u="$u$c"; i=$((i+1)); continue; }
+                    [ "${t:$((i+1)):1}" = "'" ] || { u+="$c"; i=$((i+1)); continue; }
                     i=$((i+1)); q="'"
                 else
                     q='"'
@@ -1078,12 +1084,12 @@ _bwimc_sp_word() {
                         j=$((j+2)); continue
                     fi
                     [ "$c" != "$q" ] || break
-                    u="$u$c"; j=$((j+1))
+                    u+="$c"; j=$((j+1))
                 done
                 if [ "$j" -ge "$n" ]; then _BWIMC_SPBAD=1; i=$n; break; fi
                 i=$((j+1)); continue ;;
         esac
-        u="$u$c"; i=$((i+1))
+        u+="$c"; i=$((i+1))
     done
     _BWIMC_SPW="${t:0:$i}"; _BWIMC_SPU="$u"
 }
@@ -1260,6 +1266,7 @@ _bwimc_strip_prefix() {
 # skeleton), the `(` of a `$(` STUB is not a break, so a target built from a
 # substitution (`f$(date)`) stays one token (HIMMEL-4010).
 _bwimc_split_clauses() {
+    local _ww="" _wb=0 _we=0
     local text="$1" skel="${2:-}"
     local i=0 len=${#text} c clause="" prevact="" run pend=() np=0 k
     _bwimc_sp_pipe=0
@@ -1272,18 +1279,19 @@ _bwimc_split_clauses() {
                 run="${text:$i:$_BWIMC_RUN}"
                 # HIMMEL-4143: a newline inside the span rides as \006 (mode 1)
                 if [ "$_BWIMC_NLENC" = 1 ]; then run="${run//"$_BWIMC_NL"/$'\006'}"; fi
-                clause="${clause}${run}"
+                clause+="${run}"
                 prevact=""; _BWIMC_ACT=0; _BWIMC_DL=0
                 i=$((i+_BWIMC_RUN)); continue
             fi
         fi
-        c="${text:$i:1}"
+        if [ "$i" -ge "$_we" ] || [ "$i" -lt "$_wb" ]; then _wb=$i; _ww="${text:$i:264}"; _we=$((i+256)); fi
+        c="${_ww:$((i-_wb)):1}"
         _bwimc_scan_step "$c"
         if [ "$_BWIMC_ACT" = 1 ]; then
             case "$c" in
                 '|')
                     if [ "$prevact" = '>' ]; then
-                        clause="${clause}${c}"
+                        clause+="${c}"
                     else
                         # HIMMEL-4934: a single `|` makes every piece since
                         # the last real boundary (`;` `&&` `||` newline, or a
@@ -1291,7 +1299,7 @@ _bwimc_split_clauses() {
                         # in a subshell), so all of them and every later
                         # clause are untrusted; earlier clauses stay trusted.
                         pend[np]="$clause"; np=$((np+1)); clause=""
-                        [ "$prevact" = '|' ] || [ "${text:$((i+1)):1}" = '|' ] || _bwimc_sp_pipe=1
+                        [ "$prevact" = '|' ] || [ "${_ww:$((i-_wb+1)):1}" = '|' ] || _bwimc_sp_pipe=1
                         for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
                         pend=(); np=0; _bwimc_sp_pipe=1
                     fi
@@ -1300,7 +1308,7 @@ _bwimc_split_clauses() {
                     pend[np]="$clause"; np=$((np+1)); clause=""
                     # a redirect `&` (`2>&1` `>&2` `2>&-` `&>`) is no boundary:
                     # its pieces stay pending so a later `|` still taints them.
-                    if [ "$prevact" != '>' ] && [ "$prevact" != '<' ] && [ "${text:$((i+1)):1}" != '>' ]; then
+                    if [ "$prevact" != '>' ] && [ "$prevact" != '<' ] && [ "${_ww:$((i-_wb+1)):1}" != '>' ]; then
                         for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
                         pend=(); np=0
                     fi
@@ -1311,28 +1319,28 @@ _bwimc_split_clauses() {
                     pend=(); np=0
                     ;;
                 '(')
-                    if [ -n "$skel" ] && [ "$prevact" = '$' ] && { [ "${text:$((i+1)):1}" = $'\001' ] || [ "${text:$((i+1)):1}" = $'\005' ]; }; then
-                        clause="${clause}${c}"
-                    elif [ "$prevact" = '$' ] && [ "${text:$((i+1)):1}" = '(' ] && _bwimc_arith_end "$text" "$i"; then
+                    if [ -n "$skel" ] && [ "$prevact" = '$' ] && { [ "${_ww:$((i-_wb+1)):1}" = $'\001' ] || [ "${_ww:$((i-_wb+1)):1}" = $'\005' ]; }; then
+                        clause+="${c}"
+                    elif [ "$prevact" = '$' ] && [ "${_ww:$((i-_wb+1)):1}" = '(' ] && _bwimc_arith_end "$text" "$i"; then
                         # HIMMEL-4153: a plain `$((…))` is arithmetic, not a
                         # subshell — keep it in the clause so `x=$((1<<2))
                         # touch P/f` stays ONE clause with its verb.
-                        clause="${clause}${text:$i:$((_BWIMC_AE - i + 1))}"
+                        clause+="${text:$i:$((_BWIMC_AE - i + 1))}"
                         i=$((_BWIMC_AE + 1)); prevact=')'; continue
                     else
                         pend[np]="$clause"; np=$((np+1)); clause=""
                     fi
                     ;;
-                *) clause="${clause}${c}" ;;
+                *) clause+="${c}" ;;
             esac
         elif [ "$c" = "$_BWIMC_NL" ] && [ -n "$_BWIMC_Q" ] && [ "$_BWIMC_NLENC" = 1 ]; then
             # HIMMEL-4143: a newline inside a quoted span is part of the
             # word, not a clause break — carry it as \006 so the clause
             # stays one line in transport (`echo 'a⏎' > P/f` keeps its
             # redirect). Only in a mode-1 reading (_BWIMC_NLENC=1).
-            clause="${clause}"$'\006'
+            clause+=""$'\006'
         else
-            clause="${clause}${c}"
+            clause+="${c}"
         fi
         # `prevact` is the previous ACTIVE character, so an escaped or quoted
         # `>` cannot make the following `|` look like a clobber operator.
@@ -1348,6 +1356,7 @@ _bwimc_split_clauses() {
 # a spaced path like "my file.txt" survives as one token). One token per
 # output line.
 _bwimc_tokenize() {
+    local _ww="" _wb=0 _we=0
     local text="$1"
     local i=0 len=${#text} c tok="" have=0
     _bwimc_scan_init
@@ -1355,22 +1364,23 @@ _bwimc_tokenize() {
         if [ -n "$_BWIMC_Q" ] && [ "$_BWIMC_ESC" = 0 ]; then
             _bwimc_quote_run "$text" "$i"
             if [ "$_BWIMC_RUN" -gt 0 ]; then
-                tok="${tok}${text:$i:$_BWIMC_RUN}"; have=1
+                tok+="${text:$i:$_BWIMC_RUN}"; have=1
                 _BWIMC_ACT=0; _BWIMC_DL=0
                 i=$((i+_BWIMC_RUN)); continue
             fi
         fi
-        c="${text:$i:1}"
+        if [ "$i" -ge "$_we" ] || [ "$i" -lt "$_wb" ]; then _wb=$i; _ww="${text:$i:264}"; _we=$((i+256)); fi
+        c="${_ww:$((i-_wb)):1}"
         _bwimc_scan_step "$c"
         if [ "$_BWIMC_ACT" = 1 ]; then
             case "$c" in
                 [[:space:]])
                     if [ "$have" = 1 ]; then printf '%s\n' "$tok"; tok=""; have=0; fi
                     ;;
-                *) tok="${tok}${c}"; have=1 ;;
+                *) tok+="${c}"; have=1 ;;
             esac
         else
-            tok="${tok}${c}"; have=1
+            tok+="${c}"; have=1
         fi
         i=$((i+1))
     done
@@ -1455,6 +1465,7 @@ _bwimc_tokenize() {
 # other quote-aware pass already consults; there is no second escape check
 # added here, only a second use of the one that exists.
 _bwimc_space_before_redirects() {
+    local _ww="" _wb=0 _we=0
     local text="$1"
     local out="" i=0 len=${#text} c prev="" prevact="" boundary=0 run
     local _bwimc_word_alldigit=1
@@ -1464,15 +1475,16 @@ _bwimc_space_before_redirects() {
             _bwimc_quote_run "$text" "$i"
             if [ "$_BWIMC_RUN" -gt 0 ]; then
                 run="${text:$i:$_BWIMC_RUN}"
-                out="${out}${run}"; prev="${run: -1}"; prevact=""
+                out+="${run}"; prev="${run: -1}"; prevact=""
                 _bwimc_word_alldigit=0; _BWIMC_ACT=0; _BWIMC_DL=0
                 i=$((i+_BWIMC_RUN)); continue
             fi
         fi
-        c="${text:$i:1}"
+        if [ "$i" -ge "$_we" ] || [ "$i" -lt "$_wb" ]; then _wb=$i; _ww="${text:$i:264}"; _we=$((i+256)); fi
+        c="${_ww:$((i-_wb)):1}"
         _bwimc_scan_step "$c"
         if [ "$_BWIMC_ACT" = 1 ] && [ "$c" = '>' ] && [ "$prevact" = '<' ]; then
-            out="${out}${c}"
+            out+="${c}"
         elif [ "$_BWIMC_ACT" = 1 ] && { [ "$c" = '>' ] || [ "$c" = '<' ]; } \
              && [ "$prevact" = "$c" ]; then
             # A REPEATED ACTIVE operator (`>>`, `<<`) is ONE operator — keep it
@@ -1485,7 +1497,7 @@ _bwimc_space_before_redirects() {
             # as a redirect at all — so the primary write vanished and was
             # ALLOWED. An inactive character is not part of an operator, so
             # the active `>` after it must be SPACED OFF, not welded on.
-            out="${out}${c}"
+            out+="${c}"
         elif [ "$_BWIMC_ACT" = 1 ] && { [ "$c" = '>' ] || [ "$c" = '<' ]; }; then
             # Round 12 audit site B: only ACTIVE whitespace is a word
             # boundary. An ESCAPED or QUOTED space is a literal space INSIDE
@@ -1500,12 +1512,12 @@ _bwimc_space_before_redirects() {
             case "$prev" in '') boundary=1 ;; esac
             case "$prevact" in [[:space:]]) boundary=1 ;; esac
             if [ "$boundary" = 1 ] || [ "$_bwimc_word_alldigit" = 1 ]; then
-                out="${out}${c}"
+                out+="${c}"
             else
-                out="${out} ${c}"
+                out+=" ${c}"
             fi
         else
-            out="${out}${c}"
+            out+="${c}"
         fi
         # Round 12 codex-1 (gate panel): the fd-digit run is a property of
         # the current WORD, so only an ACTIVE character can end or extend it.
@@ -1612,7 +1624,7 @@ _bwimc_unsent() {
                 *) c=$'\016'"${t:$k:1}" ;;
             esac
         fi
-        o="$o$c"; k=$((k+1))
+        o+="$c"; k=$((k+1))
     done
     printf '%s' "$o"
 }
@@ -2105,7 +2117,7 @@ _bwimc_ansic() {
     while [ "$k" -lt "${#s}" ]; do
         # HIMMEL-4397: take the whole run before the next backslash in one step
         c="${s:$k}"; c="${c%%\\*}"
-        if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
+        if [ -n "$c" ]; then o+="$c"; k=$((k+${#c})); continue; fi
         k=$((k+1))
         c="${s:$k:1}"; k=$((k+1))
         case "$c" in
@@ -2120,7 +2132,7 @@ _bwimc_ansic() {
                         *) break ;;
                     esac
                 done
-                if [ -z "$h" ]; then o="$o$c"; continue; fi
+                if [ -z "$h" ]; then o+="$c"; continue; fi
                 v=$((16#$h)) ;;
             [0-7])
                 h="$c"
@@ -2132,7 +2144,7 @@ _bwimc_ansic() {
                 done
                 v=$((8#$h)) ;;
             c) k=$((k+1)); o="$o?"; continue ;;
-            *) o="$o$c"; continue ;;
+            *) o+="$c"; continue ;;
         esac
         if [ "$v" -eq 0 ] || [ "$v" -ge 128 ]; then o="$o?"; continue; fi
         # shellcheck disable=SC2059  # the format IS the octal escape
@@ -2152,7 +2164,7 @@ _bwimc_ansic_spans() {
         [ "$c" = $'\016' ] && c=$'\016\016'
         if [ "$s" = "'" ]; then
             [ "$c" = "'" ] && s=""
-            o="$o$c"; k=$((k+1)); continue
+            o+="$c"; k=$((k+1)); continue
         fi
         if [ "$c" = "\\" ]; then
             n="${t:$((k+1)):1}"
@@ -2161,10 +2173,10 @@ _bwimc_ansic_spans() {
         fi
         if [ "$c" = '"' ]; then
             if [ "$s" = '"' ]; then s=""; else s='"'; fi
-            o="$o$c"; k=$((k+1)); continue
+            o+="$c"; k=$((k+1)); continue
         fi
         if [ -z "$s" ] && [ "$c" = "'" ]; then
-            s="'"; o="$o$c"; k=$((k+1)); continue
+            s="'"; o+="$c"; k=$((k+1)); continue
         fi
         # `$$` is the PID expansion, so a `'` after it is a plain quote
         if [ -z "$s" ] && [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = '$' ]; then
@@ -2188,10 +2200,10 @@ _bwimc_ansic_spans() {
             q="${q//'"'/$'\016'q}"; q="${q//\'/$'\016'a}"
             q="${q//\\/$'\016'e}"; q="${q//'*'/$'\016's}"
             q="${q//'?'/$'\016'm}"; q="${q//'['/$'\016'l}"
-            o="$o$q"
+            o+="$q"
             continue
         fi
-        o="$o$c"; k=$((k+1))
+        o+="$c"; k=$((k+1))
     done
     printf '%s' "$o"
 }
@@ -2206,13 +2218,13 @@ _bwimc_unq() {
             while [ "$k" -lt "${#t}" ]; do
                 # HIMMEL-4397: jump over runs of plain text, not one char a step
                 c="${t:$k}"; c="${c%%\$*}"
-                if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
+                if [ -n "$c" ]; then o+="$c"; k=$((k+${#c})); continue; fi
                 c="${t:$k:1}"
                 if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = "'" ]; then
                     k=$((k+2)); q=""
                     while [ "$k" -lt "${#t}" ] && [ "${t:$k:1}" != "'" ]; do
                         c="${t:$k}"; c="${c%%[\'\\]*}"
-                        if [ -n "$c" ]; then q="$q$c"; k=$((k+${#c})); continue; fi
+                        if [ -n "$c" ]; then q+="$c"; k=$((k+${#c})); continue; fi
                         if [ "${t:$k:1}" = "\\" ]; then q="$q\\"; k=$((k+1)); fi
                         q="$q${t:$k:1}"; k=$((k+1))
                     done
@@ -2221,7 +2233,7 @@ _bwimc_unq() {
                     continue
                 fi
                 if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = '"' ]; then k=$((k+1)); continue; fi
-                o="$o$c"; k=$((k+1))
+                o+="$c"; k=$((k+1))
             done
             t="$o"; o=""; k=0 ;;
     esac
@@ -2233,7 +2245,7 @@ _bwimc_unq() {
             # HIMMEL-4591: drop each backslash and keep the character after it,
             # one jump per backslash instead of one step per character
             while [[ "$t" == *\\* ]]; do
-                c="${t%%\\*}"; o="$o$c"
+                c="${t%%\\*}"; o+="$c"
                 t="${t:$((${#c}+1))}"
                 o="$o${t:0:1}"; t="${t:1}"
             done
@@ -2854,7 +2866,7 @@ _bwimc_flatten_pe() {
             if [ "$d" -eq 0 ]; then o="$o\${p}"; k=$j; continue; fi
             o="$o${t:$k}"; [ "$q" = 1 ] && _BWIMC_PE="$o"; return 0
         fi
-        o="$o$c"; k=$((k+1))
+        o+="$c"; k=$((k+1))
     done
     # A quote-free `${...}` body is read correctly already (HIMMEL-4921 perf).
     [ "$q" = 1 ] && _BWIMC_PE="$o"
@@ -2885,44 +2897,44 @@ _bwimc_strip_comments() {
     while [ "$k" -lt "$n" ]; do
         c="${t:$k:1}"; top="${st:$((${#st}-1)):1}"
         case "$top" in
-            S) o="$o$c"; k=$((k+1)); [ "$c" = "'" ] && st="${st%?}"; prev=w; continue ;;
+            S) o+="$c"; k=$((k+1)); [ "$c" = "'" ] && st="${st%?}"; prev=w; continue ;;
             A)
                 if [ "$c" = "\\" ]; then o="$o${t:$k:2}"; k=$((k+2)); continue; fi
-                o="$o$c"; k=$((k+1)); [ "$c" = "'" ] && st="${st%?}"; prev=w; continue ;;
+                o+="$c"; k=$((k+1)); [ "$c" = "'" ] && st="${st%?}"; prev=w; continue ;;
         esac
         if [ "$c" = "\\" ]; then o="$o${t:$k:2}"; k=$((k+2)); prev=w; run=0; continue; fi
         if [ "$top" = D ]; then
-            case "$c" in '"'|'$'|'`') : ;; *) o="$o$c"; k=$((k+1)); continue ;; esac
+            case "$c" in '"'|'$'|'`') : ;; *) o+="$c"; k=$((k+1)); continue ;; esac
         fi
         nx="${t:$((k+1)):1}"
         case "$c" in
             '$')
                 if [ "$nx" = '(' ] && [ "${t:$((k+2)):1}" = '(' ]; then
-                    st="${st}RR"; o="$o\$(("; k=$((k+3)); prev=w; run=0; continue
+                    st+="RR"; o="$o\$(("; k=$((k+3)); prev=w; run=0; continue
                 elif [ "$nx" = '(' ]; then
-                    st="${st}c"; o="$o\$("; k=$((k+2)); prev='('; run=0; continue
+                    st+="c"; o="$o\$("; k=$((k+2)); prev='('; run=0; continue
                 elif [ "$nx" = '{' ]; then
-                    st="${st}P"; o="$o\${"; k=$((k+2)); prev=w; run=0; continue
+                    st+="P"; o="$o\${"; k=$((k+2)); prev=w; run=0; continue
                 fi
-                o="$o$c"; k=$((k+1)); prev=w; run=$((run+1)); continue ;;
+                o+="$c"; k=$((k+1)); prev=w; run=$((run+1)); continue ;;
             '`')
-                if [ "$top" = B ]; then st="${st%?}"; prev=w; else st="${st}B"; prev=''; fi
-                o="$o$c"; k=$((k+1)); run=0; continue ;;
+                if [ "$top" = B ]; then st="${st%?}"; prev=w; else st+="B"; prev=''; fi
+                o+="$c"; k=$((k+1)); run=0; continue ;;
             '"')
-                if [ "$top" = D ]; then st="${st%?}"; else st="${st}D"; fi
-                o="$o$c"; k=$((k+1)); prev=w; run=0; continue ;;
+                if [ "$top" = D ]; then st="${st%?}"; else st+="D"; fi
+                o+="$c"; k=$((k+1)); prev=w; run=0; continue ;;
             "'")
-                if [ $((run % 2)) = 1 ]; then st="${st}A"; else st="${st}S"; fi
-                o="$o$c"; k=$((k+1)); prev=w; run=0; continue ;;
+                if [ $((run % 2)) = 1 ]; then st+="A"; else st+="S"; fi
+                o+="$c"; k=$((k+1)); prev=w; run=0; continue ;;
         esac
         run=0
         case "$top" in
             P)
-                case "$c" in '{') st="${st}P" ;; '}') st="${st%?}" ;; esac
-                o="$o$c"; k=$((k+1)); prev=w; continue ;;
+                case "$c" in '{') st+="P" ;; '}') st="${st%?}" ;; esac
+                o+="$c"; k=$((k+1)); prev=w; continue ;;
             R)
-                case "$c" in '(') st="${st}R" ;; ')') st="${st%?}" ;; esac
-                o="$o$c"; k=$((k+1)); prev=w; continue ;;
+                case "$c" in '(') st+="R" ;; ')') st="${st%?}" ;; esac
+                o+="$c"; k=$((k+1)); prev=w; continue ;;
         esac
         case "$c" in
             '#')
@@ -2932,7 +2944,7 @@ _bwimc_strip_comments() {
                         continue ;;
                 esac
                 prev=w ;;
-            '(') st="${st}p"; prev='(' ;;
+            '(') st+="p"; prev='(' ;;
             ')')
                 case "$top" in
                     c) st="${st%?}"; prev=w ;;
@@ -2981,8 +2993,8 @@ _bwimc_strip_comments() {
                             j=$((j+${#line}+1))
                             chk="$line"
                             if [ "${hdd[$hi]}" = 1 ]; then while [ "${chk:0:1}" = $'\t' ]; do chk="${chk#?}"; done; fi
-                            [ "$chk" = "${hd[$hi]}" ] && { body="$body$line"$'\n'; found=1; break; }
-                            [ "${hdk[$hi]}" = 1 ] && body="$body$line"$'\n'
+                            [ "$chk" = "${hd[$hi]}" ] && { body+="$line"$'\n'; found=1; break; }
+                            [ "${hdk[$hi]}" = 1 ] && body+="$line"$'\n'
                         done
                         [ "$found" = 1 ] || break
                     done
@@ -2995,7 +3007,7 @@ _bwimc_strip_comments() {
             ' '|$'\t'|';'|'&'|'|'|'>') prev="$c" ;;
             *) prev=w ;;
         esac
-        o="$o$c"; k=$((k+1))
+        o+="$c"; k=$((k+1))
     done
     _BWIMC_NC="$o"
 }
@@ -3528,7 +3540,7 @@ _bwimc_subst_paren_end() {
         _bwimc_scan_step "$ch"
         if [ "$_BWIMC_ACT" = 1 ]; then
             case "$ch" in
-                [A-Za-z0-9_]) w="$w$ch"; j=$((j+1)); continue ;;
+                [A-Za-z0-9_]) w+="$ch"; j=$((j+1)); continue ;;
             esac
             case "$w" in
                 'case') cs=$((cs+1)) ;;
@@ -3603,7 +3615,7 @@ _bwimc_subst_split() {
                         esac
                         sq="${sa:$se:1}"
                     fi
-                    body="$body$sq"; se=$((se+1))
+                    body+="$sq"; se=$((se+1))
                 done
                 end=$j
             elif [ "$c" = '$' ] && [ "${text:$((i+1)):1}" = '(' ] && [ "${text:$((i+2)):1}" != '(' ]; then
@@ -3633,7 +3645,7 @@ _bwimc_subst_split() {
             i=$((end+1)); _BWIMC_DL=0
             continue
         fi
-        _BWIMC_SKEL="$_BWIMC_SKEL$c"
+        _BWIMC_SKEL+="$c"
         _bwimc_scan_step "$c"
         i=$((i+1))
     done
@@ -3962,7 +3974,7 @@ _bwimc_ansic() {
     while [ "$k" -lt "${#s}" ]; do
         # HIMMEL-4397: take the whole run before the next backslash in one step
         c="${s:$k}"; c="${c%%\\*}"
-        if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
+        if [ -n "$c" ]; then o+="$c"; k=$((k+${#c})); continue; fi
         k=$((k+1))
         c="${s:$k:1}"; k=$((k+1))
         case "$c" in
@@ -3977,7 +3989,7 @@ _bwimc_ansic() {
                         *) break ;;
                     esac
                 done
-                if [ -z "$h" ]; then o="$o$c"; continue; fi
+                if [ -z "$h" ]; then o+="$c"; continue; fi
                 v=$((16#$h)) ;;
             [0-7])
                 h="$c"
@@ -3989,7 +4001,7 @@ _bwimc_ansic() {
                 done
                 v=$((8#$h)) ;;
             c) k=$((k+1)); o="$o?"; continue ;;
-            *) o="$o$c"; continue ;;
+            *) o+="$c"; continue ;;
         esac
         if [ "$v" -eq 0 ] || [ "$v" -ge 128 ]; then o="$o?"; continue; fi
         # shellcheck disable=SC2059  # the format IS the octal escape
@@ -4014,13 +4026,13 @@ _bwimc_unq() {
             while [ "$k" -lt "${#t}" ]; do
                 # HIMMEL-4397: jump over runs of plain text, not one char a step
                 c="${t:$k}"; c="${c%%\$*}"
-                if [ -n "$c" ]; then o="$o$c"; k=$((k+${#c})); continue; fi
+                if [ -n "$c" ]; then o+="$c"; k=$((k+${#c})); continue; fi
                 c="${t:$k:1}"
                 if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = "'" ]; then
                     k=$((k+2)); q=""
                     while [ "$k" -lt "${#t}" ] && [ "${t:$k:1}" != "'" ]; do
                         c="${t:$k}"; c="${c%%[\'\\]*}"
-                        if [ -n "$c" ]; then q="$q$c"; k=$((k+${#c})); continue; fi
+                        if [ -n "$c" ]; then q+="$c"; k=$((k+${#c})); continue; fi
                         if [ "${t:$k:1}" = "\\" ]; then q="$q\\"; k=$((k+1)); fi
                         q="$q${t:$k:1}"; k=$((k+1))
                     done
@@ -4029,7 +4041,7 @@ _bwimc_unq() {
                     continue
                 fi
                 if [ "$c" = '$' ] && [ "${t:$((k+1)):1}" = '"' ]; then k=$((k+1)); continue; fi
-                o="$o$c"; k=$((k+1))
+                o+="$c"; k=$((k+1))
             done
             t="$o"; o=""; k=0 ;;
     esac
@@ -4041,7 +4053,7 @@ _bwimc_unq() {
             # HIMMEL-4591: drop each backslash and keep the character after it,
             # one jump per backslash instead of one step per character
             while [[ "$t" == *\\* ]]; do
-                c="${t%%\\*}"; o="$o$c"
+                c="${t%%\\*}"; o+="$c"
                 t="${t:$((${#c}+1))}"
                 o="$o${t:0:1}"; t="${t:1}"
             done
@@ -4779,7 +4791,7 @@ _bwimc_git_clause() {
     # <leg>; git merge x`) or may have failed, and a write is checked from each.
     case "$tu" in
         cd|pushd|popd)
-            [ "$_bwimc_gcwd_unres" = 1 ] || _bwimc_gcwd_alts="$_bwimc_gcwd_alts$_bwimc_gcwd"$'\n' ;;
+            [ "$_bwimc_gcwd_unres" = 1 ] || _bwimc_gcwd_alts+="$_bwimc_gcwd"$'\n' ;;
     esac
     case "$tu" in
         cd|pushd)
@@ -5501,7 +5513,7 @@ _bwimc_join_continuations() {
     case "$t" in *\\*) ;; *) printf '%s' "$t"; return 0 ;; esac
     # HIMMEL-4591: one jump per backslash, not one step per character
     while [[ "$t" == *\\* ]]; do
-        c="${t%%\\*}"; o="$o$c"
+        c="${t%%\\*}"; o+="$c"
         t="${t:$((${#c}+1))}"
         n="${t:0:1}"; t="${t:1}"
         [ "$n" = "$_BWIMC_NL" ] && continue

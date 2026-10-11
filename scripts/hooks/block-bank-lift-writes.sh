@@ -48,10 +48,30 @@
 # is an operator-owned lift the gate verifies, filed when one is seen in a
 # transcript.
 # ponytail: bank-lift.sh show|clear is trusted as the repo's
-# scripts/lib/bank-lift.sh of this checkout or one of its .claude/worktrees
-# (HIMMEL-4458), so an edited or planted copy inside a worktree passes; a
-# pure-glob source under a computed destination (cp --parents * "$d") is not
-# judged as the lift; upgrade path is the operator-owned lift above.
+# scripts/lib/bank-lift.sh of this checkout, or of one of its .claude/worktrees
+# while that copy is byte-identical to the primary's (HIMMEL-4458; HIMMEL-4545
+# closed the edited-copy case: a worktree copy that differs no longer runs).
+# HIMMEL-4545 also closed a glob source into a computed destination
+# (d=<state>; cp dir/* "$d", --parents too). Still open, verified at base and
+# head: a redirect or tee to an inherited env value (`> "$X"`, X set outside
+# the command) is allowed, since denying every `> "$VAR"` would break the
+# fleet (HIMMEL-5159); upgrade path is the operator-owned lift above.
+# ponytail: accepted over-deny (HIMMEL-4545), measured on p22-hist at 845 of
+# 211,645 rows (0.40 %): ~725 relative or computed copy destinations and
+# sources under an unproven cwd, 110 computed extraction destinations
+# (`tar -C "$B"` with B set in the command), ~14 glob / JSON-argument mention
+# over-matches, 16 harness artifacts, 1 tar --wildcards. HIMMEL-4545 tried to
+# trim the plain-name copy under an unproven cwd and withdrew it: four review
+# rounds each found a new way to move the cwd out of a text layer's sight
+# (a computed or ANSI-C cd, a spaced path, source, a logical `..` through a
+# symlink, brace-built command words), so every relative write under an
+# unproven cwd stays denied, as at base.
+# The remainder stays denied because
+# the member names or the resolved cwd are unknowable to a text layer: an
+# extraction under an unproven cwd, `ln` with a computed or relative source,
+# a computed extraction destination, and a glob that can match the lift's
+# name. A trim that would also let one of those through is not taken; the
+# retry (a literal path, or `cd` in its own command) costs a leg one call.
 # ponytail: the PowerShell tool is not wired, Windows is parked under
 # HIMMEL-4102 — wire it when Windows legs resume.
 # ponytail: HIMMEL-5094 extraction ceilings, none visible to a text layer
@@ -657,7 +677,9 @@ _repo_lift_script() {
     [ "$d" = "$LIFT_REPO" ] && return 0
     case "$d" in
         "$LIFT_REPO"/.claude/worktrees/*/*) return 1 ;;
-        "$LIFT_REPO"/.claude/worktrees/?*) return 0 ;;
+        # HIMMEL-4545: a worktree's copy runs only while it is byte-identical
+        # to the primary's; an edited copy is other code under the same name.
+        "$LIFT_REPO"/.claude/worktrees/?*) cmp -s -- "$p" "$LIFT_REPO/scripts/lib/bank-lift.sh" && return 0 ;;
     esac
     return 1
 }
@@ -968,6 +990,11 @@ check_copy() {
     # With the cwd unproven a relative destination cannot be placed (the
     # --parents path and the ancestor check below build on it); an absolute
     # one is judged as with a proven cwd.
+    # ponytail: an unproven-cwd relative write stays over-denied, even a plain
+    # name (HIMMEL-4545): four review rounds found escapes in every model of
+    # the cwd (computed cd, spaced path, source, logical `..` through a
+    # symlink, brace-built command words); upgrade path is a cd model with
+    # logical `..` and brace expansion, under its own ticket.
     _rel_unproven "$dest" && deny "$verb writes to a relative destination ($dest): $UNPROVEN_FIX"
     # HIMMEL-4458: cp --parents / rsync -R (--relative) recreate the SOURCE's
     # path under the destination, so a glob-spelled source
@@ -987,6 +1014,21 @@ check_copy() {
                     LIFT|STATE) deny "$verb --parents/-R recreates the bank lift's path under $dest ($src)" ;;
                 esac
             fi
+        done
+    fi
+    # HIMMEL-4545: a computed destination (`d=<state dir>; cp dir/* "$d"`) may
+    # BE the state dir, so a glob source that can match the lift's name, or
+    # state / .himmel, denies as it does for a literal destination. A computed
+    # source word is not a glob and stays an accepted ceiling.
+    if _is_dynamic "$dest"; then
+        for src in ${pos[@]+"${pos[@]}"}; do
+            case "$src" in *[\*\?\[]*) ;; *) continue ;; esac
+            srcb=$(_base "$src")
+            for need in "$LIFT_NAME" state .himmel; do
+                if _name_matches "$srcb" "$need"; then
+                    deny "$verb copies a glob source ($src) into a computed destination ($dest) that may be the state dir; name the destination literally"
+                fi
+            done
         done
     fi
     dk=$(lift_ref "$dest")

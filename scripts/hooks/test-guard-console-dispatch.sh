@@ -233,6 +233,12 @@ assert_empty "console one-family mention is silent" "$(combined_output console-o
 RC7=$(run_hook console-explore "$(payload Explore 'ship it' "$SHIP_FLOW_PROMPT")" HIMMEL_SESSION_ROLE=console)
 assert_rc "console + subagent_type Explore + ship-flow markers allowed" 0 "$RC7"
 
+RC7B=$(run_hook console-judge-ro "$(payload console-judge-ro 'judge' "$SHIP_FLOW_PROMPT")" HIMMEL_SESSION_ROLE=console)
+assert_rc "HIMMEL-5180: console + subagent_type console-judge-ro (read-only judge, tools Read/Grep/Glob/Bash) + ship-flow markers allowed" 0 "$RC7B"
+
+RC7C=$(run_hook console-judge-still-denied "$(payload console-judge 'judge' "$SHIP_FLOW_PROMPT")" HIMMEL_SESSION_ROLE=console)
+assert_rc "HIMMEL-5180: console-judge (not -ro) + ship-flow markers still denied" 2 "$RC7C"
+
 RC9=$(run_hook role-leg-wins "$(payload general-purpose 'ship it' "$SHIP_FLOW_PROMPT")" HIMMEL_SESSION_ROLE=leg)
 assert_rc "HIMMEL_SESSION_ROLE=leg + full ship-flow prompt: explicit non-console wins" 0 "$RC9"
 

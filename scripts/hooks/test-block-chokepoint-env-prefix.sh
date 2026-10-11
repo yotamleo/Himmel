@@ -2134,6 +2134,15 @@ for hex in '\0343\0200\0200:U+3000' '\0302\0240:U+00A0' '\0342\0200\0203:U+2003'
 done
 unset LC_ALL
 
+# --- HIMMEL-5181: strip_brace_exp joins a `$` chunk and a following `{` into a
+# fresh opener (HIMMEL-5154). `$` + a popped `${x}` + `{y}` deletes to nothing,
+# so a seam name split by it must still read as the registered name. A mutant
+# that drops the isd join leaves `$` and `{y}` in place and this row passes the
+# guard instead of denying.
+MOG_HEAD=${MOG_VAR:0:3}
+MOG_TAIL=${MOG_VAR:3}
+assert_deny "5181 seam name split by \$ + popped \${x} + {y}" "$(j "${MOG_HEAD}\$\${x}{y}${MOG_TAIL}=1 bash $MERGE_ON_GREEN")"
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"

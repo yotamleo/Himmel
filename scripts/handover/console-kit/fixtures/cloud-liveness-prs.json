@@ -1,0 +1,186 @@
+[
+ {
+  "number": 2314,
+  "title": "fix: [HIMMEL-5077] claudex lane: client-side gpt classifier over-generalises the rm -rf deny rule and blocks test scripts and own-file rewrites",
+  "body": "## Summary\nHIMMEL-5077. In claudex, the auto-mode classifier runs client-side (`CLAUDE_CODE_AUTO_MODE_SERVER=0`). Its default model, Sonnet, isn't served by the codex-only CLIProxyAPI, so the classifier falls back to gpt-6.1-sol. That model over-reads the `Bash(rm -rf *)` user deny rule.\n\n- **Eval jail (claudex rows only):** `sandbox.sh` already filters the user settings for each row. For claudex ",
+  "state": "OPEN",
+  "headRefName": "fix/himmel-5077-claudex-lane-client-side-gpt-classifier",
+  "createdAt": "2026-10-10T14:52:12Z",
+  "mergedAt": null,
+  "closedAt": null,
+  "comments": [
+   {
+    "author": {
+     "login": "coderabbitai"
+    },
+    "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: skip revi",
+    "createdAt": "2026-10-10T14:52:21Z"
+   },
+   {
+    "author": {
+     "login": "yotamleo"
+    },
+    "body": "CLOUD-DONE https://claude.ai/code/session_012yMgxSaSskpLb4qrfXBhk1\nHead: f988fae9 (one commit, not amended)\n\n**Tests**\n-",
+    "createdAt": "2026-10-10T15:10:46Z"
+   }
+  ],
+  "commits": [
+   {
+    "committedDate": "2026-10-10T14:05:11Z"
+   }
+  ],
+  "files": [
+   {
+    "path": "scripts/claude-codex"
+   },
+   {
+    "path": "scripts/eval/lane-quality/pilot-4869/sandbox.sh"
+   },
+   {
+    "path": "scripts/eval/lane-quality/pilot-4869/test-pilot.sh"
+   }
+  ]
+ },
+ {
+  "number": 2306,
+  "title": "feat: [HIMMEL-4657] config-ui agui sse: open-then-verify the journal fd, bound readuntil's read",
+  "body": "## Summary\nTwo hardening follow-ups from the /pr-check round 1 panel on PR 1964 (HIMMEL-4480 PR2).\n\n- **Open-then-verify** (`sse.ts`): `journalStream` now opens each followed file through `openVerified`. It opens with `O_NOFOLLOW`, so a symlink in the final path component is refused everywhere. Where procfs exists, it also checks that `realpath(/proc/self/fd/<fd>)` still equals the validated realp",
+  "state": "MERGED",
+  "headRefName": "claude/agui-sse-hardening-fwa0t2",
+  "createdAt": "2026-10-10T14:02:19Z",
+  "mergedAt": "2026-10-10T14:47:48Z",
+  "closedAt": "2026-10-10T14:47:48Z",
+  "comments": [
+   {
+    "author": {
+     "login": "coderabbitai"
+    },
+    "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: skip revi",
+    "createdAt": "2026-10-10T14:02:28Z"
+   },
+   {
+    "author": {
+     "login": "yotamleo"
+    },
+    "body": "CLOUD-DONE https://claude.ai/code/session_01BCqPMDHjUE9Z52yEy3J3Uf\nHead: b793397d206f7085644f2cb8a2a2d8415fa3b443\n\nTest ",
+    "createdAt": "2026-10-10T14:02:37Z"
+   }
+  ],
+  "commits": [
+   {
+    "committedDate": "2026-10-10T14:01:25Z"
+   }
+  ],
+  "files": [
+   {
+    "path": "scripts/config-ui/agui/sse.ts"
+   },
+   {
+    "path": "scripts/config-ui/tests/agui-sse.test.ts"
+   }
+  ]
+ },
+ {
+  "number": 1982,
+  "title": "fix(pipeline): [HIMMEL-4677] Scrapling-first for YouTube and X media, cookies demoted to fallback",
+  "body": "## Summary\n\nPR-B of HIMMEL-4675. YouTube and X media now go through a cookieless Scrapling path first. The cookie paths are kept only as fallbacks.\n\n- **X media:** `tools/x-scrapling-media.py` reads the public status page with Scrapling's StealthyFetcher and **no cookie**. It takes the status's own `<article>` (a quoted post is excluded) and returns either a direct mp4 or the captured HLS master p",
+  "state": "MERGED",
+  "headRefName": "fix/himmel-4677-yt-x-scrapling-first",
+  "createdAt": "2026-10-06T22:49:15Z",
+  "mergedAt": "2026-10-06T23:25:17Z",
+  "closedAt": "2026-10-06T23:25:17Z",
+  "comments": [
+   {
+    "author": {
+     "login": "yotamleo"
+    },
+    "body": "@coderabbitai review",
+    "createdAt": "2026-10-06T22:49:17Z"
+   },
+   {
+    "author": {
+     "login": "coderabbitai"
+    },
+    "body": "<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n<!-- This is an auto-generated comment: skip revi",
+    "createdAt": "2026-10-06T22:49:25Z"
+   },
+   {
+    "author": {
+     "login": "coderabbitai"
+    },
+    "body": "<!-- This is an auto-generated reply by CodeRabbit -->\n<!-- CodeRabbit review command invocation: v2:e53a6204f6f23eecc54",
+    "createdAt": "2026-10-06T22:49:42Z"
+   }
+  ],
+  "commits": [
+   {
+    "committedDate": "2026-10-06T22:44:44Z"
+   },
+   {
+    "committedDate": "2026-10-06T22:53:34Z"
+   },
+   {
+    "committedDate": "2026-10-06T22:57:00Z"
+   }
+  ],
+  "files": [
+   {
+    "path": "docs/tooling-catalog.md"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/.claude-plugin/plugin.json"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/README.md"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/commands/x-media-enrich.md"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/fixtures/x-scrapling/direct-mp4.html"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/fixtures/x-scrapling/hls-quote.html"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/fixtures/x-scrapling/hls-quote.netlog"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/fixtures/x-scrapling/hls.html"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/fixtures/yt-scrapling/Xxuxg8PcBvc.en.json3"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/fixtures/yt-scrapling/watch.html"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/test-x-scrapling.sh"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tests/test-yt-scrapling.sh"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tools/README.md"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tools/playwright-crawl-youtube.mjs"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tools/x-media-fetch.py"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tools/x-scrapling-media.py"
+   },
+   {
+    "path": "marketplace/plugins/obsidian-triage/tools/yt-scrapling-meta.py"
+   },
+   {
+    "path": "scripts/luna/fetch-health.py"
+   },
+   {
+    "path": "scripts/luna/test_fetch_health.py"
+   }
+  ]
+ }
+]

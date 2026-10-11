@@ -146,7 +146,7 @@ esac
 # a Plan prompt is genuinely implementation-shaped.
 lane_exempt=0
 case "$subagent_type" in
-    Explore|gemini-subagent|statusline-setup|pr-review-toolkit-himmel:code-reviewer|himmel-ops:claudex-subagent|himmel-ops:glm-subagent|codex:codex-rescue)
+    Explore|console-judge-ro|gemini-subagent|statusline-setup|pr-review-toolkit-himmel:code-reviewer|himmel-ops:claudex-subagent|himmel-ops:glm-subagent|codex:codex-rescue)
         exit 0
         ;;
     Plan)
