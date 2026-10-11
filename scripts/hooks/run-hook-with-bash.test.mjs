@@ -2560,6 +2560,7 @@ const ADVISORY_CHAIN_MEMBERS = new Map([
   ['auto-approve-safe-bash.sh', 'fail-open nudge by design (J1310O F1)'],
   ['read-clamp.sh', 'fail-open nudge by design (J1310O F1)'],
   ['require-quiet-run.sh', 'fail-open nudge by design (J1310O F1)'],
+  ['guard-bus-store.sh', 'speed bump, not a fence (HIMMEL-4829): a starved skip is acceptable'],
 ]);
 
 function findPluginHooksJsonFiles(repoRoot) {
