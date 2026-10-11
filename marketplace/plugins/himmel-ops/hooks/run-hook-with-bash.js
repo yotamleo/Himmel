@@ -19,6 +19,7 @@ const {
   gitBlobSha1,
   hookIntegrityDir,
   loadIntegrityRecord,
+  takeUnvouchedNotice,
   verifyProjectHookIntegrity,
 } = require('./hook-integrity.js');
 
@@ -670,6 +671,11 @@ function runChain(members, lifecycle = false) {
   }
 
   const emitters = [];
+  // HIMMEL-5171: the first member the launcher could not vouch for. The
+  // once-per-session "this session ran UNVERIFIED" notice is taken only after
+  // the loop, on a non-deny return, so a deny never consumes the flag with no
+  // channel to show it (exit-0 stderr reaches nobody; a systemMessage does).
+  let unvouchedMember = null;
   // Everything a non-denying member said, flushed to OUR stderr after the
   // chain. Held rather than streamed so a later member's deny reaches the
   // model on its own, verbatim.
@@ -697,6 +703,7 @@ function runChain(members, lifecycle = false) {
       denyIntegrityMismatch(member, integrity.relPath, integrity.reason);
       return skipOnNonGatingEvent(hookInput, member, integrity) ? 0 : 2;
     }
+    if (integrity.unvouched && unvouchedMember === null) unvouchedMember = member;
     const basename = path.basename(member);
     const mustRun = MUST_RUN_CHAIN_MEMBERS.has(basename);
     // Clamped to what is left of the chain budget, but never below the floor:
@@ -858,6 +865,19 @@ function runChain(members, lifecycle = false) {
 
   if (held.length) process.stderr.write(held.join(''));
 
+  // JSON on a non-zero exit is ignored by Claude Code, so only take the
+  // once-per-session flag when a channel can carry the notice.
+  const deliverable = emitters.length > 0 || carriedStatus === 0;
+  const unvouchedNotice = unvouchedMember === null || !deliverable ? null : takeUnvouchedNotice(sessionId, unvouchedMember);
+  if (unvouchedNotice) {
+    process.stderr.write(`${unvouchedNotice}\n`);
+    const output = { systemMessage: unvouchedNotice };
+    if (emitters.length === 0) {
+      process.stdout.write(`${JSON.stringify(output)}\n`);
+      return carriedStatus;
+    }
+    emitters.push({ source: 'hook-integrity', output, raw: `${JSON.stringify(output)}\n` });
+  }
   if (emitters.length === 0) return carriedStatus;
   if (emitters.length === 1) {
     process.stdout.write(emitters[0].raw);
@@ -915,10 +935,41 @@ function main() {
     process.stderr.write('run-hook-with-bash: no usable Bash interpreter found; refusing to run hook\n');
     process.exit(2);
   }
-  const result = spawnSync(bash, hookArgs, { input, stdio: ['pipe', 'inherit', 'inherit'], env: process.env, windowsHide: true });   // HIMMEL-2043
+  // HIMMEL-5171: a session no recorder vouched for says so once, in a
+  // systemMessage. The child's stdout is captured only while the session is
+  // unvouched, so the hook's own JSON can carry it. The once-per-session flag is
+  // taken only after the output is known to be deliverable (empty or a JSON
+  // object); plain-text output is passed through untouched and leaves the flag
+  // for the next call. maxBuffer is raised so a verbose hook is not killed by
+  // spawnSync's 1 MiB default now that stdout is no longer inherited.
+  const capture = integrity.unvouched === true;
+  const result = spawnSync(bash, hookArgs, {
+    input,
+    stdio: ['pipe', capture ? 'pipe' : 'inherit', 'inherit'],
+    env: process.env,
+    windowsHide: true,   // HIMMEL-2043
+    ...(capture ? { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 } : {}),
+  });
   if (result.error && !isRecoverableEpipe(result)) {
+    if (capture && typeof result.stdout === 'string') process.stdout.write(result.stdout);
     process.stderr.write(`run-hook-with-bash: failed to start ${bash}: ${result.error.message}\n`);
     process.exit(2);
+  }
+  if (capture) {
+    const out = typeof result.stdout === 'string' ? result.stdout : '';
+    const parsed = out.trim() ? parseJsonObject(out) : {};
+    // Only a clean exit 0 can carry a systemMessage; a deny (exit 2) or any
+    // other failure ignores stdout, so it must not consume the flag.
+    const deliverable = parsed && result.status === 0;
+    const notice = deliverable ? takeUnvouchedNotice(sessionId, hookScript) : null;
+    if (notice) process.stderr.write(`${notice}\n`);
+    if (deliverable && notice) {
+      parsed.systemMessage = typeof parsed.systemMessage === 'string' && parsed.systemMessage
+        ? `${parsed.systemMessage}\n${notice}` : notice;
+      process.stdout.write(`${JSON.stringify(parsed)}\n`);
+    } else {
+      process.stdout.write(out);
+    }
   }
   process.exit(typeof result.status === 'number' ? result.status : 2);
 }

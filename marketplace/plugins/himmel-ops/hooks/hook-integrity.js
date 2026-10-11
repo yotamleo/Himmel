@@ -55,7 +55,7 @@ function normalize(candidate) {
 // checkout), or no pin entry for this particular script. It fails CLOSED on an
 // actual pinned mismatch — the one signal that is unambiguous — and, since
 // HIMMEL-2588, on a record that is gone after the recorder ran (see
-// recorderFinished). That also means the fix
+// recorderState). That also means the fix
 // only takes effect from the NEXT session start onward (the operator ruling
 // this ticket shipped under): an already-running session has no pin file yet,
 // so every check in it fails open exactly as before.
@@ -166,7 +166,7 @@ function loadIntegrityRecord(sessionId) {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch (_e) {
-    return null; // no pin file, unreadable, or malformed — see recorderFinished
+    return null; // no pin file, unreadable, or malformed — see recorderState
   }
 }
 
@@ -687,29 +687,37 @@ function loadRecordAcrossPublish(sessionId) {
 //
 // "No record" used to mean one thing — fail open — and so deleting, truncating
 // or never publishing the record switched verification off for the session.
-// It is two states, told apart by <session_id>.recorder beside the record:
-// record-hook-integrity.sh writes `started` into it before anything that can
-// fail and `done` on exit, whatever the outcome. No marker means no recorder
-// has run (a session older than this checkout, a non-git project, a host with
-// no jq): there is nothing to verify against, so fail open as before. A
-// finished recorder with no usable record behind it means the record is GONE,
-// and that denies. `started` is a recorder still working — the other
-// SessionStart hooks run beside it, and denying them would brick every session
-// start — until it is older than any recorder can live (its hooks.json timeout
-// is 15 s), after which it is a killed recorder and denies like `done`.
+// It is told apart by <session_id>.recorder beside the record, which
+// record-hook-integrity.sh writes `started` into before anything that can fail
+// and ends, on every exit it controls, `done` or `failed`:
+//   - `done` is written ONLY after the recorder re-read a record carrying pins
+//     (HIMMEL-5171, a verified publish). A done recorder with no usable record
+//     behind it means the record is GONE, and that denies.
+//   - no marker: no recorder has run (a session older than this checkout, a
+//     non-git project, a host with no jq) — nothing to verify against, fail open.
+//   - `started` and young: a recorder still working — the other SessionStart
+//     hooks run beside it, and denying them would brick every session start.
+//   - `failed`, or `started` older than any recorder can live (its hooks.json
+//     timeout is 15 s, so it was killed): nothing ever vouched for the session.
+//     HIMMEL-5171: that fails OPEN with one notice per session. It used to deny
+//     like `done`, which bricked every hook of the session (Stop included) with
+//     no in-session recovery, on a mere timeout, full disk or old jq.
 //
 // Read only when the record is unusable, so a session with a record pays
 // nothing for it: no stat, no read, no spawn. An attacker who can delete the
 // record AND the marker is back at today's fail-open — two unlinks in the same
-// pin directory, behind the same write-fence, never fewer than before.
+// pin directory, behind the same write-fence, never fewer than before. One who
+// can rewrite the marker to `failed` needs the same write access; a record
+// deleted after a verified publish still denies for anyone who cannot.
 const RECORDER_MARKER_SUFFIX = '.recorder';
+const RECORDER_NOTICE_SUFFIX = '.recorder-notified';
 const RECORDER_MAX_LIFE_MS = 60 * 1000;
 const MISSING_RECORD_DENY = 'missing-record: ';
 
-// True when a recorder ran this session and is no longer running.
-function recorderFinished(sessionId) {
+// 'none' | 'running' | 'done' | 'unvouched' — see the block above.
+function recorderState(sessionId) {
   const recordPath = integrityRecordPath(sessionId);
-  if (!recordPath) return false;
+  if (!recordPath) return 'none';
   const marker = recordPath.replace(/\.json$/, RECORDER_MARKER_SUFFIX);
   let state;
   let mtimeMs;
@@ -717,12 +725,34 @@ function recorderFinished(sessionId) {
     state = fs.readFileSync(marker, 'utf8').trim();
     mtimeMs = fs.statSync(marker).mtimeMs;
   } catch (_e) {
-    return false; // no marker: no recorder has run
+    return 'none'; // no marker: no recorder has run
   }
-  if (state === 'done') return true;
+  if (state === 'done') return 'done';
+  if (state === 'failed') return 'unvouched';
   // `started`, or an empty marker caught between the recorder's open and its
   // write: still running until it is too old to be.
-  return Date.now() - mtimeMs > RECORDER_MAX_LIFE_MS;
+  return Date.now() - mtimeMs > RECORDER_MAX_LIFE_MS ? 'unvouched' : 'running';
+}
+
+// One notice per session (an exclusive-create flag file beside the marker), so
+// a fail-open session is loud once and not on every hook call. Returns the text
+// the FIRST caller must surface, or null when it was already taken. The caller
+// puts it in a systemMessage: exit-0 stderr is shown to nobody, and the flag is
+// consumed here, so only a caller that can surface it should call this
+// (verifyProjectHookIntegrity reports `unvouched: true` and takes nothing).
+function takeUnvouchedNotice(sessionId, scriptPath) {
+  const recordPath = integrityRecordPath(sessionId);
+  if (!recordPath) return null;
+  try {
+    fs.writeFileSync(recordPath.replace(/\.json$/, RECORDER_NOTICE_SUFFIX), 'notified\n', { flag: 'wx' });
+  } catch (_e) {
+    return null; // already notified (or unwritable: stay quiet rather than spam)
+  }
+  return `himmel hook-integrity: NOTICE ${path.basename(scriptPath)} ran UNVERIFIED — record-hook-integrity.sh did not `
+    + 'publish a verified integrity record for this session (killed by its timeout, or failed), so nothing '
+    + 'vouches for any hook script this session (HIMMEL-5171). Start a new session to restore verification, or '
+    + 'from another terminal re-run the recorder with this session\'s id: '
+    + `printf '{"session_id":"${sessionId}"}' | CLAUDE_PROJECT_DIR=<project> bash <project>/scripts/hooks/record-hook-integrity.sh`;
 }
 
 // ------------------------------------------------------------ bootstrap (§4)
@@ -1479,7 +1509,9 @@ function verifyOneFile(scriptPath, sessionId, strict) {
   let { record } = loaded;
   let pins = recordPins(record);
   if (!pins) {
-    if (!recorderFinished(sessionId)) return { ok: true };
+    const rstate = recorderState(sessionId);
+    if (rstate === 'unvouched') return { ok: true, unvouched: true };
+    if (rstate !== 'done') return { ok: true };
     // The recorder publishes before it marks itself done, so a record that
     // landed between our first read and the marker read is here now.
     record = loadIntegrityRecord(sessionId);
@@ -1621,7 +1653,9 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       + `empty or unreadable (${reason.slice(MISSING_RECORD_DENY.length)}) although record-hook-integrity.sh ran `
       + `this session, so nothing vouches for ${relPath} (HIMMEL-2588). A record that disappears mid-session is `
       + 'not "no opinion": deleting it used to switch verification off. Start a new session to record a fresh one; '
-      + 'HIMMEL_HOOK_INTEGRITY_BYPASS_OK cannot apply without a record.\n',
+      + 'HIMMEL_HOOK_INTEGRITY_BYPASS_OK cannot apply without a record. Operator recovery from another terminal: '
+      + `rm ${reason.slice(MISSING_RECORD_DENY.length).replace(/\.json$/, RECORDER_MARKER_SUFFIX)} (the recorder marker) `
+      + 'to fail open for this session, or re-run record-hook-integrity.sh with the session id (HIMMEL-5171).\n',
     );
     return;
   }
@@ -1682,5 +1716,6 @@ module.exports = {
   reclaimIfDead,
   releaseRecordLock,
   sourcedClosure,
+  takeUnvouchedNotice,
   verifyProjectHookIntegrity,
 };
