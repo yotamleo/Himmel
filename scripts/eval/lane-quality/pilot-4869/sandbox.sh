@@ -180,6 +180,30 @@ while IFS= read -r v; do
   fi
 done < <(compgen -e)
 
+# HIMMEL-5183: the row must not rewrite its own permission policy. ROWCONF stays
+# writable (the launcher writes its mirror and runtime state there), but the seeded
+# settings.json and the hooks dir it references come back read-only. The launcher seeds
+# them OUTSIDE the lane: a first jail with the same mounts (so the seed fingerprint
+# matches the lane's view) runs `<launcher> --seed-only` with a dummy key and exits; the
+# lane's own launch then finds a current seed and writes neither file. The seed runs in
+# the jail, never on the host, so a symlink a row planted cannot take a host write out;
+# a planted symlink is refused before the seed and again before the bind.
+if [ "$mode" != check ]; then
+  for p in settings.json hooks; do [ ! -L "$ROWCONF/$p" ] || die "$ROWCONF/$p is a symlink"; done
+  if [ "$mode" != argv ]; then
+    mkdir -p "$ROWCONF" "$TX" || die "cannot create $ROWCONF or $TX"
+    env "$KEY=seed-only" bwrap "${A[@]}" --chdir "$JWT" -- "$LAUNCHER" --seed-only >/dev/null \
+      || die "the lane config seed failed (launcher --seed-only)"
+    for p in settings.json hooks; do [ ! -L "$ROWCONF/$p" ] || die "$ROWCONF/$p is a symlink"; done
+    # A launcher that seeded no policy still gets one bound: the row cannot create its own.
+    [ -f "$ROWCONF/settings.json" ] || { printf '{}\n' >"$RUN/empty-settings.json" || die "cannot write $RUN/empty-settings.json"; }
+    [ -d "$ROWCONF/hooks" ] || mkdir -p "$RUN/empty-hooks" || die "cannot create $RUN/empty-hooks"
+  fi
+  if [ "$mode" != argv ] && [ ! -f "$ROWCONF/settings.json" ]; then s_src="$RUN/empty-settings.json"; else s_src="$ROWCONF/settings.json"; fi
+  if [ "$mode" != argv ] && [ ! -d "$ROWCONF/hooks" ]; then h_src="$RUN/empty-hooks"; else h_src="$ROWCONF/hooks"; fi
+  A+=(--ro-bind "$s_src" "$CONF/settings.json" --ro-bind "$h_src" "$CONF/hooks")
+fi
+
 # The jail must not put back anything it exists to hide.
 i=0
 while [ "$i" -lt "${#A[@]}" ]; do

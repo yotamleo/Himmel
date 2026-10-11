@@ -36,6 +36,12 @@ mkdir -p "$TMP/repo/scripts/eval" "$TMP/repo/handovers"
 echo kit >"$TMP/repo/scripts/eval/kit.txt"; echo stub >"$TMP/repo/handovers/stub.md"
 cat >"$TMP/repo/scripts/claude-deepseek" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1-}" = --seed-only ]; then # HIMMEL-5183: seeds the lane config the way the real launcher does, and exits
+  mkdir -p "$HOME/.claude-deepseek" || exit 4
+  [ ! -f "$HOME/.claude/settings.json" ] || cp "$HOME/.claude/settings.json" "$HOME/.claude-deepseek/settings.json" || exit 4
+  [ ! -d "$HOME/.claude/hooks" ] || cp -r "$HOME/.claude/hooks" "$HOME/.claude-deepseek/" || exit 4
+  exit 0
+fi
 if exec 3<>/dev/tcp/api.deepseek.com/443; then echo ping >&3; read -r r <&3; echo "api=$r"; else echo api=closed; fi
 if (exec 4<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then echo host4=open; else echo host4=closed; fi
 if (exec 4<>"/dev/tcp/::1/$1") 2>/dev/null; then echo host6=open; else echo host6=closed; fi
@@ -196,6 +202,119 @@ printf '%s\n' "$TMP/repo/.git" >"$gd/commondir"
 check 'a git dir given a commondir is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
 rm -f "$gd/commondir"
 check 'the restored worktree builds its jail again (control)' 'bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
+# HIMMEL-5183: the lane config's policy files (settings.json, hooks/) are seeded by the
+# launcher's --seed-only OUTSIDE the lane and bound read-only; the rest of ROWCONF stays
+# writable (the launcher writes its mirror and runtime state there). A row ROWCONF starts
+# empty, so the first launch must be covered too.
+H5183="$TMP/home5183"; RC5183="$TMP/conf5183"
+mkdir -p "$H5183/.claude/hooks" "$RC5183"
+echo '{"permissions":{"deny":["Bash(rm -rf *)"]}}' >"$H5183/.claude/settings.json"
+echo ': hook' >"$H5183/.claude/hooks/h.sh"
+sed "s|^ROWCONF=.*|ROWCONF=$RC5183|" "$TMP/root/rows/p01.env" >"$TMP/row5183.env"
+a5183="$(HOME="$H5183" bash "$HERE/sandbox.sh" argv "$TMP/row5183.env" 2>&1)"
+ro5183() { printf '%s\n' "$a5183" | grep -A2 -x -- --ro-bind | grep -qxF "$1"; }
+check 'the jail binds the row config settings.json read-only, before it exists (first launch)' '[ ! -e "$RC5183/settings.json" ] && ro5183 "$RC5183/settings.json" && ro5183 "$H5183/.claude-deepseek/settings.json"'
+check 'the jail binds the row config hooks dir read-only' 'ro5183 "$RC5183/hooks" && ro5183 "$H5183/.claude-deepseek/hooks"'
+check 'the rest of ROWCONF stays one read-write bind' 'printf "%s\n" "$a5183" | grep -A2 -x -- --bind | grep -qxF "$RC5183"'
+ln -s "$TMP/secret" "$RC5183/settings.json"
+check 'a settings.json the lane replaced with a symlink is refused' '! HOME="$H5183" bash "$HERE/sandbox.sh" argv "$TMP/row5183.env" >/dev/null 2>&1'
+rm -f "$RC5183/settings.json"
+if bwrap --ro-bind / / true 2>/dev/null; then
+  R5=(env HOME="$H5183" bash "$HERE/sandbox.sh" run "$TMP/row5183.env")
+  jr() { "${R5[@]}" sh -c "$1" 2>/dev/null; }
+  jr 'echo x >>"$HOME/.claude-deepseek/settings.json"'; w_app=$?
+  check 'live: the seeded settings.json cannot be appended to from the jail on the first launch' '[ "$w_app" != 0 ] && [ "$(jq -c .permissions.deny "$RC5183/settings.json")" = "[\"Bash(rm -rf *)\"]" ]'
+  jr 'rm -f "$HOME/.claude-deepseek/settings.json"'; w_rm=$?
+  jr 'echo {} >"$HOME/s" && mv -f "$HOME/s" "$HOME/.claude-deepseek/settings.json"'; w_mv=$?
+  check 'live: the seeded settings.json can be neither removed nor replaced from the jail' '[ "$w_rm" != 0 ] && [ "$w_mv" != 0 ] && [ "$(jq -c .permissions.deny "$RC5183/settings.json")" = "[\"Bash(rm -rf *)\"]" ]'
+  jr ': >"$HOME/.claude-deepseek/hooks/new.sh"'; w_new=$?
+  jr 'echo x >>"$HOME/.claude-deepseek/hooks/h.sh"'; w_hook=$?
+  check 'live: the seeded hooks dir cannot be written from the jail' '[ "$w_new" != 0 ] && [ "$w_hook" != 0 ] && [ ! -e "$RC5183/hooks/new.sh" ] && [ "$(cat "$RC5183/hooks/h.sh")" = ": hook" ]'
+  jr 'echo {} >"$HOME/.claude-deepseek/.claude.json" && mkdir "$HOME/.claude-deepseek/plugins"'; w_ok=$?
+  check 'live: control, a non-policy ROWCONF write still succeeds' '[ "$w_ok" = 0 ] && [ -f "$RC5183/.claude.json" ] && [ -d "$RC5183/plugins" ]'
+  out5183="$(cd "$wt" && HOME="$H5183" DEEPSEEK_API_KEY=k PILOT_SANDBOX_TUNNEL_TARGET=127.0.0.1:1 timeout 30 bash "$HERE/sandbox.sh" launch "$TMP/row5183.env" 1 2>&1)" # gnu-ok: Linux-only kit
+  check 'live: the launch goes through with a seeded read-only policy' 'printf "%s\n" "$out5183" | grep -qxF "cwd=$TMP/repo/.claude/worktrees/lq-pilot-p01"'
+fi
+# The real launchers: --seed-only seeds and never launches, a current seed is not
+# rewritten (the jail binds it read-only), and the normal path is unchanged.
+REALS="$(cd "$HERE/../../.." && pwd)"; REALR="$(cd "$REALS/.." && pwd)"
+SB5183="$TMP/seedbin"; mkdir -p "$SB5183"
+printf '%s\n' '#!/usr/bin/env bash' 'env | sort | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DEEPSEEK|CLIPROXY)"' 'printf "argv=%s\n" "$@"' >"$SB5183/claude"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null </dev/null' "printf '%s' '{\"is_available\":true,\"balance_infos\":[{\"currency\":\"USD\",\"total_balance\":\"50.00\"}]}'" >"$SB5183/curl"
+chmod +x "$SB5183/claude" "$SB5183/curl"
+lane_home() { rm -rf "$TMP/lh-$1"; mkdir -p "$TMP/lh-$1/.claude"; echo '{"model":"x","env":{"ANTHROPIC_AUTH_TOKEN":"t","K":"v"}}' >"$TMP/lh-$1/.claude/settings.json"; }
+lane_run() { # $1 deepseek|codex, then the launcher's arguments
+  local l="$1"; shift
+  if [ "$l" = deepseek ]; then
+    (cd "$REALR" && env -i PATH="$SB5183:/usr/bin:/bin" HOME="$TMP/lh-$l" DEEPSEEK_API_KEY=k HIMMEL_DEEPSEEK_INFERENCE_OK=1 CLAUDE_DEEPSEEK_DOTENV_ROOT="$SB5183" CLAUDE_DEEPSEEK_CWD="$REALR" bash "$REALS/claude-deepseek" "$@" 2>&1)
+  else
+    (cd "$REALR" && env -i PATH="$SB5183:/usr/bin:/bin" HOME="$TMP/lh-$l" CLIPROXY_API_KEY=k CODEX_MODEL=gpt-5.6-sol CLAUDE_CODEX_DOTENV_ROOT="$SB5183" bash "$REALS/claude-codex" "$@" 2>&1)
+  fi
+}
+for l in deepseek codex; do
+  lane_home "$l"
+  out="$(lane_run "$l" --seed-only)"; rc=$?
+  cd5183="$TMP/lh-$l/.claude-$l"
+  check "the $l launcher's --seed-only seeds the config dir and launches nothing" '[ "$rc" = 0 ] && [ -f "$cd5183/.seeded" ] && ! printf "%s\n" "$out" | grep -q "^argv=" && jq -e ".env.K == \"v\" and (has(\"model\") | not) and (.env | has(\"ANTHROPIC_AUTH_TOKEN\") | not)" "$cd5183/settings.json" >/dev/null'
+  if [ "$(id -u)" != 0 ]; then
+    chmod -R a-w "$cd5183"
+    out="$(lane_run "$l" --model sonnet hello)"; rc=$?
+    chmod -R u+w "$cd5183"
+    check "the $l launcher accepts a current, read-only seed without rewriting it" '[ "$rc" = 0 ] && printf "%s\n" "$out" | grep -qx "argv=hello" && ! printf "%s\n" "$out" | grep -qi "seed failed\|FAILED to"'
+  fi
+done
+lane_home deepseek
+got="$(lane_run deepseek --model sonnet hello | grep -vE '^(CLAUDE_CONFIG_DIR|CLAUDE_DEEPSEEK_)')"
+want="$(cat <<'EOF'
+claude-deepseek: lane=deepseek model=sonnet labels=DeepSeek Flash 1M/DeepSeek Flash balance=50.00 USD (start snapshot; session cost is balance delta)
+ANTHROPIC_API_KEY=
+ANTHROPIC_AUTH_TOKEN=k
+ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash
+ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME=DeepSeek Flash
+ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-flash[1m]
+ANTHROPIC_DEFAULT_OPUS_MODEL_NAME=DeepSeek Flash 1M
+ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-flash[1m]
+ANTHROPIC_DEFAULT_SONNET_MODEL_NAME=DeepSeek Flash 1M
+ANTHROPIC_MODEL=sonnet
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=786432
+CLAUDE_CODE_AUTO_MODE_SERVER=0
+CLAUDE_CODE_EFFORT_LEVEL=max
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=786432
+CLAUDE_CODE_SUBAGENT_MODEL=deepseek-flash
+DEEPSEEK_API_KEY=k
+argv=--model
+argv=sonnet
+argv=hello
+EOF
+)"
+check 'the deepseek launcher normal path (argv, env, banner) is unchanged by --seed-only' '[ "$got" = "$want" ]'
+lane_home codex
+got="$(lane_run codex --model sonnet hello | grep -vE '^(CLAUDE_CONFIG_DIR|CLAUDE_CODEX_)')"
+want="$(cat <<'EOF'
+ANTHROPIC_AUTH_TOKEN=k
+ANTHROPIC_BASE_URL=http://127.0.0.1:8317
+ANTHROPIC_DEFAULT_HAIKU_MODEL=gpt-5.6-sol
+ANTHROPIC_DEFAULT_OPUS_MODEL=gpt-5.6-sol
+ANTHROPIC_DEFAULT_SONNET_MODEL=gpt-5.6-sol
+ANTHROPIC_MODEL=gpt-5.6-sol
+CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=272000
+CLAUDE_CODE_AUTO_MODE_SERVER=0
+CLAUDE_CODE_EFFORT_LEVEL=medium
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000
+CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3
+CLAUDE_CODE_SUBAGENT_MODEL=gpt-5.6-sol
+CLAUDE_CODE_USE_BEDROCK=
+CLAUDE_CODE_USE_VERTEX=
+CLIPROXY_API_KEY=k
+CODEX_MODEL=gpt-5.6-sol
+argv=--model
+argv=sonnet
+argv=hello
+EOF
+)"
+check 'the codex launcher normal path (argv, env) is unchanged by --seed-only' '[ "$got" = "$want" ]'
 echo secret >"$TMP/secret"
 live=0
 if bwrap --ro-bind / / true 2>/dev/null; then
