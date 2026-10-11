@@ -973,11 +973,13 @@ case "$_ab_in" in
         echo "headed-arm-leg: LEG_AUTOCOMPACT_AB must be 200000 or 400000, got: $_ab_in" >&2
         exit 2 ;;
 esac
+if [ -n "$AB_ARM" ] && { [ "$CONTEXT" != "standard" ] || [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; }; then
+    # The control arm is checked too: a 1m leg recorded as the 200k control
+    # would contaminate the comparison.
+    echo "headed-arm-leg: refusing leg launch: LEG_AUTOCOMPACT_AB=$_ab_in needs the standard 200000 context (got context=$CONTEXT autocompact=$RESOLVED_AUTOCOMPACT); the A/B arm never combines with a 1m opt-in" >&2
+    exit 2
+fi
 if [ "$AB_ARM" = "400k" ]; then
-    if [ "$CONTEXT" != "standard" ] || [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
-        echo "headed-arm-leg: refusing leg launch: LEG_AUTOCOMPACT_AB=400000 needs the standard 200000 context (got context=$CONTEXT autocompact=$RESOLVED_AUTOCOMPACT); the A/B arm never combines with a 1m opt-in" >&2
-        exit 2
-    fi
     AB_REASON="$(grep -m1 -E '^> \*\*Context:\*\* ab-400k — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* ab-400k — operator-ruling: //; s/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$AB_REASON" ]; then
         echo "headed-arm-leg: refusing leg launch: LEG_AUTOCOMPACT_AB=400000 needs '> **Context:** ab-400k — operator-ruling: <reason>' in $DOC" >&2

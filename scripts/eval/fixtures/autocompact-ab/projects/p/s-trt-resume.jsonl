@@ -1,0 +1,2 @@
+{"type":"custom-title", "customTitle": "HIMMEL-9002-N902b-trt-RESUME", "sessionId":"s-trt-resume","timestamp":"2026-10-11T09:50:00Z"}
+{"type":"assistant","timestamp":"2026-10-11T09:50:00Z","message":{"id":"msg_C","role":"assistant","content":[{"type":"text","text":"z"}],"usage":{"input_tokens":1,"cache_read_input_tokens":2000,"cache_creation_input_tokens":0,"output_tokens":100}}}

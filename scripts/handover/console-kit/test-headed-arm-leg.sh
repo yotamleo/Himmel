@@ -583,6 +583,9 @@ contains "ab arm 400000, ruling line: exports HIMMEL_LEG_AUTOCOMPACT=400000" "$o
 rc=0; out="$(LEG_AUTOCOMPACT_AB=200000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_none" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "ab arm 200000 (control), no ruling line: accepted (exit 0)" "$rc" "0"
 contains "ab arm 200000 (control): reports ab-arm=200k autocompact=200000" "$out" "ab-arm=200k autocompact=200000"
+rc=0; out="$(LEG_CONTEXT=1m LEG_AUTOCOMPACT_AB=200000 bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_none" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "ab arm 200000 (control) with LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
+not_contains "ab arm 200000 with LEG_CONTEXT=1m: no control arm recorded" "$out" "ab-arm=200k"
 rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg "$doc_ab_ok" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "no LEG_AUTOCOMPACT_AB, ruling line present: default unchanged (exit 0)" "$rc" "0"
 not_contains "no LEG_AUTOCOMPACT_AB: no ab arm reported" "$out" "ab-arm="

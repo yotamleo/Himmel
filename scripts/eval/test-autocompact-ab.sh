@@ -37,7 +37,12 @@ check "ctl handoffs" 0 "$(jq "$c | .handoffs" "$out")"
 check "trt arm from the brief ruling line" 400k "$(jq -r "$t | .arm" "$out")"
 check "trt compactions" 0 "$(jq "$t | .compactions | length" "$out")"
 check "trt handoffs (RESUME doc)" 1 "$(jq "$t | .handoffs" "$out")"
-check "trt cost_eq (3 + 1200 + 1250 + 3000)" 5453 "$(jq "$t | .cost_eq" "$out")"
+check "trt calls include the RESUME session" 3 "$(jq "$t | .calls" "$out")"
+check "trt transcripts (own + RESUME session)" 2 "$(jq "$t | .transcripts" "$out")"
+check "trt uncached" 4 "$(jq "$t | .uncached" "$out")"
+check "trt cache_read" 14000 "$(jq "$t | .cache_read" "$out")"
+check "trt cost_eq (4 + 1400 + 1250 + 3500)" 6154 "$(jq "$t | .cost_eq" "$out")"
+check "trt mean output per turn" 233.3 "$(jq "$t | .mean_out_per_turn" "$out")"
 check "trt CI first try is no (two READY)" no "$(jq -r "$t | .ci_first_try" "$out")"
 check "trt review rounds" 1 "$(jq "$t | .review_rounds" "$out")"
 check "summary has both arms" 2 "$(jq '.summary | length' "$out")"
@@ -52,6 +57,7 @@ check "unlabelled leg is not in the summary" 0 "$(jq '.summary | length' "$tmp/u
 # --all includes the unwrapped leg
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" --all --json > "$tmp/a.json" 2>/dev/null
 check "--all includes the unwrapped leg" 3 "$(jq '.legs | length' "$tmp/a.json")"
+check "--all: transcript-less leg is unmeasured, not averaged" "1 1" "$(jq -r '.summary[] | select(.arm=="400k") | "\(.legs) \(.unmeasured)"' "$tmp/a.json")"
 
 # text mode prints the arm summary table; no input is a usage error
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" > "$tmp/t.txt" 2>/dev/null

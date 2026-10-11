@@ -72,7 +72,7 @@ def pr_outcome(markers):
 
 def find_transcripts(projects, names):
     found = set()
-    needles = ['"customTitle":"%s"' % n for n in names if n]
+    needles = [re.compile(r'"customTitle"\s*:\s*"%s"' % re.escape(n)) for n in names if n]
     if not needles:
         return []
     for path in glob.glob(os.path.join(projects, "**", "*.jsonl"), recursive=True):
@@ -81,7 +81,7 @@ def find_transcripts(projects, names):
                 data = fh.read()
         except OSError:
             continue
-        if any(n in data for n in needles):
+        if any(n.search(data) for n in needles):
             found.add(path)
     return sorted(found)
 
@@ -139,16 +139,19 @@ def leg_row(doc, manifest_arm, projects):
     stem = os.path.basename(doc)
     stem = stem[:-3] if stem.endswith(".md") else stem
     m = STEM.match(stem)
-    handoffs = 0
+    handoffs, names = 0, [stem]
     if m:
         pat = os.path.join(os.path.dirname(doc), "%s-%s*RESUME*.md" % (m.group(1), m.group(2)))
-        handoffs = len(glob.glob(pat))
+        resumes = glob.glob(pat)
+        handoffs = len(resumes)
+        # a resumed session is titled by its RESUME doc stem
+        names += [os.path.basename(r)[:-3] for r in resumes if r.endswith(".md")]
     arm = manifest_arm or d["arm"] or "unlabelled"
     row = {"leg": stem, "arm": arm,
            "wrapped": bool(d["markers"]) and d["markers"][-1][0] == "WRAPPED",
            "handoffs": handoffs}
     row.update(pr_outcome(d["markers"]))
-    paths = find_transcripts(projects, [stem])
+    paths = find_transcripts(projects, names)
     row["transcripts"] = len(paths)
     row.update(parse_transcripts(paths))
     return row
@@ -165,11 +168,16 @@ def mean(xs):
 def summary(rows):
     out = []
     for arm in ("200k", "400k"):
-        rs = [r for r in rows if r["arm"] == arm]
+        every = [r for r in rows if r["arm"] == arm]
+        # a leg with no transcript is unmeasured, not zero: left out of the means
+        rs = [r for r in every if r["transcripts"] > 0]
+        if not every:
+            continue
         if not rs:
+            out.append({"arm": arm, "legs": 0, "unmeasured": len(every)})
             continue
         ci = [r for r in rs if r["ci_first_try"] != "n/a"]
-        out.append({"arm": arm, "legs": len(rs),
+        out.append({"arm": arm, "legs": len(rs), "unmeasured": len(every) - len(rs),
                     "compactions": round(mean([len(r["compactions"]) for r in rs]), 2),
                     "handoffs": round(mean([r["handoffs"] for r in rs]), 2),
                     "cost_eq": round(mean([r["cost_eq"] for r in rs])),
@@ -235,9 +243,12 @@ def main():
     if unl:
         print("\n%d unlabelled leg(s) left out of the summary" % len(unl))
     print("\narm summary (means per leg)")
-    print("%-5s %5s %6s %6s %10s %9s %8s %7s %4s" % (
+    print("%-5s %5s %6s %6s %10s %9s %8s %7s %4s  (legs without a transcript are excluded)" % (
         "arm", "legs", "comp", "hand", "cost-eq", "wall-min", "out/trn", "ci-1st", "rev"))
     for s in summ:
+        if s["legs"] == 0:
+            print("%-5s %5d  (no measured leg; %d unmeasured)" % (s["arm"], 0, s["unmeasured"]))
+            continue
         print("%-5s %5d %6.2f %6.2f %10s %9.1f %8.0f %7s %4.2f" % (
             s["arm"], s["legs"], s["compactions"], s["handoffs"], fmt_tok(s["cost_eq"]),
             s["wall_s"] / 60.0, s["out_per_turn"], s["ci_first_try"], s["review_rounds"]))
