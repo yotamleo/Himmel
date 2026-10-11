@@ -1161,7 +1161,8 @@ if [ "$mentions" = 1 ]; then
     # nocasematch: builtins only, so a missing tool cannot empty it into a no-op.
     shopt -s nocasematch
     edhook=0
-    case "$flat" in *editor* | *visual=* | *alias.*) edhook=1 ;; esac
+    # Key shapes, not the bare word: a path like .../git-editor/scripts is no key.
+    case "$flat" in *editor=* | *visual=* | *.editor* | *alias.*) edhook=1 ;; esac
     shopt -u nocasematch
     if [ "$edhook" = 1 ]; then
         shown=${cmd//$'\n'/ }
