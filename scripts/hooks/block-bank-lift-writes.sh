@@ -989,13 +989,36 @@ _plain_name_copy() {
         esac
         rest=${rest/"${BASH_REMATCH[0]}"/ }
     done
-    while [[ "$wrest" =~ $re ]]; do
-        dir=${BASH_REMATCH[4]}
-        case "$(lift_ref "${dir%/}/$dest")" in
-            LIFT|STATE|HIMMEL|HOME) return 1 ;;
-        esac
-        wrest=${wrest/"${BASH_REMATCH[0]}"/ }
-    done
+    # The dequoted text is walked token by token, not by regex: a quoted or
+    # escaped directory name may hold a space or `;&|` (`c''d '/a/b c'`), and a
+    # regex stops the path at the first one (j2320d). A literal absolute target
+    # token is looked up whole and dropped with its cd word; any other target
+    # stays in the text for DIRMOVE_RE to refuse.
+    local wline wtk wn wi wj wd wout wnew=""
+    while IFS= read -r wline; do
+        IFS=$'\037' read -r -a wtk <<<"$wline"
+        wn=${#wtk[@]} wi=0 wout=""
+        while [ "$wi" -lt "$wn" ]; do
+            if [ "${wtk[$wi]}" = cd ] || [ "${wtk[$wi]}" = pushd ]; then
+                wj=$((wi + 1))
+                [ "${wtk[$wj]-}" = -- ] && wj=$((wj + 1))
+                wd=${wtk[$wj]-}
+                if [[ "$wd" =~ ^/[A-Za-z0-9_./+@%,:=[:space:]\;\&\|-]*$ ]]; then
+                    case "$(lift_ref "${wd%/}/$dest")" in
+                        LIFT|STATE|HIMMEL|HOME) return 1 ;;
+                    esac
+                    wi=$((wj + 1))
+                    continue
+                fi
+            fi
+            wout="$wout ${wtk[$wi]}"
+            wi=$((wi + 1))
+        done
+        wnew="$wnew$wout"$'\n'
+    done <<EOF_WTOK
+$WTOK
+EOF_WTOK
+    wrest=$wnew
     [ "$(printf '%s\n%s' "$rest" "$wrest" | grep -Ec "$DIRMOVE_RE")" = 0 ] || return 1
     # DIRMOVE_RE reads the text, so a command word computed by a substitution
     # (`$(printf c%s d) /dir`, a backtick, `. <(...)`, `$x /dir`) is invisible

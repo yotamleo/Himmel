@@ -460,6 +460,12 @@ mkdir -p "$T/cwl"
 ln -s "$LIFT" "$T/cwl/plainlink"
 ln -s "$T/cwl/plainlink" "$T/cwl/plainlink2"
 ln -s "$ST" "$T/cwl/statelink"
+# A directory whose name carries a space or a `;`: its dequoted cd target must
+# be read as one token (j2320d).
+mkdir -p "$T/c wl" "$T/c;wl"
+ln -s "$LIFT" "$T/c wl/plainlink"
+ln -s "$ST" "$T/c wl/statelink"
+ln -s "$LIFT" "$T/c;wl/plainlink"
 row "4545 cp to plain symlink (proven cwd)"         deny  "cp $T/src/other.txt plainlink" "$T/cwl"
 row "4545 mv to plain symlink (proven cwd)"         deny  "mv $T/src/other.txt plainlink" "$T/cwl"
 row "4545 ln -sf over plain symlink (proven cwd)"   deny  "ln -sf $T/src/other.txt plainlink" "$T/cwl"
@@ -501,6 +507,12 @@ row "4545 quoted \$( ) hides ANSI-C cd"              deny  "echo '\$('; \$'\\x63
 row "4545 var cd hidden in escaped backtick span"     deny  "x=cd; echo \\\`; \$x cwl; echo \\\`; cp $T/src/other.txt plainlink" "$T"
 row "4545 var cd hidden in single-quoted backticks"  deny  "x=cd; echo '\`'; \$x cwl; echo '\`'; cp $T/src/other.txt plainlink" "$T"
 row "4545 var cd hidden in quoted \$( )"             deny  "x=cd; echo '\$('; \$x cwl; echo ')'; cp $T/src/other.txt plainlink" "$T"
+# j2320d: a dequoted cd target with a space or `;` is ONE token, not a prefix.
+row "4545 c''d 'abs with space' then cp to link"     deny  "c''d '$T/c wl' && cp $T/src/other.txt plainlink" "$T"
+row "4545 c\\d abs\\ with\\ space then cp to link"    deny  "c\\d $T/c\\ wl; cp $T/src/other.txt plainlink" "$T"
+row "4545 pu\\shd 'abs with space' then cp statelink" deny  "pu\\shd '$T/c wl' && cp $T/src/other.txt statelink" "$T"
+row "4545 c''d 'abs with ;' then cp to link"         deny  "c''d '$T/c;wl' && cp $T/src/other.txt plainlink" "$T"
+row "4545 c''d 'abs with space' then cp, no link"    allow "c''d '$T/c wl' && cp $T/src/other.txt nolink" "$T"
 row "4545 \$( ) then cp to plain name, no link"      allow "echo \$(printf x); cp $T/src/other.txt nolink" "$T/cwl"
 row "4545 rsync --log-file= link after \$( )"        deny  "n=\$(date +%H); rsync -a --log-file=plainlink $T/src/other.txt out.txt" "$T/cwl"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or
