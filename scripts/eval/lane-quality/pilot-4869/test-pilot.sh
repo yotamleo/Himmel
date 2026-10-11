@@ -264,6 +264,12 @@ for l in deepseek codex; do
   fi
 done
 lane_home deepseek
+lane_run deepseek --seed-only >/dev/null
+cs5183="$TMP/lh-deepseek/.claude-deepseek/settings.json"
+jq '.planted = 1' "$cs5183" >"$cs5183.t" && mv "$cs5183.t" "$cs5183"
+out="$(lane_run deepseek --seed-only --reseed)"; rc=$?
+check "the deepseek launcher takes --seed-only then --reseed and reseeds" '[ "$rc" = 0 ] && jq -e "has(\"planted\") | not" "$cs5183" >/dev/null && ! printf "%s\n" "$out" | grep -q "^argv="'
+lane_home deepseek
 got="$(lane_run deepseek --model sonnet hello | grep -vE '^(CLAUDE_CONFIG_DIR|CLAUDE_DEEPSEEK_)')"
 want="$(cat <<'EOF'
 claude-deepseek: lane=deepseek model=sonnet labels=DeepSeek Flash 1M/DeepSeek Flash balance=50.00 USD (start snapshot; session cost is balance delta)

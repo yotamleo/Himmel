@@ -27,6 +27,8 @@ if [ "${1-}" = --reseed ]; then RESEED=1; shift; fi
 # a row's config outside the lane, then binds the policy files read-only.
 SEED_ONLY=0
 if [ "${1-}" = --seed-only ]; then SEED_ONLY=1; shift; fi
+# shellcheck disable=SC2034 # RESEED is consumed by the sourced mirror-seed library.
+if [ "$SEED_ONLY" -eq 1 ] && [ "$RESEED" -eq 0 ] && [ "${1-}" = --reseed ]; then RESEED=1; shift; fi
 
 # Authorize explicit provider inference cells, preserving first-match denial,
 # including wildcard hard rows. Only the approved literal condition is known.
