@@ -5619,8 +5619,9 @@ and never appears in a tool call. Suite: `scripts/hooks/test-guard-bus-store.sh`
 
 **Residual (text matching, not a shell parser):** an interpreter that assembles
 the path, a renamed copy of the CLI, `eval`, a script file that does the write, a
-`$(...)`-built path, and the Read/Grep tools (not wired to this hook) all get
-past it. A same-uid process that re-chains the log is undetected until phase 2.
+`$(...)`-built path, a Bash command that goes through a symlink alias (only
+file-tool paths are resolved), and the Read/Grep tools (not wired to this hook)
+all get past it. A same-uid process that re-chains the log is undetected until phase 2.
 
 ### Hook-integrity pin: monotonic re-pin + anchor-tamper fence (HIMMEL-2528)
 

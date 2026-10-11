@@ -73,6 +73,14 @@ deny "Edit under the bus root" "$(file_json Edit "$ROOT/cur/a")"
 deny "MultiEdit under the bus root" "$(file_json MultiEdit "$ROOT/log/a.jsonl")"
 deny "Write via .. segments" "$(file_json Write "/tmp/../var/tmp/fixture-state/himmel/bus/peers/y.json")"
 
+echo "== T6: a symlink alias into the bus root (resolved-path rule) =="
+SCR="$(mktemp -d "${TMPDIR:-/tmp}/guard-fixture.XXXXXX")" || exit 1
+trap 'rm -rf "$SCR"' EXIT
+mkdir -p "$SCR/state/himmel/bus/peers" && ln -s "$SCR/state/himmel/bus" "$SCR/alias"
+deny "Write through a symlink alias with no 'bus' in the path" "$(file_json Write "$SCR/alias/peers/x.json")"
+deny "Edit through a symlink alias with no 'bus' in the path" "$(file_json Edit "$SCR/alias/peers/x.json")"
+allow "Write to a real non-bus path beside the alias" "$(file_json Write "$SCR/other.txt")"
+
 echo "== T5: reads under the bus root =="
 deny "cat a log" "$(bash_json "cat $ROOT/log/other.jsonl")"
 deny "head a log" "$(bash_json "head -n 5 $ROOT/log/other.jsonl")"

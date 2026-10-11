@@ -41,8 +41,9 @@
 # not a shell parser or a sandbox. An interpreter that assembles the path
 # (`python3 -c "open(os.path.expanduser('~/.local/state/hi'+'mmel/bus/...'))"`),
 # a renamed copy of the CLI, `eval`, a script file that itself does the write, a
-# `$(...)`-built path, or the Read tool pointed at a log are not caught. The Read
-# and Grep tools are not wired to this hook. Same-uid tampering that re-chains is
+# `$(...)`-built path, a Bash command reaching the store through a symlink alias
+# (only file-tool paths are resolved), or the Read tool pointed at a log are not
+# caught. The Read and Grep tools are not wired to this hook. Same-uid tampering that re-chains is
 # undetected (phase 2's dedicated uid closes it).
 #
 # Bypass: BUS_STORE_GUARD_OK=1 in the LAUNCHING shell (session-sticky; a per-call
@@ -62,10 +63,12 @@ set -uo pipefail
 
 input=$(cat)
 
-# Fast path, no fork: every rule below needs one of these literals. A JSON
-# \u escape could spell them past a raw scan, so it falls through too.
+# Fast path, no fork: every Bash rule below needs one of these literals. A JSON
+# \u escape could spell them past a raw scan, so it falls through too. A
+# file-tool path may reach the store through a symlink alias that carries no
+# literal at all, so any payload with a file_path/notebook_path is resolved.
 case "$input" in
-    *bus*|*BUS*|*'\u'*) ;;
+    *bus*|*BUS*|*'\u'*|*file_path*|*notebook_path*) ;;
     *) exit 0 ;;
 esac
 
