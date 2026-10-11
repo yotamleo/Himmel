@@ -2181,6 +2181,16 @@ for F in "git grep \"\$(printf needle)\" --open-files-in-pager='$OBF'" \
          "perl -e 'fork && exec(\"$OBF\")'"; do
     assert_deny "4402 pobf relief voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
 done
+# CR round on 2346: bash dequotes a backslash-escaped option name (--pr\e is
+# --pre), so an option word that still carries a backslash or a quote after
+# the readings voids relief for its stage.
+for F in "rg --pr\\e='$OBF' needle" \
+         "sort --compr\\ess-program='$OBF' needle" \
+         "rg --\"pr\"\\e='$OBF' needle" \
+         "printf needle | rg --pr\\e='$OBF' x"; do
+    assert_deny "4402 backslash option voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
+done
+assert_allow "4402 control: rg --pretty with no escapes keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; rg --pretty needle -- '$OBF'")"
 # Controls: a read-only git stage with listed options keeps relief.
 assert_allow "4402 control: git grep with listed options keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; git grep -n --count needle -- '$OBF'")"
 assert_allow "4402 control: continuation with no option keeps relief"  "$(j "unset HIMMEL_CONSOLE_LEG; git grep \"\$(printf needle)\" -- '$OBF'")"

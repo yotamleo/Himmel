@@ -1179,6 +1179,9 @@ pobf_xopt() {
     local w
     for w in $2; do
         case "$w" in
+            # A backslash or a quote left in an option word is a spelling the two
+            # readings do not model (`--pr\e` is `--pre` to bash): void, fail-closed.
+            -*\\*|-*\'*|-*\"*) return 0 ;;
             --) ;;  # not a stop: `-e --` makes it an option ARGUMENT, options still follow
             --open-files-in-pager*|--pager*|--paginate*|--exec*|--ext-diff*|--textconv*|--output*|--upload-pack*|--receive-pack*|--pre|--pre=*|--compress*|--editor*|--config-env*) return 0 ;;
             --*) [ "$1" = git ] || continue
@@ -1541,7 +1544,9 @@ pobf_relief() {
             gh) [[ $x =~ extension|ext[[:space:]]|codespace|ssh|browse|alias|config ]] || cls=1 ;;
             printf) case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
             sort) case "$x" in *--compress*) ;; *) cls=2 ;; esac ;;
-            rg) case "$x" in *--pre*) ;; *) cls=2 ;; esac ;;
+            # rg: only the exact --pre / --pre=CMD runs a program (--pretty and
+            # --pre-glob do not); pobf_xopt below also voids on a word spelled so.
+            rg) [[ $x =~ (^|[[:space:]])--pre([[:space:]=]|$) ]] || cls=2 ;;
             python|python3|node) [[ $x =~ $re_ix ]] || cls=1 ;;
             # perl's and ruby's open run a command when the name starts/ends with |.
             perl|ruby) [[ $x =~ $re_ix || $x =~ open ]] || cls=1 ;;
