@@ -238,7 +238,7 @@ fi
 # The real launchers: --seed-only seeds and never launches, a current seed is not
 # rewritten (the jail binds it read-only), and the normal path is unchanged.
 REALS="$(cd "$HERE/../../.." && pwd)"; REALR="$(cd "$REALS/.." && pwd)"
-SB5183="$TMP/seedbin"; mkdir -p "$SB5183"
+SB5183="$TMP/seedbin"; mkdir -p "$SB5183"; NB5183="$(dirname "$(command -v node)")"
 printf '%s\n' '#!/usr/bin/env bash' 'env | sort | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DEEPSEEK|CLIPROXY)"' 'printf "argv=%s\n" "$@"' >"$SB5183/claude"
 printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null </dev/null' "printf '%s' '{\"is_available\":true,\"balance_infos\":[{\"currency\":\"USD\",\"total_balance\":\"50.00\"}]}'" >"$SB5183/curl"
 chmod +x "$SB5183/claude" "$SB5183/curl"
@@ -246,9 +246,9 @@ lane_home() { rm -rf "$TMP/lh-$1"; mkdir -p "$TMP/lh-$1/.claude"; echo '{"model"
 lane_run() { # $1 deepseek|codex, then the launcher's arguments
   local l="$1"; shift
   if [ "$l" = deepseek ]; then
-    (cd "$REALR" && env -i PATH="$SB5183:/usr/bin:/bin" HOME="$TMP/lh-$l" DEEPSEEK_API_KEY=k HIMMEL_DEEPSEEK_INFERENCE_OK=1 CLAUDE_DEEPSEEK_DOTENV_ROOT="$SB5183" CLAUDE_DEEPSEEK_CWD="$REALR" bash "$REALS/claude-deepseek" "$@" 2>&1)
+    (cd "$REALR" && env -i PATH="$SB5183:$NB5183:/usr/bin:/bin" HOME="$TMP/lh-$l" DEEPSEEK_API_KEY=k HIMMEL_DEEPSEEK_INFERENCE_OK=1 CLAUDE_DEEPSEEK_DOTENV_ROOT="$SB5183" CLAUDE_DEEPSEEK_CWD="$REALR" bash "$REALS/claude-deepseek" "$@" 2>&1)
   else
-    (cd "$REALR" && env -i PATH="$SB5183:/usr/bin:/bin" HOME="$TMP/lh-$l" CLIPROXY_API_KEY=k CODEX_MODEL=gpt-5.6-sol CLAUDE_CODEX_DOTENV_ROOT="$SB5183" bash "$REALS/claude-codex" "$@" 2>&1)
+    (cd "$REALR" && env -i PATH="$SB5183:$NB5183:/usr/bin:/bin" HOME="$TMP/lh-$l" CLIPROXY_API_KEY=k CODEX_MODEL=gpt-5.6-sol CLAUDE_CODEX_DOTENV_ROOT="$SB5183" bash "$REALS/claude-codex" "$@" 2>&1)
   fi
 }
 for l in deepseek codex; do
