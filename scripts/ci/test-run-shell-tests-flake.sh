@@ -552,6 +552,17 @@ if _isid "$br7" && [ "$br4" = "$br7" ] && [ "$br5" = "$br8" ] && [ "$br7" != "$b
 else
   fail "F16: bracket edges: [a/b [$br4] want /b [$br7]; /x@[y]/z [$br5] want /z [$br8]"
 fi
+# an @[ with no closing ] opens no bracket: git keeps /x@[y/z whole for
+# file:///x@[y/z, and reads x@[y as the host (path /z) for file://x@[y/z
+mk_url_repo "$sb/br9" "file:///x@[y/z"
+mk_url_repo "$sb/br10" "file://x@[y/z"
+mk_url_repo "$sb/br11" "/x@[y/z"
+br9=$(_flake_repo_id "$sb/br9" 2>&1); br10=$(_flake_repo_id "$sb/br10" 2>&1); br11=$(_flake_repo_id "$sb/br11" 2>&1)
+if _isid "$br11" && [ "$br9" = "$br11" ] && [ "$br10" = "$br8" ] && [ "$br11" != "$br8" ]; then
+  pass "F16: an unclosed @[ keeps the path whole (/x@[y/z) and is a host when before the path (/z)"
+else
+  fail "F16: unclosed @[: file:///x@[y/z [$br9] want /x@[y/z [$br11]; file://x@[y/z [$br10] want /z [$br8]"
+fi
 # HIMMEL-5169: the origin is read with a sentinel, so a literal trailing
 # newline in the config value (not a decoded one) stays part of the path
 mk_url_repo "$sb/ln1" "/srv/r"

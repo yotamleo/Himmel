@@ -61,10 +61,11 @@ _flake_norm_url() {
       # is part of the path (HIMMEL-5161)
       _u=$(_flake_urldecode "${_u#???????}"; printf x); _u=${_u%x}
       # git's host_end: the first @[ (else a leading [) opens a bracketed host,
-      # skipped through its ]; the path is what follows (HIMMEL-5184). A
-      # path-less origin is rejected by git and shares the root id.
+      # skipped through its ]; the path is what follows (HIMMEL-5184). An @[
+      # with no ] after it opens nothing. A path-less origin is rejected by git
+      # and shares the root id.
       _r=$_u
-      case "$_r" in *@\[*) _r=\[${_r#*@\[} ;; esac
+      case "$_r" in *@\[*\]*) _r=\[${_r#*@\[} ;; esac
       case "$_r" in \[*\]*) _r=${_r#*\]} ;; esac
       case "$_r" in
         /*) _u=$_r ;;
