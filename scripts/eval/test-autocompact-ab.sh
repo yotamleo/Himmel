@@ -123,6 +123,12 @@ printf '%s\n' "$b1" >> "$tmp/dd/p/s-trt.jsonl"
 printf '%s\n%s\n' "$b1" "$b2" >> "$tmp/dd/p/s-trt-resume.jsonl"
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$tmp/dd" --json > "$tmp/dd.out" 2>/dev/null
 check "copied-history boundary counts once (bnd-1 + bnd-2)" 2 "$(jq "$t | .compactions | length" "$tmp/dd.out")"
+# boundaries with no uuid and no timestamp are not identifiable: never collapsed
+mkdir -p "$tmp/nu/p"; cp "$FX/projects/p/s-trt.jsonl" "$FX/projects/p/s-trt-resume.jsonl" "$tmp/nu/p/"
+bn='{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":150000}}'
+printf '%s\n%s\n' "$bn" "$bn" >> "$tmp/nu/p/s-trt.jsonl"
+python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$tmp/nu" --json > "$tmp/nu.out" 2>/dev/null
+check "unidentifiable boundaries are each counted" 2 "$(jq "$t | .compactions | length" "$tmp/nu.out")"
 
 # text mode prints the arm summary table; no input is a usage error
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" > "$tmp/t.txt" 2>/dev/null

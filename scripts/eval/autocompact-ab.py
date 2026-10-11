@@ -114,10 +114,13 @@ def parse_transcripts(paths):
                 meta = row.get("compactMetadata") or {}
                 # a resumed transcript carries its parent's history: the same
                 # boundary (uuid, else timestamp + level) is one compaction
-                bkey = row.get("uuid") or (row.get("timestamp"), meta.get("preTokens"))
-                if bkey in seen_b:
-                    continue
-                seen_b.add(bkey)
+                # no uuid and no timestamp: nothing identifies it, count it
+                bkey = row.get("uuid") or (
+                    (row.get("timestamp"), meta.get("preTokens")) if row.get("timestamp") else None)
+                if bkey is not None:
+                    if bkey in seen_b:
+                        continue
+                    seen_b.add(bkey)
                 comps.append({"trigger": meta.get("trigger"),
                               "tokens": meta.get("preTokens") or last_ctx})
                 continue
