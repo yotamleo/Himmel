@@ -1165,6 +1165,30 @@ pobf_put() {
     esac
 }
 
+# pobf_xopt <command> <stage text> -- HIMMEL-4402: rc 0 (void relief) when a
+# relieved stage carries an option that takes an executable. Run on every
+# stage and again on a substitution's continuation, which inherits its
+# interrupted stage's class but not its option check. Default-void: a git
+# long option not listed as non-executing voids relief; any stage voids on a
+# word naming an option that runs a program (--pager, --exec, -O, -x, -X ...).
+# git-env-ok: no git invocation; "git" is only a word matched in the screened command text
+# ponytail: a closed non-executing list for git; a new safe git option is
+# over-denied until listed, never under-denied, HIMMEL-4402.
+POBF_GIT_SAFE=' --oneline --stat --name-only --name-status --no-color --color --count --line-number --max-count --all --since --until --after --before --author --committer --grep --format --pretty --abbrev --abbrev-commit --short --porcelain --branch --cached --others --exclude-standard --ignore-case --files-with-matches --files-without-match --fixed-strings --extended-regexp --basic-regexp --perl-regexp --word-regexp --invert-match --no-index --untracked --show-toplevel --git-dir --abbrev-ref --verify --heads --tags --quiet --null --heading --break --and --or --not --all-match --recurse-submodules --text --full-name --first-parent --merges --no-merges --reverse --skip --diff-filter --follow --decorate --graph --date --shortstat --numstat --summary --patch --no-patch --stdin --revs-only --no-flags --flags --sq --default --symbolic --symbolic-full-name --is-inside-work-tree --is-bare-repository --show-cdup --show-prefix --git-common-dir --absolute-git-dir --deleted --modified --ignored --directory --error-unmatch --eol --stage --unmerged --killed '
+pobf_xopt() {
+    local w
+    for w in $2; do
+        case "$w" in
+            --) break ;;
+            --open-files-in-pager*|--pager*|--paginate*|--exec*|--ext-diff*|--textconv*|--output*|--upload-pack*|--receive-pack*|--pre|--pre=*|--compress*|--editor*|--config-env*) return 0 ;;
+            --*) [ "$1" = git ] || continue
+                 case "$POBF_GIT_SAFE" in *" ${w%%=*} "*) ;; *) return 0 ;; esac ;;
+            -*) [[ $w =~ ^-[^-]*[OxX] ]] && return 0 ;;
+        esac
+    done
+    return 1
+}
+
 # Every command name pobf_relief gives relief to (plus sed/awk, which lost
 # theirs); a function may not shadow one.
 POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du jq basename dirname realpath readlink test tr column nl tac rev fold fmt paste rm find git bash sh zsh dash ksh mksh gh printf sort rg sed gsed awk gawk mawk python python3 node perl ruby command builtin time'
@@ -1240,7 +1264,7 @@ pobf_relief() {
     local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
     local re_fp="(^|[^[:alnum:]_])(functions|dis_functions|aliases|dis_aliases|galiases|dis_galiases|saliases|dis_saliases|commands|BASH_ALIASES|BASH_CMDS|fpath|FPATH|enable|autoload)([^[:alnum:]_]|\$)"
     local re_sa="(^|[^[:alnum:]_])set([[:blank:]]+[-+][[:alnum:]]*)*[[:blank:]]+[-+][[:alnum:]]*A"
-    local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
+    local re_ix="readpipe|passthru|proc_open|syscall|fork|Open3|system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
     case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
     t=${t//\\$NL/}
     while IFS= read -r L; do
@@ -1511,7 +1535,9 @@ pobf_relief() {
             printf) case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
             sort) case "$x" in *--compress*) ;; *) cls=2 ;; esac ;;
             rg) case "$x" in *--pre*) ;; *) cls=2 ;; esac ;;
-            python|python3|node|perl|ruby) [[ $x =~ $re_ix ]] || cls=1 ;;
+            python|python3|node|ruby) [[ $x =~ $re_ix ]] || cls=1 ;;
+            # perl's two-arg open runs a command when the name ends in |.
+            perl) [[ $x =~ $re_ix || $x =~ open ]] || cls=1 ;;
         esac
         # An assignment prefix (PAGER=, GIT_PAGER=, GH_BROWSER=, ...) can name a
         # program the command then runs; only a shell on a literal script keeps
@@ -1522,6 +1548,9 @@ pobf_relief() {
         if [ "${CO[j]-}" -ge 0 ] 2>/dev/null && [ "${CO[j]}" -lt "$j" ]; then
             cls=${CL[CO[j]]}; c=${CW[CO[j]]}; c2=${C2[CO[j]]}; ED[j]=${ED[CO[j]]}
         fi
+        # HIMMEL-4402: any relieved stage, and a continuation (which inherits
+        # its parent's class), voids on an option that takes an executable.
+        [ "$cls" != 0 ] && pobf_xopt "$c" "$x" && cls=0
         CL[j]=$cls; CW[j]=$c; C2[j]=$c2
         [ "$cls" = 2 ] && FL[j]=1
         j=$((j + 1))

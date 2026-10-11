@@ -2143,6 +2143,38 @@ MOG_HEAD=${MOG_VAR:0:3}
 MOG_TAIL=${MOG_VAR:3}
 assert_deny "5181 seam name split by \$ + popped \${x} + {y}" "$(j "${MOG_HEAD}\$\${x}{y}${MOG_TAIL}=1 bash $MERGE_ON_GREEN")"
 
+# --- HIMMEL-4402 (1685 round 9): two shapes kept read-only relief beside an
+# obfuscated chokepoint path. (1) A substitution's continuation stage
+# inherited its parent's class without the executable-option check; (2) the
+# interpreter executing-builtin list lacked readpipe. The sweep rows are the
+# other interpreters' executing builtins; each must void relief.
+OBF="/r/w/scrip?s/$CK/g?.sh"
+for F in "git grep \"\$(printf needle)\" --open-files-in-pager='$OBF'" \
+         "git grep \"\$(printf needle)\" -O'$OBF'" \
+         "git grep \"\$(printf needle)\" --pager='$OBF'" \
+         "git log \$(printf x) --exec='$OBF'" \
+         "git grep \`printf needle\` --open-files-in-pager='$OBF'" \
+         "printf needle | git grep --future-exec-opt='$OBF' x" \
+         "printf needle | git grep -O '$OBF' x" \
+         "perl -e 'readpipe(\"$OBF\")'" \
+         "perl -e 'open(F, \"$OBF|\")'" \
+         "ruby -e 'IO.popen(\"$OBF\")'" \
+         "ruby -e '%x($OBF)'" \
+         "ruby -e 'spawn(\"$OBF\")'" \
+         "ruby -e 'system(\"$OBF\")'" \
+         "awk 'BEGIN{system(\"$OBF\")}'" \
+         "php -r 'shell_exec(\"$OBF\");'" \
+         "php -r 'passthru(\"$OBF\");'" \
+         "php -r 'proc_open(\"$OBF\", [], \$p);'" \
+         "python3 -c 'import os; os.system(\"$OBF\")'" \
+         "python3 -c 'import subprocess; subprocess.run([\"$OBF\"])'" \
+         "node -e 'require(\"child_process\").execSync(\"$OBF\")'"; do
+    assert_deny "4402 pobf relief voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
+done
+# Controls: a read-only git stage with listed options keeps relief.
+assert_allow "4402 control: git grep with listed options keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; git grep -n --count needle -- '$OBF'")"
+assert_allow "4402 control: continuation with no option keeps relief"  "$(j "unset HIMMEL_CONSOLE_LEG; git grep \"\$(printf needle)\" -- x")"
+
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
     echo "PASS settings.json wiring present"
