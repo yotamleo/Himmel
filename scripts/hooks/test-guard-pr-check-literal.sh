@@ -1883,6 +1883,15 @@ for v in \
     'git -P grep foo -- scripts/*'; do
     run "HIMMEL-5102 round5 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# Round 6 (judge j2328d): an unknown first word may be an alias for rebase or
+# bisect (`git rb -x CMD`); arm both, fail closed.
+for v in \
+    'git rb -x scripts/cr/pr-check-env.sh main' \
+    'git config alias.rb rebase; git rb -x scripts/cr/pr-check-env.sh main' \
+    'git bs run scripts/cr/pr-check-env.sh' \
+    'git rb -x "npm test" main'; do
+    run "HIMMEL-5102 round6 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo

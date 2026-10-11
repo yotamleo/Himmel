@@ -1024,7 +1024,11 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     shortlog | stash | status | tag | worktree)
                     bad=1; nsub=1
                     case "$w" in bisect) bsub=bisect; bnext=1 ;; rebase) rsub=1 ;; esac ;;
-                *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
+                # HIMMEL-5102 (j2328d): the unknown word may be an alias for
+                # rebase or bisect (`git rb -x CMD`): arm both, fail closed.
+                *) bad=1
+                    if [ "$nsub" = 0 ]; then rsub=1; bsub=bisect; bnext=1; fi
+                    [ "$nsub" = 1 ] || sub='*' ;;
             esac
             # A quoted word is not positively identified either.
             [ "${ST_Q[j]}" = 0 ] || sub='*'
