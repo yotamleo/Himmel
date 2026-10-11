@@ -1708,6 +1708,10 @@ assert "rg '' / never ALLOW"                   PASS  "$(decide "$(j_bash "rg '' 
 assert "ag '' / never ALLOW"                   PASS  "$(decide "$(j_bash "ag '' /")")"
 assert 'grep -r "" / never ALLOW'              PASS  "$(decide "$(j_bash 'grep -r "" /')")"
 assert "ctl: grep -r '' src stays ALLOW"       ALLOW "$(decide "$(j_bash "grep -r '' src")")"
+# a QUOTED lone CR is a real (non-empty) word to bash: not a line ending
+assert "grep -r 'CR' / never ALLOW"             PASS  "$(decide "$(j_bash "grep -r '"$'\r'"' /")")"
+assert 'rg "CR" / never ALLOW'                  PASS  "$(decide "$(j_bash 'rg "'$'\r''" /')")"
+assert "ctl: grep -r 'CR' src stays ALLOW"      ALLOW "$(decide "$(j_bash "grep -r '"$'\r'"' src")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

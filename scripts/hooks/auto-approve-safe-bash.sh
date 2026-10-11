@@ -931,7 +931,7 @@ segment_walks_root() {
         # a brace list) may hide an option or a root operand: unknown -> PASS
         shell_word_value "$raw" || { SW_UNK=1; continue; }
         tok="$SW_VALUE"
-        [ "$tok" != $'\r' ] || continue       # a bare CRLF line ending is not a word
+        [ "$raw" != $'\r' ] || continue       # a bare CRLF line ending is not a word (raw: '<CR>' is)
         tok="${tok%$'\r'}"                    # nor is a CR ending a word glued CR
         case "$tok" in *$'\r'*) SW_UNK=1 ;; esac
         if [ "$vskip" -eq 1 ]; then           # the value of a value-taking option
