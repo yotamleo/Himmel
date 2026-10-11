@@ -865,7 +865,10 @@ function runChain(members, lifecycle = false) {
 
   if (held.length) process.stderr.write(held.join(''));
 
-  const unvouchedNotice = unvouchedMember === null ? null : takeUnvouchedNotice(sessionId, unvouchedMember);
+  // JSON on a non-zero exit is ignored by Claude Code, so only take the
+  // once-per-session flag when a channel can carry the notice.
+  const deliverable = emitters.length > 0 || carriedStatus === 0;
+  const unvouchedNotice = unvouchedMember === null || !deliverable ? null : takeUnvouchedNotice(sessionId, unvouchedMember);
   if (unvouchedNotice) {
     process.stderr.write(`${unvouchedNotice}\n`);
     const output = { systemMessage: unvouchedNotice };

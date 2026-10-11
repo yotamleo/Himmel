@@ -370,6 +370,28 @@ if grep -q 'HIMMEL-5171' "$T/g10.err"; then
 else
   bad "HIMMEL-5171 stderr notice missing: $(cat "$T/g10.err")"
 fi
+# A chain whose only member exits 1 with no JSON has no channel either: the
+# exit status is non-zero so the harness ignores any JSON. Leave the flag free.
+FAILG="$PROJECT/scripts/hooks/fail-guard.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$FAILG"
+gone_dir g10b; rm -f "$T/g10b/$SID.json"; printf 'started\n' > "$T/g10b/$SID.recorder"
+touch -t 202001010000 "$T/g10b/$SID.recorder"
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g10b" \
+  node "$LAUNCHER" --chain "$FAILG" >"$T/g10b.out" 2>"$T/g10b.err"
+rc=$?
+if [ "$rc" -eq 1 ] && [ ! -e "$T/g10b/$SID.recorder-notified" ]; then
+  ok "HIMMEL-5171: a chain whose only member exits 1 with no JSON leaves the notice unconsumed"
+else
+  bad "HIMMEL-5171 chain exit-1: expected rc=1 and no notified flag, got rc=$rc dir=$(ls "$T/g10b") out=$(cat "$T/g10b.out") err=$(cat "$T/g10b.err")"
+fi
+printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g10b" \
+  node "$LAUNCHER" --chain "$GUARD" >"$T/g10b.out" 2>"$T/g10b.err"
+rc=$?
+if [ "$rc" -eq 0 ] && jq -e '.systemMessage | test("HIMMEL-5171")' "$T/g10b.out" >/dev/null 2>&1; then
+  ok "HIMMEL-5171: the next clean chain call after an exit-1 shows the notice"
+else
+  bad "HIMMEL-5171 chain after exit-1: expected systemMessage, got rc=$rc out=$(cat "$T/g10b.out") err=$(cat "$T/g10b.err")"
+fi
 gone_dir g11; rm -f "$T/g11/$SID.json"; printf 'started\n' > "$T/g11/$SID.recorder"
 touch -t 202001010000 "$T/g11/$SID.recorder"
 printf '%s' "$PAYLOAD" | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/g11" \
