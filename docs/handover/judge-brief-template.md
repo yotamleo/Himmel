@@ -140,19 +140,26 @@ gathering, per the rule below.>
 > `/tmp/claude-<uid>/j<PR>`, create it with
 > `bash <primary checkout>/scripts/judge-dir.sh <PR> [suffix a-z]` — the absolute path
 > from the primary checkout, never a worktree's copy — and use the dir it prints.
-> It writes the `.holder` file `scripts/tmp-reap.sh` reads: a live judge's dir is
-> never reaped, a dead one's is reaped at once. A dir made any other way
-> falls back to the 6 h age floor. Writing your verdict with an evidence file
-> inside that dir (`write-verdict.sh`) drops a `.verdict-written` marker that
-> releases the dir to the reaper even while your holder (an in-process judge
-> shares its console's long-lived pid) is alive (HIMMEL-5165).
+> It writes the `.holder` file `scripts/tmp-reap.sh` reads, so the reaper can
+> tell a live holder's dir from a dead one's; an in-process judge shares its
+> console's long-lived pid, so its holder stays alive and the dir is not
+> reaped on liveness alone. A dir made any other way falls back to the 6 h age
+> floor. Writing your verdict with an evidence file inside the PR's own dir
+> (`j<PR>` or `j<PR><a-z>`, the `--pr` value) with `write-verdict.sh` drops a
+> `.verdict-written` marker that releases the dir to the reaper even while
+> your holder is alive (HIMMEL-5165, HIMMEL-5173). A second judge under the
+> same console must take another suffix: `judge-dir.sh` refuses a dir this
+> holder already filled.
 >
 > **Never `rsync`/`cp -a` the whole repo into scratch (HIMMEL-5165).** A full
 > tree is about 6 GB; on 2026-10-10 finished judge dirs filled the 36 GB
 > `/tmp` tmpfs and failed a judge. Copy only `scripts/` plus the PR's changed
-> files, excluding `.git` and `.claude/worktrees`
-> (`rsync -a --exclude .git --exclude .claude/worktrees ...`), or put the root
-> on disk under `~/.cache/himmel-judge/<qid>` instead of `/tmp`.
+> files, excluding `.git` and `.claude/worktrees`, or put the tree on disk
+> under `~/.cache/himmel/verdicts/<qid>/` (the one scratch path above) instead
+> of `/tmp`. Take the PR's HEAD content, not the primary checkout's `main`:
+> `git archive <head> scripts/ <changed files> | tar -x -C <scratch dir>`
+> (list only changed files that still exist at `<head>`; `git archive` rejects a deleted path)
+> (run in a checkout that has the head fetched).
 
 > **Per-child scratch subdirectory.** If this question needs bulk
 > evidence-gathering and you spawn subagents to do it, give each one its own
