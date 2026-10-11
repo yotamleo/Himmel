@@ -144,6 +144,22 @@ python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["lane"]="na
 python3 "$SUT" "$WORK/lane-nl.json" --base 4ccb59d --console BZ --bucket "$WORK/b8" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/lane-nl.err"; rc=$?
 [ "$rc" = 1 ] && grep -q 'lane' "$WORK/lane-nl.err" && [ ! -e "$WORK/b8/launch-N901.sh" ] && pass "a lane with a trailing newline is refused" || fail "newline lane rc=$rc"
 
+# HIMMEL-5193: an ab_arm key writes the brief ruling line, exports LEG_AUTOCOMPACT_AB in the launcher
+# and passes --arm on the printed manifest add line; a bad value is refused; no key changes nothing.
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["ab_arm"]="400k"; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/ab-ok.json"
+about="$(python3 "$SUT" "$WORK/ab-ok.json" --base 4ccb59d --console BZ --bucket "$WORK/b9" --repo "$REPO" --handover-root /h --no-worktree --manifest "$WORK/f9.json" 2>&1)"
+abdoc="$(cat "$WORK/b9/HIMMEL-9001-N901-plain-fix-"*.md 2>/dev/null)"
+has "ab_arm 400k: the brief carries the ruling line" "$abdoc" "> **Context:** ab-400k — operator-ruling: HIMMEL-5193"
+has "ab_arm 400k: the launcher exports LEG_AUTOCOMPACT_AB=400000" "$(cat "$WORK/b9/launch-N901.sh" 2>/dev/null)" "export LEG_AUTOCOMPACT_AB=400000"
+has "ab_arm 400k: the manifest add line passes --arm 400k" "$about" "--arm 400k"
+bash "$HERE/brief-lint.sh" "$WORK/b9/HIMMEL-9001-N901-plain-fix-"*.md 2>"$WORK/lint-ab.err"; rc=$?
+[ "$rc" = 0 ] && pass "ab_arm brief passes brief-lint.sh" || fail "ab_arm brief-lint rc=$rc: $(cat "$WORK/lint-ab.err")"
+lacks "no ab_arm: the plain brief has no Context line" "$b1" "operator-ruling: HIMMEL-5193"
+lacks "no ab_arm: the plain launcher exports no arm" "$l1" "LEG_AUTOCOMPACT_AB"
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); l[0]["ab_arm"]="500k"; json.dump(l[:1],open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/ab-bad.json"
+python3 "$SUT" "$WORK/ab-bad.json" --base 4ccb59d --console BZ --bucket "$WORK/b10" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/ab-bad.err"; rc=$?
+[ "$rc" = 1 ] && grep -q 'ab_arm' "$WORK/ab-bad.err" && [ ! -e "$WORK/b10/launch-N901.sh" ] && pass "an invalid ab_arm is refused before anything is written" || fail "bad ab_arm rc=$rc"
+
 python3 "$SUT" >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && pass "no arguments is a usage error (rc 2)" || fail "usage rc=$rc"
 

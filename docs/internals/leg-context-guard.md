@@ -74,6 +74,26 @@ earlier 65 % (130000) left 27000 tokens of room but stopped every opus leg at
 13 % fill. If a leg needs more headroom than 7000 tokens, raise the launcher
 ceiling; that is an operator decision.
 
+## The autocompact A/B arm (HIMMEL-5193)
+
+The 200000 ceiling is the default for every leg. A measured A/B against 400000
+is opt-in and audited:
+
+- **Launch.** `LEG_AUTOCOMPACT_AB=400000` (only `200000` or `400000`; anything
+  else refuses) on `headed-arm-leg.sh`, with the brief line
+  `> **Context:** ab-400k — operator-ruling: HIMMEL-5193`. It needs the standard
+  context and is refused with `LEG_CONTEXT=1m`. `200000` is the control arm and
+  needs no line. `gen-briefs.py` writes both from a per-leg `ab_arm`
+  (`200k` | `400k`) key.
+- **Threshold.** The launcher exports `HIMMEL_LEG_AUTOCOMPACT=400000`, so the
+  guard's 75 % share is 300000 tokens (30 % of a 1000000 window).
+- **Record.** The arm goes in the launch log (`ab_arm=`), the arm log line and
+  the fleet-manifest entry (`arm`).
+- **Report.** `python3 -I scripts/eval/autocompact-ab.py --manifest <fleet.json>`
+  prints, per wrapped leg, compactions with the token level at each, handoffs,
+  the cache_read / cache_create / uncached split, price-weighted cost,
+  wall-clock, PR outcome and mean output tokens per turn, then a per-arm table.
+
 ## Past the threshold
 
 Past the threshold the hook denies every call except the hand-off calls. These

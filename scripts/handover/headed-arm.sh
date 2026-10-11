@@ -405,7 +405,13 @@ if [ "${HEADED_ARM_CONTEXT_PID:-}" = "$$" ]; then
     _context_profile="${HEADED_ARM_CONTEXT_PROFILE:-console}"
     _context_profiles="${HEADED_ARM_LEG_PROFILES:-$_context_profiles}"
 fi
-unset HEADED_ARM_CONTEXT_PROFILE HEADED_ARM_LEG_PROFILES HEADED_ARM_CONTEXT_PID
+# HIMMEL-5193: the audited 400k A/B arm marker, set only by headed-arm-leg.sh.
+# Same PID pairing as above, so an ambient value from another process is ignored.
+_ab_autocompact=""
+if [ "${HEADED_ARM_CONTEXT_PID:-}" = "$$" ]; then
+    _ab_autocompact="${HEADED_ARM_AB_AUTOCOMPACT:-}"
+fi
+unset HEADED_ARM_CONTEXT_PROFILE HEADED_ARM_LEG_PROFILES HEADED_ARM_CONTEXT_PID HEADED_ARM_AB_AUTOCOMPACT
 if ! _context_json="$(node "$_context_profiles" "$_context_profile" --context)" \
     || ! _profile_mode="$(printf '%s' "$_context_json" | jq -er '.contextMode | select(. == "standard" or . == "1m")')" \
     || ! _profile_autocompact="$(printf '%s' "$_context_json" | jq -er '.autocompact | select(type == "number" and . >= 200000 and . <= 1000000 and floor == .)')"; then
@@ -441,6 +447,10 @@ if [ "$_context_profile" != "console" ] && [ "$CONTEXT" = "1m" ] && [ "${CONSOLE
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
 fi
+if [ -n "$_ab_autocompact" ] && { [ "$_ab_autocompact" != "400000" ] || [ "$CONTEXT" != "standard" ] || [ "$_context_profile" = "console" ]; }; then
+    echo "headed-arm: refusing HEADED_ARM_AB_AUTOCOMPACT=$_ab_autocompact: only 400000 on a standard-context leg arm is accepted (HIMMEL-5193)" >&2
+    exit 2
+fi
 # Fable-family match (shared with arm-resume.sh via console_context_model_is_fable)
 # -- only an explicit Fable [model] takes this branch now (the default MODEL
 # is Opus, HIMMEL-3079).
@@ -457,6 +467,7 @@ fi
 AUTOCOMPACT="$_profile_autocompact"
 if [ "$CONTEXT" = "standard" ]; then
     AUTOCOMPACT="200000"
+    [ "$_ab_autocompact" != "400000" ] || AUTOCOMPACT="400000"
 elif [ "$_context_profile" = "console" ] || [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
     AUTOCOMPACT="auto"
 fi

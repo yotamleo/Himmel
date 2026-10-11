@@ -954,6 +954,39 @@ if [ "${LEG_CONTEXT:-}" = "1m" ]; then
     DESIGN_CONTEXT_REASON="$_CONTEXT_BRIEF_REASON"
 fi
 
+# HIMMEL-5193: the audited autocompact A/B arm. LEG_AUTOCOMPACT_AB is launch
+# input (200000 = control, 400000 = treatment; nothing else). The 400000 arm is
+# opened by a brief ruling line, same shape as the 1m ruling above, and is
+# refused alongside any 1m context. The value never leaks onward: both names are
+# unset here and the marker headed-arm.sh reads is exported only at the exec.
+AB_ARM=""
+AB_REASON=""
+_ab_in="${LEG_AUTOCOMPACT_AB:-}"
+unset -v LEG_AUTOCOMPACT_AB HEADED_ARM_AB_AUTOCOMPACT
+leg_env_drop_token LEG_AUTOCOMPACT_AB
+leg_env_drop_token HEADED_ARM_AB_AUTOCOMPACT
+case "$_ab_in" in
+    '') ;;
+    200000) AB_ARM="200k" ;;
+    400000) AB_ARM="400k" ;;
+    *)
+        echo "headed-arm-leg: LEG_AUTOCOMPACT_AB must be 200000 or 400000, got: $_ab_in" >&2
+        exit 2 ;;
+esac
+if [ "$AB_ARM" = "400k" ]; then
+    if [ "$CONTEXT" != "standard" ] || [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
+        echo "headed-arm-leg: refusing leg launch: LEG_AUTOCOMPACT_AB=400000 needs the standard 200000 context (got context=$CONTEXT autocompact=$RESOLVED_AUTOCOMPACT); the A/B arm never combines with a 1m opt-in" >&2
+        exit 2
+    fi
+    AB_REASON="$(grep -m1 -E '^> \*\*Context:\*\* ab-400k — operator-ruling: ' "$DOC" 2>/dev/null | sed -E 's/^> \*\*Context:\*\* ab-400k — operator-ruling: //; s/^[[:space:]]+//; s/[[:space:]]+$//')"
+    if [ -z "$AB_REASON" ]; then
+        echo "headed-arm-leg: refusing leg launch: LEG_AUTOCOMPACT_AB=400000 needs '> **Context:** ab-400k — operator-ruling: <reason>' in $DOC" >&2
+        exit 2
+    fi
+    RESOLVED_AUTOCOMPACT="400000"
+fi
+unset -v _ab_in
+
 # HIMMEL-3139: console-only knobs that must never reach a leg's own process,
 # and therefore never reach the konsole child this wrapper execs into via
 # headed-arm.sh (whose env -u list only clears the three HIMMEL-2545
@@ -1103,7 +1136,7 @@ leg_env_drop_token HEADED_ARM_LEG_CLAUDE_BIN
 # RESOLVED_AUTOCOMPACT to anything but 200000 there), so this block is a
 # no-op for every existing caller.
 CONTEXT_REASON=""
-if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
+if [ "$RESOLVED_AUTOCOMPACT" != "200000" ] && [ "$AB_ARM" != "400k" ]; then
     CONTEXT_REASON="$DESIGN_CONTEXT_REASON"
     CONTEXT_REASON="$(printf '%s' "$CONTEXT_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$CONTEXT_REASON" ]; then
@@ -1122,6 +1155,9 @@ if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
     # from scratch, so no ambient leak survives past this one call.
     [ "$RESOLVED_AUTOCOMPACT" != "auto" ] || export CONSOLE_CONTEXT=1m
 fi
+# HIMMEL-5193: the one marker headed-arm.sh honours (paired to its exec PID).
+# A plain export, same channel as CONSOLE_CONTEXT above; headed-arm.sh unsets it.
+[ "$AB_ARM" != "400k" ] || export HEADED_ARM_AB_AUTOCOMPACT=400000
 
 # HIMMEL-2976: an Opus or Fable leg costs materially more per turn than the
 # Sonnet default implementor, so it launches only when its brief names one of
@@ -1976,6 +2012,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
     if [ -n "$CONTEXT_REASON" ]; then
         printf 'headed-arm-leg: context=1m (%s) context-reason=%s\n' "$CONTEXT_SOURCE" "$CONTEXT_REASON"
     fi
+    # HIMMEL-5193: printed ONLY for an A/B arm launch.
+    if [ -n "$AB_ARM" ]; then
+        printf 'headed-arm-leg: ab-arm=%s autocompact=%s ab-reason=%s\n' "$AB_ARM" "$RESOLVED_AUTOCOMPACT" "${AB_REASON:-<control>}"
+    fi
     # Printed ONLY under --headless, same guarantee shape as --relay above.
     if [ "$HEADLESS" -eq 1 ]; then
         printf 'headed-arm-leg: headless=1 launch=%s --bg --permission-mode auto (env merged into %s at launch)\n' \
@@ -2122,6 +2162,10 @@ fi
 if [ -n "$CONTEXT_REASON" ]; then
     echo "$(date +%F_%T) headed-arm-leg: context=1m ($CONTEXT_SOURCE) context-reason=$CONTEXT_REASON" >> "$LOG"
 fi
+# HIMMEL-5193: the A/B arm is audited in the arm log too.
+if [ -n "$AB_ARM" ]; then
+    echo "$(date +%F_%T) headed-arm-leg: ab-arm=$AB_ARM autocompact=$RESOLVED_AUTOCOMPACT ab-reason=${AB_REASON:-<control>}" >> "$LOG"
+fi
 
 # HIMMEL-3270: record what this launch WAS, where a cohort query can find it
 # after the fact. The launch-time facts (profile, role, model) are not
@@ -2154,6 +2198,8 @@ if [ -n "$_ll_cache" ]; then
     # keeps its exact key set (the cost cohort reader and test 28c pin it).
     _ll_asker=""
     [ "$CONSULT" -eq 1 ] && _ll_asker=" console=${CONSOLE_FLAG:-unknown}"
+    # HIMMEL-5193: an A/B arm launch also records its arm; every other line keeps its key set.
+    [ -z "$AB_ARM" ] || _ll_asker="$_ll_asker ab_arm=$AB_ARM"
     if ! ( umask 077 && mkdir -p "$_ll_cache/launch-logs" && \
         printf 'headed-arm-leg: profile=%s lane=%s model=%s role=%s session=%s launched=%s%s\n' \
             "${PROFILE:-none}" "$LANE" "${MODEL:-default}" "$_ll_role" "$NAME" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_ll_asker" \
@@ -2209,7 +2255,9 @@ if [ -n "$FLEET_MANIFEST" ]; then
         "${HA_RUN[@]}" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
     launch_rc=$?
     [ "$launch_rc" -eq 0 ] || exit "$launch_rc"
-    if ! bash "$HERE/fleet-manifest.sh" add "$FLEET_MANIFEST" --lane "$LANE" "$DOC"; then
+    _fm_arm=()
+    [ -z "$AB_ARM" ] || _fm_arm=(--arm "$AB_ARM")
+    if ! bash "$HERE/fleet-manifest.sh" add "$FLEET_MANIFEST" --lane "$LANE" ${_fm_arm[@]+"${_fm_arm[@]}"} "$DOC"; then
         echo "headed-arm-leg: launch handed off but fleet manifest update failed: $FLEET_MANIFEST" >&2
         exit 1
     fi
