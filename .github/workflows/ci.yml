@@ -194,7 +194,15 @@ jobs:
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
         run: |
           git fetch --no-tags origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/plugin-bump-base"
-          bash scripts/check-plugin-drift.sh --bump-required refs/remotes/origin/plugin-bump-base
+          # HIMMEL-5195: run the base tip's checker, not the PR checkout's. The
+          # workflow file comes from the merge ref but the checkout is the PR
+          # head, so a PR branched before #2341 still carried the old two-dot
+          # checker and went red on a plugin bump that landed after it branched.
+          checker="$RUNNER_TEMP/plugin-bump-checker"
+          mkdir -p "$checker/scripts/lib"
+          git show refs/remotes/origin/plugin-bump-base:scripts/check-plugin-drift.sh > "$checker/scripts/check-plugin-drift.sh"
+          git show refs/remotes/origin/plugin-bump-base:scripts/lib/vm-mode.sh > "$checker/scripts/lib/vm-mode.sh"
+          bash "$checker/scripts/check-plugin-drift.sh" --bump-required refs/remotes/origin/plugin-bump-base
 
   lint:
     runs-on: ubuntu-latest

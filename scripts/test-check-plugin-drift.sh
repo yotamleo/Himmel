@@ -346,6 +346,11 @@ W_CURRENT="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-current.XXXXXX")" || exit 1
   ]
 }
 JSON
+  # The job runs the checker from the base tip (HIMMEL-5195), so the base
+  # branch must carry it, as the real repo does.
+  mkdir -p scripts/lib
+  cp "$SCRIPT" scripts/check-plugin-drift.sh
+  cp "$ROOT/scripts/lib/vm-mode.sh" scripts/lib/vm-mode.sh
   git add -A
   git commit -q -m 'chore: seed real 0.4.60 manifest'
   git branch stored-base
@@ -379,12 +384,8 @@ print(body.replace('${{ github.event.pull_request.base.sha }}', 'stored-base'))
 PY
 )"
 run_current_job() {
-  (cd "$W_CURRENT" && BASE_BRANCH="${1:-current-base}" bash -e -c "$current_job")
+  (cd "$W_CURRENT" && RUNNER_TEMP="$W_CURRENT/.runner-temp" BASE_BRANCH="${1:-current-base}" bash -e -c "$current_job")
 }
-# The checker path in the workflow is relative to the checkout, not the fixture.
-mkdir -p "$W_CURRENT/scripts/lib"
-cp "$SCRIPT" "$W_CURRENT/scripts/check-plugin-drift.sh"
-cp "$ROOT/scripts/lib/vm-mode.sh" "$W_CURRENT/scripts/lib/vm-mode.sh"
 stored_out="$(cd "$W_CURRENT" && bash "$SCRIPT" --bump-required stored-base 2>&1)"; stored_rc=$?
 if [ "$stored_rc" -eq 0 ]; then ok "current-base replay: old stored-base gate accepts duplicate bump"; else bad "stored-base control failed: $stored_out"; fi
 current_out="$(run_current_job 2>&1)"; current_rc=$?
@@ -400,6 +401,25 @@ current_out="$(run_current_job 2>&1)"; current_rc=$?
 if [ "$current_rc" -eq 0 ]; then ok "current-base job accepts a fresh bump and ignores base-only plugins"; else bad "current-base fresh bump failed (rc=$current_rc): $current_out"; fi
 current_out="$(run_current_job missing-base 2>&1)"; current_rc=$?
 if [ "$current_rc" -ne 0 ] && ! grepq "$current_out" 'every changed plugin bumped'; then ok "current-base job fails closed on fetch failure, even with a cached base ref"; else bad "current-base job ignored fetch failure (rc=$current_rc): $current_out"; fi
+# HIMMEL-5195: a PR branched before #2341 carries the OLD checker (two-dot
+# diff) while the workflow comes from the merge ref and passes the live base
+# tip, so a PR that never touched the plugin read 0.4.61 -> 0.4.60 "not a
+# bump" (PR 2328 at 24e9cf97). Replay: branch off stored-base (0.4.60), change
+# only scripts/hooks, keep the pre-#2341 checker; current-base is at 0.4.61.
+(
+  set -e
+  cd "$W_CURRENT"
+  git checkout -q -b stale-pr stored-base
+  mkdir -p scripts/hooks
+  printf '# unrelated hook change\n' > scripts/hooks/guard-pr-check-literal.sh
+  # shellcheck disable=SC2016 # the sed pattern is the literal text ${base_ref}...HEAD
+  sed 's/\${base_ref}\.\.\.HEAD/${base_ref}..HEAD/' "$SCRIPT" > scripts/check-plugin-drift.sh
+  if cmp -s "$SCRIPT" scripts/check-plugin-drift.sh; then echo "stale-checker derivation changed nothing" >&2; exit 1; fi
+  git add -A
+  git commit -q -m 'fix(hooks): replay PR 2328, stale checker, no plugin touch'
+) || bad "stale-pr fixture setup failed"
+stale_out="$(run_current_job 2>&1)"; stale_rc=$?
+if [ "$stale_rc" -eq 0 ] && grepq "$stale_out" 'no plugin files changed'; then ok "stale-base PR that never touched the plugin passes (HIMMEL-5195)"; else bad "stale-base PR false red (rc=$stale_rc): $stale_out"; fi
 rm -rf -- "$W_CURRENT"
 
 # 4. End-to-end: the script runs to completion with a sane exit code —
