@@ -16,7 +16,7 @@
 #                  one message is written once per content block)
 #   longest_gap_s  largest gap between consecutive distinct messages; a gap
 #                  over 300 s on a 5m run is a cold re-prime
-set -euo pipefail
+set -uo pipefail
 
 ledger=""
 header=0
@@ -34,8 +34,8 @@ command -v jq >/dev/null 2>&1 || { echo "judge-cache-row: jq not on PATH" >&2; e
 
 HDR=$'judge\tagent\tmodel\tttl\twall_s\tturns\tcc_5m\tcc_1h\tcache_read\tlongest_gap_s\tgaps_over_300s'
 out() {
-    printf '%s\n' "$1"
-    if [ -n "$ledger" ]; then printf '%s\n' "$1" >> "$ledger"; fi
+    printf '%s\n' "$1" || exit 1
+    if [ -n "$ledger" ]; then printf '%s\n' "$1" >> "$ledger" || exit 1; fi
 }
 if [ "$header" = 1 ]; then out "$HDR"; fi
 
@@ -44,9 +44,9 @@ for f in "${files[@]}"; do
     meta="${f%.jsonl}.meta.json"
     desc="" agent="" mdl=""
     if [ -f "$meta" ]; then
-        desc=$(jq -r '.description // ""' "$meta")
-        agent=$(jq -r '.agentType // ""' "$meta")
-        mdl=$(jq -r '.model // ""' "$meta")
+        desc=$(jq -r '.description // ""' "$meta") || exit 1
+        agent=$(jq -r '.agentType // ""' "$meta") || exit 1
+        mdl=$(jq -r '.model // ""' "$meta") || exit 1
     fi
     row=$(jq -rs --arg d "$desc" --arg a "$agent" '
         def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
@@ -64,6 +64,6 @@ for f in "${files[@]}"; do
             ($m | length), $c5, $c1, $cr,
             ($g | max // 0), ($g | map(select(. > 300)) | length) ]
         | map(tostring) | @tsv
-    ' --arg m_name "$mdl" "$f")
+    ' --arg m_name "$mdl" "$f") || exit 1
     out "$row"
 done

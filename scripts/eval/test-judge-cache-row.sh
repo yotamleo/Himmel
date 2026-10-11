@@ -48,6 +48,16 @@ eq "tab in description keeps 11 columns" "$(printf '%s' "$row" | awk -F'\t' '{pr
 
 bash "$ROW" >/dev/null 2>&1; eq "no transcript is rc 2" "$?" "2"
 
+# A failing step must stop the script without printing a row (it runs under
+# set -uo pipefail, so -e is not doing this for it).
+bad="$T/agent-bad.jsonl"
+printf 'not json\n' > "$bad"
+badout=$(bash "$ROW" "$bad" 2>/dev/null); badrc=$?
+eq "unparseable transcript exits non-zero" "$([ "$badrc" -ne 0 ] && echo yes || echo no)" "yes"
+eq "unparseable transcript prints no row" "$badout" ""
+bash "$ROW" --ledger "$T/no-such-dir/l.tsv" "$a" >/dev/null 2>&1; lrc=$?
+eq "unwritable ledger exits non-zero" "$([ "$lrc" -ne 0 ] && echo yes || echo no)" "yes"
+
 # Frontmatter of the two judge agents: no cacheTtl (5m measured to win for
 # every judge pattern once judges stop waiting on CI/tests), ro tools pinned.
 for f in console-judge console-judge-ro; do
