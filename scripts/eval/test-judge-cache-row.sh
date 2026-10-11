@@ -35,6 +35,17 @@ bash "$ROW" --header --ledger "$T/ledger.tsv" "$b" > /dev/null
 eq "ledger has header + one row" "$(wc -l < "$T/ledger.tsv" | tr -d ' ')" "2"
 eq "1h write reported as ttl 1h" "$(sed -n 2p "$T/ledger.tsv" | cut -f2,4)" "$(printf 'console-judge-ro\t1h')"
 
+# No billed cache write -> ttl unknown, not a guessed 5m. A tab in the
+# description must not add a column (@tsv escapes it).
+c="$T/agent-c.jsonl"
+cat > "$c" <<'EOF'
+{"type":"assistant","timestamp":"2026-10-10T10:00:00.000Z","message":{"id":"y1","usage":{"cache_read_input_tokens":10,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}}}
+EOF
+printf '{"agentType":"Explore","description":"Judge\\tjc"}\n' > "$T/agent-c.meta.json"
+row=$(bash "$ROW" "$c")
+eq "no cache write reports ttl unknown" "$(printf '%s' "$row" | cut -f4)" "unknown"
+eq "tab in description keeps 11 columns" "$(printf '%s' "$row" | awk -F'\t' '{print NF}')" "11"
+
 bash "$ROW" >/dev/null 2>&1; eq "no transcript is rc 2" "$?" "2"
 
 # Frontmatter of the two judge agents: same TTL, ro tool list pinned.

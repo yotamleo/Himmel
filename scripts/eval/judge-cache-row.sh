@@ -10,7 +10,8 @@
 #          longest_gap_s  gaps_over_300s
 #   judge          the meta.json description (e.g. "Judge j2334b PR 2334")
 #   agent          agentType from meta.json (Explore | console-judge-ro | ...)
-#   ttl            "1h" if any 1h write was billed, else "5m" (what the run got)
+#   ttl            "1h" if any 1h write was billed, "5m" if only 5m writes,
+#                  "unknown" when the run billed no cache write at all
 #   turns          distinct API messages (usage rows are deduped by message id:
 #                  one message is written once per content block)
 #   longest_gap_s  largest gap between consecutive distinct messages; a gap
@@ -58,11 +59,11 @@ for f in "${files[@]}"; do
         | ($m | map(.u.cache_read_input_tokens // 0) | add // 0) as $cr
         | [ range(1; $m | length) | $m[.].t - $m[. - 1].t ] as $g
         | [ $d, $a, $m_name,
-            (if $c1 > 0 then "1h" else "5m" end),
+            (if $c1 > 0 then "1h" elif $c5 > 0 then "5m" else "unknown" end),
             (if ($m | length) > 1 then ($m[-1].t - $m[0].t) else 0 end),
             ($m | length), $c5, $c1, $cr,
             ($g | max // 0), ($g | map(select(. > 300)) | length) ]
-        | map(tostring) | join("\t")
+        | map(tostring) | @tsv
     ' --arg m_name "$mdl" "$f")
     out "$row"
 done
