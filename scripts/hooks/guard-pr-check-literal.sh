@@ -1149,6 +1149,27 @@ if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && { [ "$mentions" = 1 ]
     deny "git execution/config options or ambiguous option-value boundaries cannot be proven to be pathspec mentions (a guarded script is named, or the option runs a program whatever the pathspec); drop the option or run the script as its own literal command (HIMMEL-4916)."
 fi
 
+# HIMMEL-5170 (j2328a follow-up): git runs an editor or an alias program this
+# hook never reads - an env prefix (GIT_SEQUENCE_EDITOR=, GIT_EDITOR=, EDITOR=,
+# VISUAL=; the VAR= prefix only sets `wrapped` below) or a config write
+# (`git config sequence.editor|core.editor|alias.<x> <value>`, a later call).
+# Fail closed on the hook KEY, not on each spelling: a command that names a
+# guarded script AND carries an editor or alias key is denied. A command that
+# names no guarded script (GIT_EDITOR=vim git commit, git config user.name x)
+# is not caught here. Over-matching only denies more (the safe direction).
+if [ "$mentions" = 1 ]; then
+    # nocasematch: builtins only, so a missing tool cannot empty it into a no-op.
+    shopt -s nocasematch
+    edhook=0
+    case "$flat" in *editor* | *visual=* | *alias.*) edhook=1 ;; esac
+    shopt -u nocasematch
+    if [ "$edhook" = 1 ]; then
+        shown=${cmd//$'\n'/ }
+        shown=${shown:0:200}
+        deny "the command names a guarded script and sets a git editor or alias hook (GIT_SEQUENCE_EDITOR, GIT_EDITOR, EDITOR, VISUAL, sequence.editor, core.editor, alias.*): git would run the script unread; run the script as its own literal command (HIMMEL-5170)."
+    fi
+fi
+
 # norm <path> - drop empty and . segments. A .. is kept, so the path no longer
 # reads as scripts/cr/<script> and denies: the kernel resolves .. after
 # following symlinks, so scripts/x/../cr can land outside the root.
