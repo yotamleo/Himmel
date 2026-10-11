@@ -1892,6 +1892,14 @@ for v in \
     'git rb -x "npm test" main'; do
     run "HIMMEL-5102 round6 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
+# An alias behind an unknown global option stays armed too.
+for v in \
+    'git -P rb -x scripts/cr/pr-check-env.sh main' \
+    'git --bare rb -x scripts/cr/pr-check-env.sh main' \
+    'git -P bs run scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5102 round6 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+run "HIMMEL-5102 round6 control [git -P log --oneline] -> allow" 0 "$(payload 'git -P log --oneline' "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo

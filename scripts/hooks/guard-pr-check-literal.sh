@@ -993,7 +993,14 @@ git_mentions_only() { # git_mentions_only <command-word index>
         # after sub='*' (`-P --namespace bisect rebase -x`) is not skipped, so
         # its value can be mistaken for the subcommand; the real one re-arms.
         if [ "$sub" = '*' ]; then
-            case "$w" in bisect) bsub=bisect; bnext=1 ;; rebase) rsub=1 ;; esac
+            # HIMMEL-5102 (j2328d): any other non-option word may be an alias
+            # for rebase or bisect (`git -P rb -x CMD`): arm both, fail closed.
+            case "$w" in
+                bisect) bsub=bisect; bnext=1 ;;
+                rebase) rsub=1 ;;
+                -*) ;;
+                *) rsub=1; bsub=bisect; bnext=1 ;;
+            esac
         fi
         if [ "$dir" = 1 ]; then
             dir=0
