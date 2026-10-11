@@ -5,7 +5,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 ROW="$HERE/judge-cache-row.sh"
-T="$(mktemp -d)" || exit 1
+T="$(mktemp -d "${TMPDIR:-/tmp}/judge-cache-row.XXXXXX")" || exit 1
 trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 eq() { if [ "$2" = "$3" ]; then pass=$((pass+1)); else fail=$((fail+1)); printf 'FAIL %s\n  want: %s\n  got:  %s\n' "$1" "$3" "$2"; fi; }
@@ -52,6 +52,7 @@ bash "$ROW" >/dev/null 2>&1; eq "no transcript is rc 2" "$?" "2"
 # every judge pattern once judges stop waiting on CI/tests), ro tools pinned.
 for f in console-judge console-judge-ro; do
     p="$REPO/.claude/agents/$f.md"
+    eq "$f agent file is readable" "$([ -r "$p" ] && echo yes || echo no)" "yes"
     eq "$f carries no cacheTtl frontmatter" \
        "$(awk '/^---$/{n++} n==1' "$p" | tr -d '\r' | grep -c 'cacheTtl')" "0"
 done
