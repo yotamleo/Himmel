@@ -300,6 +300,9 @@ ERR1=$(cat "$TMP/err-impl-claudex")
 assert_contains "claudex refusal names dispatcher" "bun scripts/telegram/spawn-claudex.ts '<prompt>' --name <slug> --timeout-mins <n> --effort high" "$ERR1"
 assert_rc "claudex refusal is one line" 1 "$(wc -l < "$TMP/err-impl-claudex" | tr -d ' ')"
 
+RC1JR=$(run_hook impl-judge-ro "$REG_CLAUDEX" "$(payload console-judge-ro sonnet 'Judge PR 1513' 'Fix the failing test, commit the changes and write the verdict.')")
+assert_rc "HIMMEL-5180: console-judge-ro (tools Read/Grep/Glob/Bash only) is lane-exempt like Explore even on an implementation-shaped brief" 0 "$RC1JR"
+
 RC2=$(run_hook impl-glm "$REG_GLM" "$(payload claude sonnet 'Fix the failing shell test' 'Land the fix.')")
 assert_rc "implementation + glm available refuses" 2 "$RC2"
 assert_contains "glm refusal names dispatcher" "bun scripts/telegram/spawn-glm.ts '<prompt>' --name <slug> --timeout-mins <n>" "$(cat "$TMP/err-impl-glm")"

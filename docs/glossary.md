@@ -60,7 +60,7 @@ does not implement, push or merge.
 | Shape | What it is | Brief |
 |---|---|---|
 | judge **session** | a judge leg with its own worktree, queue lock and lifecycle; survives past one turn | [`handover/judge-brief-template.md`](handover/judge-brief-template.md), verdict per [`handover/verdict-template.md`](handover/verdict-template.md) |
-| judge **call** | an in-process child (`.claude/agents/console-judge.md`) for one question that fits in one dispatch | the dispatch prompt |
+| judge **call** | an in-process child (`.claude/agents/console-judge-ro.md`, or `console-judge.md`) for one question that fits in one dispatch | the dispatch prompt |
 
 The console template records which shape asked each question as
 `grade: call|session`.

@@ -45,7 +45,9 @@
 # patched a fourth time, removed. The two carve-outs below are the only
 # ones left, and both are load-bearing (structural / audited), never
 # spoofable by the dispatch's own prompt text:
-#   * subagent_type: Explore
+#   * subagent_type: Explore, or console-judge-ro (HIMMEL-5180: a repo agent
+#     whose frontmatter pins tools Read, Grep, Glob, Bash only — the same
+#     structural read-only lane)
 #   * CONSOLE_DISPATCH_OK=1 (see "Escape hatches" below)
 # A genuinely read-only dispatch uses one of those two; the deny message
 # names both.
@@ -143,7 +145,7 @@ fi
 
 subagent_type=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type | select(type == "string") // empty' 2>/dev/null || true)
 case "$subagent_type" in
-    Explore) exit 0 ;;
+    Explore|console-judge-ro) exit 0 ;;
 esac
 
 text=$(printf '%s' "$input" | jq -r '[.tool_input.description, .tool_input.prompt] | map(select(type == "string")) | join("\n")' 2>/dev/null || true)
@@ -269,7 +271,7 @@ Do this instead:
 
 Genuinely read-only work has two structural options, neither spoofable by prompt text (a
 prompt-text read-only claim is NOT a carve-out here — three CR rounds proved it leaks):
-  * dispatch with subagent_type: Explore, or
+  * dispatch with subagent_type: Explore (or console-judge-ro for a judge call), or
   * relaunch with CONSOLE_DISPATCH_OK=1 in the launching shell (audited; a per-call prefix
     does not reach this hook)."
 
