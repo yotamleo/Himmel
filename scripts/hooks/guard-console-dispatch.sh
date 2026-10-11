@@ -47,7 +47,7 @@
 # spoofable by the dispatch's own prompt text:
 #   * subagent_type: Explore, or console-judge-ro (HIMMEL-5180: a repo agent
 #     whose frontmatter pins tools Read, Grep, Glob, Bash only — the same
-#     structural read-only lane, plus the 1h cache TTL frontmatter)
+#     structural read-only lane)
 #   * CONSOLE_DISPATCH_OK=1 (see "Escape hatches" below)
 # A genuinely read-only dispatch uses one of those two; the deny message
 # names both.

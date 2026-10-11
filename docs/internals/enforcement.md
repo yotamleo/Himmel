@@ -3700,7 +3700,7 @@ marker families — `worktree` (`.claude/worktrees`, `clean-garden.sh`,
 conjunction is the false-positive budget keeping bounded read-only research
 frictionless. `subagent_type: Explore` and `console-judge-ro` (HIMMEL-5180:
 `.claude/agents/console-judge-ro.md` pins `tools: Read, Grep, Glob, Bash`, the
-same structural read-only lane, plus a 1-hour cache TTL) always allow — the
+same structural read-only lane) always allow — the
 ONLY carve-outs. `guard-implementor-dispatch.sh` exempts `console-judge-ro`
 the same way it exempts Explore.
 There is deliberately no prompt-text read-only declaration carve-out: three

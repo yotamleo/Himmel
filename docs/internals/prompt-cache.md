@@ -87,8 +87,10 @@ for the main conversation. A subagent file chooses its own with
 credits. Precedence, first match wins: `FORCE_PROMPT_CACHING_5M=1`, the
 bucket env var, the `subagentPromptCacheTtl` setting, the frontmatter
 `cacheTtl`, `ENABLE_PROMPT_CACHING_1H=1`, the default. `subagentPromptCacheTtl`
-stays unset so straight-through subagents keep 5 minutes.
-`.claude/agents/console-judge-ro.md` (and `console-judge.md`) carry the 1h.
+stays unset so straight-through subagents keep 5 minutes. **Neither judge
+agent sets `cacheTtl`: both ship on 5m** (see Scoring below). The frontmatter
+key is documented here so a future ledger result can turn it on for one agent
+in one line.
 Multipliers, as in "The model" above (API pricing page): 5-minute write 1.25×,
 1-hour write 2×, read 0.1× of base input.
 
@@ -110,8 +112,9 @@ the context size when an idle gap `g` lands:
 | Pattern | Gaps | Winner | Break-even / expected effect |
 |---|---|---|---|
 | short paper judge (under 5 min wall, reads files, no test run) | none over 300 s | **5m** | never breaks even; 1h costs +0.75 `W`, predicted +35 to 50 % of the judge's input-token-equivalent cost |
-| judge that idles on a test run or CI wait over 5 min (under 60 min) | one or more of 300 s to 3600 s | **1h** when the gap lands at ≥ 65 % of final context (single gap), else 5m | each such late gap saves 0.40 `P` net of the premium; a gap at 30 % of context loses |
-| long judge (over 30 min wall) | depends on gaps, not wall | **1h** if it has ≥ 1 late gap of 5 to 60 min; **5m** if it never pauses 5 min; **5m** if every pause exceeds 60 min | wall time alone predicts nothing; read the longest gap |
+| ~~judge that idles on a test run or CI wait over 5 min~~ | **retired 2026-10-11**: operator rule, judges never wait on CI or tests (the leg's scripts do) | 5m | pattern no longer exists; was predicted 1h at a single late gap ≥ 65 % of context |
+| long escape hunt (many files, long model turns) | gaps are model generation time, rarely over 300 s | **5m** unless a model turn plus its tool call exceeds 5 min | gap between message timestamps includes generation, so it is an upper bound on idle; unobserved over 300 s in the baseline (max 144 s) |
+| resumed judge (same agent messaged again after 5 to 60 min) | one gap of 300 s to 3600 s at full context | **1h** only if that gap lands at ≥ 65 % of final context | the one pattern that can still favour 1h; unobserved so far, so it stays a prediction |
 
 ### Baseline (2026-10-10 shift, 8 Explore judge calls, all on 5m)
 
@@ -133,17 +136,21 @@ passed 300 s (reads are identical on both tiers); actual 5m = 1.25 × `cc` +
 | j2320d | 252 | 14 | 65,063 | 0 | 450,995 | 76 | 0 | 126,428 | 175,226 | +39 % |
 | **total** | | | 408,446 | 0 | 2,238,557 | max 144 | 0 | 734,413 | 1,040,748 | **+42 %** |
 
-**Scoring.** Row 1 (short paper judge → 5m) is confirmed 8 of 8: no judge
-idled past 300 s, so the 1h tier would have added 306,334 input-token
-equivalents (+42 %) for nothing. Rows 2 and 3 are **not scored**: the longest
-wall in the sample is 353 s and the longest gap 144 s, so no baseline judge is
-the pattern the ticket targets (j2325a, about 70 minutes, is not in this
-sample). The consequence is a dispatch rule, not a global switch: forcing 1h
-on every judge would have raised this shift's judge input cost by 42 %. A
-console dispatches `console-judge-ro` (1h) only for a judge expected to wait
-on a test run or CI, and keeps the built-in Explore (5m) for a paper judge.
-The AFTER measurement therefore needs judges that did idle; until n ≥ 3 of
-those exist, rows 2 and 3 stay predictions.
+**Scoring (re-scored 2026-10-11 after the operator's rule that judges never
+wait on CI or tests).** Row 1 (short paper judge → 5m) is confirmed 8 of 8: no
+judge idled past 300 s, so the 1h tier would have added 306,334 input-token
+equivalents (+42 %) for nothing. The idle-on-CI row is retired, not scored: it
+was the only pattern the 1h TTL was written for, and judges no longer produce
+it. Of the patterns that remain, the long escape hunt is covered by the
+baseline (longest gap 144 s, longest wall 353 s, so 5m held every cache hit);
+the resumed judge is the one pattern that could still favour 1h and the
+baseline contains none (j2325a, about 70 minutes, is not in the sample), so it
+stays a prediction. **Decision: 5m matches every observed pattern, so
+`console-judge-ro` ships without `cacheTtl` and `console-judge` is reverted
+to match.** What ships is the read-only agent (the guard carve-out), the
+"judges never wait on CI or tests" rule and this ledger recipe. Turn 1h on for
+one agent only when the ledger holds n ≥ 3 resumed-judge rows that beat the
+break-even.
 
 ### The ledger recipe
 

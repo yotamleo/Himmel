@@ -48,11 +48,12 @@ eq "tab in description keeps 11 columns" "$(printf '%s' "$row" | awk -F'\t' '{pr
 
 bash "$ROW" >/dev/null 2>&1; eq "no transcript is rc 2" "$?" "2"
 
-# Frontmatter of the two judge agents: same TTL, ro tool list pinned.
+# Frontmatter of the two judge agents: no cacheTtl (5m measured to win for
+# every judge pattern once judges stop waiting on CI/tests), ro tools pinned.
 for f in console-judge console-judge-ro; do
     p="$REPO/.claude/agents/$f.md"
-    eq "$f cacheTtl nested under experimental" \
-       "$(awk '/^---$/{n++} n==1' "$p" | tr -d '\r' | grep -A1 '^experimental:' | tail -1)" "  cacheTtl: 1h"
+    eq "$f carries no cacheTtl frontmatter" \
+       "$(awk '/^---$/{n++} n==1' "$p" | tr -d '\r' | grep -c 'cacheTtl')" "0"
 done
 eq "console-judge-ro tools pinned read-only" \
    "$(grep -m1 '^tools:' "$REPO/.claude/agents/console-judge-ro.md")" "tools: Read, Grep, Glob, Bash"
