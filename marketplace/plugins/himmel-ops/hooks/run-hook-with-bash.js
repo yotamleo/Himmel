@@ -34,20 +34,28 @@ const {
 // because it did not recognise its caller. Gating, kept at exit 2 on purpose:
 // PreToolUse, PermissionRequest, UserPromptSubmit (a deny stops one action or
 // prompt, not the session), PostToolUse, PostToolUseFailure, SessionStart,
-// Notification, SessionEnd (stderr is shown, nothing loops).
+// Notification, SessionEnd (stderr is shown, nothing loops), PermissionDenied
+// (Claude Code ignores its exit code, so exit 2 changes nothing and loops
+// nothing; it stays unclassified rather than fail open).
 const NON_GATING_EVENTS = new Set(['Stop', 'SubagentStop', 'TeammateIdle', 'TaskCompleted', 'PreCompact']);
+
+// The skip notice for an integrity failure on a non-gating event, or null when
+// the failure must still deny (exit 2).
+function skipNotice(hookInput, member, integrity) {
+  const event = hookInput && typeof hookInput.hook_event_name === 'string' ? hookInput.hook_event_name : '';
+  if (!NON_GATING_EVENTS.has(event)) return null;
+  return `himmel hook-integrity: ${path.basename(member)} was NOT run on ${event} `
+    + `(${integrity.reason || 'its content differs from the session pin'}); the session is allowed to continue. Start a new session to restore the guard.`;
+}
 
 // Returns true when the integrity failure was reported as a skipped hook on a
 // non-gating event (caller exits 0), false when it must still deny (exit 2).
 // denyIntegrityMismatch writes the reason to stderr; the systemMessage on
 // stdout is the channel these events surface to the user.
 function skipOnNonGatingEvent(hookInput, member, integrity) {
-  const event = hookInput && typeof hookInput.hook_event_name === 'string' ? hookInput.hook_event_name : '';
-  if (!NON_GATING_EVENTS.has(event)) return false;
-  process.stdout.write(`${JSON.stringify({
-    systemMessage: `himmel hook-integrity: ${path.basename(member)} was NOT run on ${event} `
-      + `(${integrity.reason}); the session is allowed to continue. Start a new session to restore the guard.`,
-  })}\n`);
+  const notice = skipNotice(hookInput, member, integrity);
+  if (notice === null) return false;
+  process.stdout.write(`${JSON.stringify({ systemMessage: notice })}\n`);
   return true;
 }
 
@@ -701,7 +709,14 @@ function runChain(members, lifecycle = false) {
     const integrity = verifyProjectHookIntegrity(member, sessionId);
     if (!integrity.ok) {
       denyIntegrityMismatch(member, integrity.relPath, integrity.reason);
-      return skipOnNonGatingEvent(hookInput, member, integrity) ? 0 : 2;
+      // HIMMEL-5172: on a non-gating event the failing member is skipped ALONE.
+      // Returning here would silence the intact members after it and drop what
+      // earlier members already collected, a Stop decision block included.
+      const notice = skipNotice(hookInput, member, integrity);
+      if (notice === null) return 2;
+      const output = { systemMessage: notice };
+      emitters.push({ source: 'hook-integrity', output, raw: `${JSON.stringify(output)}\n` });
+      continue;
     }
     if (integrity.unvouched && unvouchedMember === null) unvouchedMember = member;
     const basename = path.basename(member);

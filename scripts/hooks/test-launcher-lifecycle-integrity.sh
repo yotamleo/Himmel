@@ -81,7 +81,7 @@ for event in Stop SubagentStop TeammateIdle TaskCompleted PreCompact; do
 done
 
 # Gating / unclassified: exit 2 and the hook never runs.
-for event in PreToolUse PermissionRequest UserPromptSubmit PostToolUse PostToolUseFailure SessionStart Notification SessionEnd SomeFutureEvent ""; do
+for event in PreToolUse PermissionRequest UserPromptSubmit PostToolUse PostToolUseFailure SessionStart Notification SessionEnd PermissionDenied SomeFutureEvent ""; do
   for mode in single chain; do
     run "$event" "$mode"
     if [ "$RC" -eq 2 ] && [ ! -e "$CANARY" ] && grep -q 'record is missing' <<<"$ERR"; then
@@ -100,6 +100,59 @@ if payload Stop | CLAUDE_PROJECT_DIR="$PROJECT" HIMMEL_HOOK_INTEGRITY_DIR="$T/ou
   ok "Stop with an intact record still runs the hook"
 else
   bad "Stop with an intact record did not run the hook"
+fi
+
+# HIMMEL-5172: one member that fails integrity is skipped ALONE. The intact
+# members around it still run and what they emitted is kept, a Stop block
+# included. A verifiable record exists here; member M1 is rewritten after it.
+P2="$T/project2"
+O2="$T/out3"
+mkdir -p "$P2/scripts/hooks"
+M0="$P2/scripts/hooks/m0.sh"
+M1="$P2/scripts/hooks/m1.sh"
+M2="$P2/scripts/hooks/m2.sh"
+BLK="$P2/scripts/hooks/blk.sh"
+printf '#!/usr/bin/env bash\necho m0 >> "%s"\nprintf %%s '"'"'{"systemMessage":"from-m0"}'"'"'\nexit 0\n' "$CANARY" > "$M0"
+printf '#!/usr/bin/env bash\necho m1 >> "%s"\nexit 0\n' "$CANARY" > "$M1"
+printf '#!/usr/bin/env bash\necho m2 >> "%s"\nexit 0\n' "$CANARY" > "$M2"
+printf '#!/usr/bin/env bash\necho blk >> "%s"\nprintf %%s '"'"'{"decision":"block","reason":"keep-going"}'"'"'\nexit 0\n' "$CANARY" > "$BLK"
+chmod +x "$M0" "$M1" "$M2" "$BLK"
+git -C "$P2" init -q
+git -C "$P2" -c user.email=t@t -c user.name=t add -A
+git -C "$P2" -c user.email=t@t -c user.name=t commit -q -m init
+payload SessionStart | CLAUDE_PROJECT_DIR="$P2" HIMMEL_HOOK_INTEGRITY_DIR="$O2" bash "$RECORDER" >/dev/null
+printf '# tampered\n' >> "$M1"
+
+run2() {   # <event> <member>...  -> sets RC, OUT, ERR
+  local event="$1"; shift
+  rm -f "$CANARY"
+  payload "$event" | CLAUDE_PROJECT_DIR="$P2" HIMMEL_HOOK_INTEGRITY_DIR="$O2" \
+    node "$LAUNCHER" --chain "$@" >"$T/out.txt" 2>"$T/err.txt"
+  RC=$?
+  OUT="$(cat "$T/out.txt")"
+  ERR="$(cat "$T/err.txt")"
+}
+
+run2 Stop "$M1" "$BLK"
+if grep -q '"decision":"block"' <<<"$OUT" && grep -q '^blk$' "$CANARY" 2>/dev/null && ! grep -q '^m1$' "$CANARY" 2>/dev/null; then
+  ok "Stop chain: tampered member skipped alone, the later member's block decision is kept"
+else
+  bad "Stop chain (tampered, block): rc=$RC canary=$(cat "$CANARY" 2>/dev/null | tr '\n' ,) out=$OUT"
+fi
+
+run2 Stop "$M0" "$M1" "$M2"
+if [ "$RC" -eq 0 ] && grep -q '^m0$' "$CANARY" && grep -q '^m2$' "$CANARY" && ! grep -q '^m1$' "$CANARY" \
+  && printf '%s' "$OUT" | jq -e '.systemMessage | test("from-m0") and test("m1.sh was NOT run")' >/dev/null 2>&1; then
+  ok "Stop chain: output from members before and after the tampered one is merged with the skip notice"
+else
+  bad "Stop chain (m0,m1,m2): rc=$RC canary=$(cat "$CANARY" 2>/dev/null | tr '\n' ,) out=$OUT"
+fi
+
+run2 PreToolUse "$M1" "$M2"
+if [ "$RC" -eq 2 ] && [ ! -e "$CANARY" ]; then
+  ok "PreToolUse chain: a tampered member still denies the whole chain, no member runs"
+else
+  bad "PreToolUse chain (tampered): expected rc=2 and no member run, got rc=$RC canary=$(cat "$CANARY" 2>/dev/null | tr '\n' ,)"
 fi
 
 # The plugin copy of the launcher is byte-identical, so it carries the fix.
