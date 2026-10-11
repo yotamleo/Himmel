@@ -2171,12 +2171,19 @@ for F in "git grep \"\$(printf needle)\" --open-files-in-pager='$OBF'" \
          "php -r 'proc_open(\"$OBF\", [], \$p);'" \
          "python3 -c 'import os; os.system(\"$OBF\")'" \
          "python3 -c 'import subprocess; subprocess.run([\"$OBF\"])'" \
-         "node -e 'require(\"child_process\").execSync(\"$OBF\")'"; do
+         "node -e 'require(\"child_process\").execSync(\"$OBF\")'" \
+         "git grep -\"O\"'$OBF' needle" \
+         "git grep --\"open-files-in-pager\"='$OBF' needle" \
+         "printf needle | git grep -\"O\"'$OBF' x" \
+         "rg --p\"r\"e='$OBF' needle" \
+         "ruby -e 'open(\"|$OBF\")'" \
+         "perl -e 'syscall(1, \"$OBF\")'" \
+         "perl -e 'fork && exec(\"$OBF\")'"; do
     assert_deny "4402 pobf relief voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
 done
 # Controls: a read-only git stage with listed options keeps relief.
 assert_allow "4402 control: git grep with listed options keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; git grep -n --count needle -- '$OBF'")"
-assert_allow "4402 control: continuation with no option keeps relief"  "$(j "unset HIMMEL_CONSOLE_LEG; git grep \"\$(printf needle)\" -- x")"
+assert_allow "4402 control: continuation with no option keeps relief"  "$(j "unset HIMMEL_CONSOLE_LEG; git grep \"\$(printf needle)\" -- '$OBF'")"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then

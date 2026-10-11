@@ -1241,7 +1241,7 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # shellcheck disable=SC2016,SC1003,SC2295
 pobf_relief() {
     local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' ap wr=0
-    local PX p tl rd=0 ea sa eo=${2-} z
+    local PX p tl rd=0 ea sa eo=${2-} z xr cx
     local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO XP ED
     local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' T3=$'\003' T5=$'\005' TAB=$'\t'
     # Each scan cuts at the first special char with a glob (the prefix up to
@@ -1512,8 +1512,15 @@ pobf_relief() {
         done
         case "$c" in /bin/*|/usr/bin/*) c=${c##*/} ;; esac
         pobf_exp "${ST[j]}" p; x=$PX; XP[j]=$x
-        cls=0
+        # HIMMEL-4402: mode p pads each quoted token with blanks, so a
+        # quote-split option (-"O", --"open-files-in-pager"=) reads as
+        # separate words; the shell joins it. Classify on BOTH readings
+        # and keep the lower class (void if either reading matches).
+        pobf_exp "${ST[j]}" r; xr=$PX
+        cx=9
         FL[j]=0
+        for x in "${XP[j]}" "$xr"; do
+        cls=0
         case "$c" in
             ls|cat|grep|egrep|fgrep|head|tail|wc|echo|diff|uniq|cut|stat|file|du|jq|basename|dirname|realpath|readlink|tr|column|nl|tac|rev|fold|fmt|paste|rm) cls=2 ;;
             # test -v 'a[$(cmd)]' expands the subscript.
@@ -1535,10 +1542,13 @@ pobf_relief() {
             printf) case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
             sort) case "$x" in *--compress*) ;; *) cls=2 ;; esac ;;
             rg) case "$x" in *--pre*) ;; *) cls=2 ;; esac ;;
-            python|python3|node|ruby) [[ $x =~ $re_ix ]] || cls=1 ;;
-            # perl's two-arg open runs a command when the name ends in |.
-            perl) [[ $x =~ $re_ix || $x =~ open ]] || cls=1 ;;
+            python|python3|node) [[ $x =~ $re_ix ]] || cls=1 ;;
+            # perl's and ruby's open run a command when the name starts/ends with |.
+            perl|ruby) [[ $x =~ $re_ix || $x =~ open ]] || cls=1 ;;
         esac
+        [ "$cls" -lt "$cx" ] && cx=$cls
+        done
+        cls=$cx; x=${XP[j]}
         # An assignment prefix (PAGER=, GIT_PAGER=, GH_BROWSER=, ...) can name a
         # program the command then runs; only a shell on a literal script keeps
         # its relief (BASH_ENV/ENV/PATH are refused above).
@@ -1550,7 +1560,7 @@ pobf_relief() {
         fi
         # HIMMEL-4402: any relieved stage, and a continuation (which inherits
         # its parent's class), voids on an option that takes an executable.
-        [ "$cls" != 0 ] && pobf_xopt "$c" "$x" && cls=0
+        [ "$cls" != 0 ] && { pobf_xopt "$c" "$x" || pobf_xopt "$c" "$xr"; } && cls=0
         CL[j]=$cls; CW[j]=$c; C2[j]=$c2
         [ "$cls" = 2 ] && FL[j]=1
         j=$((j + 1))
