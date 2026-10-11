@@ -5594,6 +5594,35 @@ pins `marketplace/plugins/himmel-bus/lib/*.mjs`, and `bus-deliver-run.js` stays
 silent (fails closed) if one differs from its pin. `server/index.mjs` and
 `scripts/telegram/bus.ts` sit outside the pinned dirs (residual).
 
+### himmel-bus store guard — a speed bump, not a fence (HIMMEL-4829)
+
+`guard-bus-store.sh` is a PreToolUse hook on the Bash chain and on the
+`Edit|Write|MultiEdit|NotebookEdit` chain (HIMMEL-4818 threat model T3, T5, T6).
+Phase 1 runs every session and the store as one uid, so the guard only makes the
+tool-driven routes to forged or leaked bus state cost a denial; direct writes are
+*detected* by the hash chain, and *prevention* needs the phase-2 second uid.
+
+| Denied | Matched as |
+|---|---|
+| any Bash command that names the bus root (read or write) | `himmel/bus` bounded by a non-`[A-Za-z0-9_-]` char on both sides, in any spelling of the state home |
+| `bus register`, `bus bind`, `bus rebind` | `bus` bounded the same way, so `bin/bus register` counts |
+| assigning `HIMMEL_BUS_*` (`X=1 cmd`, `export`, `env`) | `HIMMEL_BUS_<name>=`; reading one is not an assignment |
+| Write/Edit/MultiEdit/NotebookEdit on a path under the bus root | the path text, or its `readlink -m` resolution |
+
+`bus status|peers|wait|send|adopt` and everything else stay allowed, silently.
+**Fails closed only for its subject:** a payload it cannot parse (missing `jq`,
+bad JSON, a non-string command) is scanned as raw text and denied when it names
+the bus root; otherwise it is allowed, so a hook bug never locks a session out.
+Bypass: `BUS_STORE_GUARD_OK=1` in the launching shell (session-sticky) — needed
+to `bus register`/`bind` by hand; the launcher's own call runs inside a script
+and never appears in a tool call. Suite: `scripts/hooks/test-guard-bus-store.sh`.
+
+**Residual (text matching, not a shell parser):** an interpreter that assembles
+the path, a renamed copy of the CLI, `eval`, a script file that does the write, a
+`$(...)`-built path, a Bash command that goes through a symlink alias (only
+file-tool paths are resolved), and the Read/Grep tools (not wired to this hook)
+all get past it. A same-uid process that re-chains the log is undetected until phase 2.
+
 ### Hook-integrity pin: monotonic re-pin + anchor-tamper fence (HIMMEL-2528)
 
 **What changed.** HIMMEL-1666's `record-hook-integrity.sh` used to pin every

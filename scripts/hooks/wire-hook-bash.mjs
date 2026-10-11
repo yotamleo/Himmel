@@ -80,6 +80,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // console state via Bash — see the sibling entry on the
   // Edit|Write|MultiEdit|NotebookEdit chain below.
   'guard-relay-writes.sh',
+  // HIMMEL-4829 (himmel-bus T6): speed bump over the bus store — denies a Bash
+  // command that names the bus root, calls `bus register|bind|rebind`, or
+  // assigns HIMMEL_BUS_*. Sibling entry on the Edit|Write chain below.
+  'guard-bus-store.sh',
   // HIMMEL-3383: re-checks /pr-check step 0's three bare-literal conditions
   // (himmel lane, worktree root, no scripts/cr/ or lib.sh diff) when the
   // allow-listed `bash scripts/cr/pr-check-context.sh` is typed; no-op on any
@@ -114,6 +118,8 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // HIMMEL-2975 Guard D: denies a console relay direct writes to the inbox,
   // leg handover docs, and the console rundir (marker-gated no-op otherwise).
   'guard-relay-writes.sh',
+  // HIMMEL-4829: the file-tool twin of the Bash entry above (bus store guard).
+  'guard-bus-store.sh',
   // PreToolUse `Edit|Write|NotebookEdit` — its own entry, NOT folded into the
   // chain above: it does not guard MultiEdit, and widening a guard's matcher is
   // not something a launch-count refactor gets to do.

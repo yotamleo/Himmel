@@ -11,6 +11,14 @@
       "remedy": "AGENTS_MD_OK=1 claude   # set in the launching shell; a per-call prefix does not reach the hook"
     },
     {
+      "name": "BUS_STORE_GUARD_OK",
+      "hooks": [
+        "scripts/hooks/guard-bus-store.sh"
+      ],
+      "bypasses": "Lets a session's Bash/Write/Edit reach the himmel-bus store, call bus register|bind|rebind, or set HIMMEL_BUS_* (a speed bump, not a fence).",
+      "remedy": "BUS_STORE_GUARD_OK=1 claude   # set in the launching shell; a per-call prefix does not reach the hook"
+    },
+    {
       "name": "CADENCE_POWERSHELL_OK",
       "hooks": [
         "scripts/hooks/cadence-deny-powershell.sh"
