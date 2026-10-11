@@ -1163,7 +1163,9 @@ case "$item_rc" in
 esac'
 run "base pr-check.md 4.6/4.7 case-fence literal, clean tree -> still denied (HIMMEL-3707, guard unchanged)" 2 \
     "$(payload "$OLD_ITEM_FENCE" "$WT")" "$HR"
-need_in_err "deny names the unresolvable operand" "does not resolve to this root's"
+# HIMMEL-5102 (j2328c): a tokenizer failure is now unsafe on its own, so this
+# fence is refused by the generic git-option deny before the operand check.
+need_in_err "deny names the tokenizer failure as unsafe" "cannot be proven to be pathspec mentions"
 
 # The rewritten pr-check.md 4.6/4.7 literal (HIMMEL-3707 fix): one plain bash
 # call, no case statement left for the tokenizer to misread -> allow.
@@ -1863,6 +1865,24 @@ for v in \
     run "HIMMEL-5102 round4 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 run "HIMMEL-5102 round4 control [git -P rebase bisect main] -> allow" 0 "$(payload 'git -P rebase bisect main' "$WT")" "$HR"
+# Round 5 (judge j2328c): a glob/brace word in the subcommand slot, and a
+# tokenizer failure on an obfuscated git word, fail closed.
+for v in \
+    'git re[b]ase -x scripts/cr/pr-check-env.sh main' \
+    'git rebase{,} -x scripts/cr/pr-check-env.sh main' \
+    'git re?ase -x scripts/cr/pr-check-env.sh main' \
+    'git bi[s]ect run scripts/cr/pr-check-env.sh' \
+    'git re[b]ase -x "npm test" main' \
+    $'g\\\nit rebase -x scripts/cr/pr-check-env.sh main ; : ${x:-y}' \
+    $'$\'\\x67\'it rebase -x scripts/cr/pr-check-env.sh main' \
+    $'$(printf \'\\147it\') rebase -x scripts/cr/pr-check-env.sh main'; do
+    run "HIMMEL-5102 round5 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git log -- docs/*.md' \
+    'git -P grep foo -- scripts/*'; do
+    run "HIMMEL-5102 round5 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo

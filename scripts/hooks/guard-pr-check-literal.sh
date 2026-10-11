@@ -850,8 +850,6 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0 PR_TOKFAIL=0 PR_GIT_EXEC=0
-# A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
-PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 # HIMMEL-5095: true when short-option cluster <word> carries a capital O as a
 # FLAG letter, i.e. before any value-taking letter (git's parse-options: the
 # rest of the cluster after -e/-m/-b/... is that option's value, so the O in
@@ -894,6 +892,9 @@ git_mentions_only() { # git_mentions_only <command-word index>
             # the subcommand is unknowable, so only a positively identified
             # literal one may take the relaxed reading.
             if [ -z "$sub" ]; then sub='*'; dir=0; fi
+            # HIMMEL-5102 (j2328c): a glob/brace word in the subcommand slot
+            # (`re[b]ase`, `rebase{,}`) may BE rebase or bisect: fail closed.
+            if [ "$sub" = '*' ] && [ "$nsub" = 0 ] && [ "$paths" != 1 ]; then PR_GIT_UNSAFE=1; PR_GIT_EXEC=1; fi
             # HIMMEL-5102: a glob in the bisect verb slot (`r[u]n`) or an
             # expanded word after rebase may be the run verb or an exec flag.
             case "$bsub" in
@@ -1054,12 +1055,10 @@ readers_only() { # true when every command the command line runs is a reader
     # no word is known, so no option can be proven a pathspec mention.
     st_tokenize "$cmd" || {
         PR_TOKFAIL=1
-        # The command word itself may be unparseable (`g\it`, `g''it`): match
-        # the git word on the text with quotes and backslashes removed.
-        # HIMMEL-4729: _c_unquote strips under LC_ALL=C (linear on a big heredoc).
-        _c_unquote "$cmd"
-        pr_unq=$REPLY
-        [[ $cmd =~ $PR_GITWORD_RE || $pr_unq =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
+        # HIMMEL-5102 (j2328c): the command word itself may be unparseable
+        # (`g\it`, `g''it`, `g\<newline>it`), so no text match can prove there
+        # is no git word: a tokenizer failure is unsafe whatever it is.
+        PR_GIT_UNSAFE=1
         return 1
     }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
