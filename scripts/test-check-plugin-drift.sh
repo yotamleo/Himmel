@@ -406,16 +406,16 @@ if [ "$current_rc" -ne 0 ] && ! grepq "$current_out" 'every changed plugin bumpe
 # tip, so a PR that never touched the plugin read 0.4.61 -> 0.4.60 "not a
 # bump" (PR 2328 at 24e9cf97). Replay: branch off stored-base (0.4.60), change
 # only scripts/hooks, keep the pre-#2341 checker; current-base is at 0.4.61.
+# Chained with && because set -e is inert inside a `( ... ) || bad` list.
+# shellcheck disable=SC2016 # the sed pattern is the literal text ${base_ref}...HEAD
 (
-  set -e
-  cd "$W_CURRENT"
-  git checkout -q -b stale-pr stored-base
-  mkdir -p scripts/hooks
-  printf '# unrelated hook change\n' > scripts/hooks/guard-pr-check-literal.sh
-  # shellcheck disable=SC2016 # the sed pattern is the literal text ${base_ref}...HEAD
-  sed 's/\${base_ref}\.\.\.HEAD/${base_ref}..HEAD/' "$SCRIPT" > scripts/check-plugin-drift.sh
-  if cmp -s "$SCRIPT" scripts/check-plugin-drift.sh; then echo "stale-checker derivation changed nothing" >&2; exit 1; fi
-  git add -A
+  cd "$W_CURRENT" &&
+  git checkout -q -b stale-pr stored-base &&
+  mkdir -p scripts/hooks &&
+  printf '# unrelated hook change\n' > scripts/hooks/guard-pr-check-literal.sh &&
+  sed 's/\${base_ref}\.\.\.HEAD/${base_ref}..HEAD/' "$SCRIPT" > scripts/check-plugin-drift.sh &&
+  { ! cmp -s "$SCRIPT" scripts/check-plugin-drift.sh || { echo "stale-checker derivation changed nothing" >&2; false; }; } &&
+  git add -A &&
   git commit -q -m 'fix(hooks): replay PR 2328, stale checker, no plugin touch'
 ) || bad "stale-pr fixture setup failed"
 stale_out="$(run_current_job 2>&1)"; stale_rc=$?
