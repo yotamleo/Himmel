@@ -103,9 +103,13 @@ the context size when an idle gap `g` lands:
 - A gap `5 min < g < 60 min` on 5m re-writes `P` instead of reading it:
   1.25 `P` − 0.1 `P` = 1.15 `P` lost; on 1h it costs nothing.
 - A gap over 60 min expires both tiers: 1h only adds the premium.
-- Break-even: 1h wins once the 5m-expiring gaps sum to 1.15 Σ`P`ᵢ > 0.75 `W`;
-  one gap at ≥ 65 % of the run's final context pays for the whole premium, two
-  at ≥ 33 %, and a gap near the start of a run (small `P`) does not.
+- Break-even: 1h wins once the 5m-expiring gaps sum to 1.15 Σ`P`ᵢ > 0.75 `W`.
+  Keep the two apart: `W` counts only the writes the run makes anyway (the
+  1h premium applies to those); the expiry re-writes are the gap term on the
+  left, they exist only on 5m and are not part of `W`. On the 1h tier they
+  become plain reads. One gap at ≥ 65 % of the run's final context pays for
+  the whole premium, two at ≥ 33 %, and a gap near the start of a run (small
+  `P`) does not. This is a prediction; no resumed judge has been measured yet.
 
 ### Predictions (written before the AFTER measurement)
 
