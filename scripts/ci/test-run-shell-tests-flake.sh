@@ -563,6 +563,17 @@ if _isid "$br11" && [ "$br9" = "$br11" ] && [ "$br10" = "$br8" ] && [ "$br11" !=
 else
   fail "F16: unclosed @[: file:///x@[y/z [$br9] want /x@[y/z [$br11]; file://x@[y/z [$br10] want /z [$br8]"
 fi
+# once an @[ exists git never falls back to a leading [: file://[a/b]@[c/d is
+# host [a, path /b]@[c/d (never /d, the id of file:///d)
+mk_url_repo "$sb/br12" "file://[a/b]@[c/d"
+mk_url_repo "$sb/br13" "/b]@[c/d"
+mk_url_repo "$sb/br14" "file:///d"
+br12=$(_flake_repo_id "$sb/br12" 2>&1); br13=$(_flake_repo_id "$sb/br13" 2>&1); br14=$(_flake_repo_id "$sb/br14" 2>&1)
+if _isid "$br13" && [ "$br12" = "$br13" ] && [ "$br12" != "$br14" ]; then
+  pass "F16: an unclosed @[ blocks the leading-[ rule (file://[a/b]@[c/d is /b]@[c/d, not /d)"
+else
+  fail "F16: file://[a/b]@[c/d [$br12] want /b]@[c/d [$br13], never /d [$br14]"
+fi
 # HIMMEL-5169: the origin is read with a sentinel, so a literal trailing
 # newline in the config value (not a decoded one) stays part of the path
 mk_url_repo "$sb/ln1" "/srv/r"
