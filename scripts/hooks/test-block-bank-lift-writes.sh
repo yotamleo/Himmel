@@ -403,20 +403,20 @@ row "cd state; mv lift-named src ./"       deny  "cd ~/.himmel/state && mv $T/sr
 row "cd state; cp -t . lift-named src"     deny  "cd ~/.himmel/state; cp -t . /tmp/bank-lift.json"
 row "cd; cp other src . (cwd unproven)"            deny  "cd /tmp && cp $T/src/other.txt ."
 row "cd; cp lift-named src (over-deny r6)" deny  "cd /tmp && cp $T/src/bank-lift.json backup.txt"
-row "cd; cp other src to file (HIMMEL-4545 trim)"  allow "cd /tmp && cp $T/src/other.txt backup.txt"
+row "cd; cp other src to file (HIMMEL-4545 stays denied)"  deny  "cd /tmp && cp $T/src/other.txt backup.txt"
 
 echo "== HIMMEL-4545 over-deny trim: plain literal names under an unproven cwd =="
 # Measured over-deny (J1916, p22-hist 845 of 211,645): most rows were a copy to
-# a plain name after a $( ), backtick, ( ) or cd. A file-to-name copy reaches
-# the lift only through a lift-named word (the mention rule) or a directory's
-# contents landing on state / .himmel / HOME, so those shapes allow and every
-# shape that can spill a directory or name a computed word still denies.
-row "4545 cp name after \$( ) (trim)"        allow "n=\$(date +%H); cp $T/src/other.txt copy.txt"
+# a plain name after a $( ), backtick, ( ) or cd. The plain-name allowance was
+# withdrawn after four judge rounds (j2320e): a relative destination under an
+# unproven cwd denies as at base, so rows marked (still over-denied) are the
+# accepted remainder, kept as pins.
+row "4545 cp name after \$( ) (still over-denied)"        deny  "n=\$(date +%H); cp $T/src/other.txt copy.txt"
 row "4545 mv computed cd dir stays denied"  deny  "S=/tmp/s; cd \$S && mv \$S/legs.new \$S/legs.txt"
-row "4545 backtick then cp to name (trim)"  allow "echo \`date\` ; cp $T/src/other.txt backup.txt"
-row "4545 arithmetic then cp to name (trim)" allow "x=\$((1|2)); cp /etc/hosts f"
-row "4545 rsync file to name (trim)"        allow "n=\$(date +%H); rsync -a $T/src/other.txt out.txt"
-row "4545 cp two literal srcs to a name (trim)" allow "cd /tmp && cp $T/src/other.txt $T/src/sub dir2"
+row "4545 backtick then cp to name (still over-denied)"  deny  "echo \`date\` ; cp $T/src/other.txt backup.txt"
+row "4545 arithmetic then cp to name (still over-denied)" deny  "x=\$((1|2)); cp /etc/hosts f"
+row "4545 rsync file to name (still over-denied)"        deny  "n=\$(date +%H); rsync -a $T/src/other.txt out.txt"
+row "4545 cp two literal srcs to a name (still over-denied)" deny  "cd /tmp && cp $T/src/other.txt $T/src/sub dir2"
 row "4545 cp dest . still denies"           deny  "cd /tmp && cp $T/src/other.txt ."
 row "4545 cp dest .. still denies"          deny  "cd /tmp && cp $T/src/other.txt .."
 row "4545 cp dest ./ still denies"          deny  "cd /tmp && cp $T/src/other.txt ./"
@@ -475,7 +475,7 @@ row "4545 mv to plain symlink (unproven cwd)"       deny  "n=\$(date +%H); mv $T
 row "4545 ln -sf over plain symlink (unproven cwd)" deny  "n=\$(date +%H); ln -sf $T/src/other.txt plainlink" "$T/cwl"
 row "4545 cp to plain symlink chain (unproven cwd)" deny  "n=\$(date +%H); cp $T/src/other.txt plainlink2" "$T/cwl"
 row "4545 cp to state-dir symlink (unproven cwd)"   deny  "n=\$(date +%H); cp $T/src/other.txt statelink" "$T/cwl"
-row "4545 cp to plain name, no link (unproven ctrl)" allow "n=\$(date +%H); cp $T/src/other.txt nolink" "$T/cwl"
+row "4545 cp to plain name, no link (still over-denied)" deny  "n=\$(date +%H); cp $T/src/other.txt nolink" "$T/cwl"
 # A literal absolute cd moves the cwd to a directory the payload does not
 # name: the link there is resolved; any other directory change stays denied.
 row "4545 cd abs then cp to plain symlink"          deny  "cd $T/cwl && cp $T/src/other.txt plainlink" "$T"
@@ -484,14 +484,14 @@ row "4545 pushd abs then cp to state-dir symlink"   deny  "pushd $T/cwl && cp $T
 row "4545 cd abs then cd rel then cp to symlink"    deny  "cd $T && cd cwl && cp $T/src/other.txt plainlink" "$T"
 row "4545 cd rel then cp to plain symlink"          deny  "cd cwl && cp $T/src/other.txt plainlink" "$T"
 row "4545 cp to \$X/plainlink (unproven cwd)"        deny  "n=\$(date +%H); cp $T/src/other.txt \$X/plainlink" "$T"
-row "4545 cd abs then cp to plain name, no link"    allow "cd $T/cwl && cp $T/src/other.txt nolink" "$T"
+row "4545 cd abs then cp to plain name, no link"    deny  "cd $T/cwl && cp $T/src/other.txt nolink" "$T"
 # j2320b: a cd spelled so only the dequoted text reads it as cd.
 row "4545 c\\d abs then cp to plain symlink"         deny  "c\\d $T/cwl && cp $T/src/other.txt plainlink" "$T"
 row "4545 c''d abs then cp to plain symlink"         deny  "c''d $T/cwl && cp $T/src/other.txt plainlink" "$T"
 row "4545 \"c\"d abs then cp to plain symlink"       deny  "\"c\"d $T/cwl && cp $T/src/other.txt plainlink" "$T"
 row "4545 c\\d abs then mv to symlink chain"         deny  "c\\d $T/cwl; mv $T/src/other.txt plainlink2" "$T"
 row "4545 pu\\shd abs then cp to state-dir symlink"  deny  "pu\\shd $T/cwl && cp $T/src/other.txt statelink" "$T"
-row "4545 c\\d abs then cp to plain name, no link"   allow "c\\d $T/cwl && cp $T/src/other.txt nolink" "$T"
+row "4545 c\\d abs then cp to plain name, no link"   deny  "c\\d $T/cwl && cp $T/src/other.txt nolink" "$T"
 # j2320c: a cd word computed by a substitution is unreadable as text; the base
 # denied every ( or backtick, and the trim must not turn that into an allow.
 row "4545 \$(printf cd) abs then cp to symlink"      deny  "\$(printf c%s d) $T/cwl && cp $T/src/other.txt plainlink" "$T"
@@ -512,13 +512,24 @@ row "4545 c''d 'abs with space' then cp to link"     deny  "c''d '$T/c wl' && cp
 row "4545 c\\d abs\\ with\\ space then cp to link"    deny  "c\\d $T/c\\ wl; cp $T/src/other.txt plainlink" "$T"
 row "4545 pu\\shd 'abs with space' then cp statelink" deny  "pu\\shd '$T/c wl' && cp $T/src/other.txt statelink" "$T"
 row "4545 c''d 'abs with ;' then cp to link"         deny  "c''d '$T/c;wl' && cp $T/src/other.txt plainlink" "$T"
-row "4545 c''d 'abs with space' then cp, no link"    allow "c''d '$T/c wl' && cp $T/src/other.txt nolink" "$T"
+row "4545 c''d 'abs with space' then cp, no link"    deny  "c''d '$T/c wl' && cp $T/src/other.txt nolink" "$T"
 # codex-1 (round 3): a sourced file runs in this shell and may cd.
 row "4545 source file then cp to plain name"         deny  "n=\$(date +%H); source $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
 row "4545 dot file then cp to plain name"            deny  "n=\$(date +%H); . $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
 row "4545 quoted s''ource then cp to plain name"     deny  "n=\$(date +%H); s''ource $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
 row "4545 ANSI-C dot then cp to plain name"          deny  "n=\$(date +%H); \$'\\x2e' $T/src/other.txt; cp $T/src/other.txt plainlink" "$T"
-row "4545 \$( ) then cp to plain name, no link"      allow "echo \$(printf x); cp $T/src/other.txt nolink" "$T/cwl"
+row "4545 \$( ) then cp to plain name, no link"      deny  "echo \$(printf x); cp $T/src/other.txt nolink" "$T/cwl"
+# j2320e (A, B): a logical `..` through a symlinked directory and a command
+# word built by brace expansion move the cwd where no text model follows. The
+# plain-name allowance is withdrawn, so every relative write under an unproven
+# cwd denies as at base; nothing below may ever allow.
+mkdir -p "$T/cwl/updir"
+ln -s "$T/cwl/updir" "$T/cwl/up"
+row "4545 A cd link/.. then cp to plainlink"         deny  "cd $T/cwl/up/.. && cp $T/src/other.txt plainlink" "$T"
+row "4545 A c''d link/.. then cp to plainlink"       deny  "c''d '$T/cwl/up/..' && cp $T/src/other.txt plainlink" "$T"
+row "4545 A pushd link/.. then cp to statelink"      deny  "pushd $T/cwl/up/.. && cp $T/src/other.txt statelink" "$T"
+row "4545 B {source,} then cp to plainlink"          deny  "n=\$(date +%H); {source,} /tmp/x; cp $T/src/other.txt plainlink" "$T"
+row "4545 B {.,} then cp to plainlink"               deny  "n=\$(date +%H); {.,} /tmp/x; cp $T/src/other.txt plainlink" "$T"
 row "4545 rsync --log-file= link after \$( )"        deny  "n=\$(date +%H); rsync -a --log-file=plainlink $T/src/other.txt out.txt" "$T/cwl"
 # A source that is HOME or one of its ancestors, by any spelling, can alias or
 # relocate the lift's whole tree; a plain-name test alone would pass it.

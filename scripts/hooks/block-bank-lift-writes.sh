@@ -60,12 +60,12 @@
 # 211,645 rows (0.40 %): ~725 relative or computed copy destinations and
 # sources under an unproven cwd, 110 computed extraction destinations
 # (`tar -C "$B"` with B set in the command), ~14 glob / JSON-argument mention
-# over-matches, 16 harness artifacts, 1 tar --wildcards. HIMMEL-4545 trims the
-# copy class that is provably harmless (a plain literal name copied to a
-# plain literal name, `_plain_name_copy`, which still refuses a name that
-# exists under the payload's cwd as a symlink to the lift or its directory; a
-# proven cwd resolves such a link too, as does the target of a literal
-# absolute `cd`/`pushd`; a relative or computed `cd` keeps the copy denied).
+# over-matches, 16 harness artifacts, 1 tar --wildcards. HIMMEL-4545 tried to
+# trim the plain-name copy under an unproven cwd and withdrew it: four review
+# rounds each found a new way to move the cwd out of a text layer's sight
+# (a computed or ANSI-C cd, a spaced path, source, a logical `..` through a
+# symlink, brace-built command words), so every relative write under an
+# unproven cwd stays denied, as at base.
 # The remainder stays denied because
 # the member names or the resolved cwd are unknowable to a text layer: an
 # extraction under an unproven cwd, `ln` with a computed or relative source,
@@ -895,12 +895,6 @@ set_rule() {
 # find -execdir, a `(` or backtick (subshell, $( ), <( )), a { } brace group,
 # env/sudo with -C/-i, and a shell running a -c string.
 DIRWORD_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd|eval|su|runuser|chroot)([^A-Za-z0-9_.-]|$)|CDPATH|chdir|-execdir|[(`]|(^|[[:space:];&|])[{]([[:space:]]|$)|(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*[Ci]|(^|[^A-Za-z0-9_.-])(bash|sh|zsh|dash|ksh|mksh|ash|fish|busybox)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*c'
-# DIRWORD_RE without its `(`/backtick and `{ }` alternatives: the words that
-# can move the cwd themselves. A bare subshell, $( ) or brace group does not
-# (what it runs is read as text), so _plain_name_copy reads this one after it
-# has accounted for every literal absolute `cd`, then refuses a command word a
-# substitution or variable may compute (_peel_subst).
-DIRMOVE_RE=${DIRWORD_RE/'|[(`]|(^|[[:space:];&|])[{]([[:space:]]|$)'/}
 # tar/unzip read options from these variables. A variable can be set in many
 # forms (prefix, export, env, declare/typeset/local, readonly, printf -v, read,
 # a nameref, +=, a nested body), so the BARE name anywhere in the raw text or
@@ -922,149 +916,11 @@ _rel_unproven() {
     return 0
 }
 
-# _lit_name <word> -> 0 when the word's last component is a plain literal
-# name: not empty, `.` or `..`, no trailing slash, no expansion, glob, escape
-# or brace mark, no `~` lead or `..` component, and not a name the lift or its
-# ancestors answer to (bank-lift.json, state, .himmel, any component of HOME).
-_lit_name() {
-    local b p c
-    case "$1" in ''|*/|*/.|*/..|.|..|'~'*) return 1 ;; esac
-    case "/$1/" in */../*) return 1 ;; esac
-    b="${1##*/}"
-    # a name that is any component of HOME may be HOME or an ancestor of it
-    # when the cwd is unproven (`cd /home; ln -s overlord x`)
-    p="${HOME#/}"
-    while [ -n "$p" ]; do
-        c="${p%%/*}"
-        _name_matches "$b" "$c" && return 1
-        case "$p" in */*) p="${p#*/}" ;; *) p="" ;; esac
-    done
-    # the whole word, not just the name: `$X/plainlink` is computed whatever X
-    # holds (an inherited value is invisible here)
-    case "$1" in
-        *[\$\`\*\?\[\\]*|*$'\003'*|*$'\004'*|*$'\005'*) return 1 ;;
-    esac
-    _name_matches "$b" "$LIFT_NAME" && return 1
-    _name_matches "$b" state && return 1
-    _name_matches "$b" .himmel && return 1
-    return 0
-}
-
-# _plain_name_copy <dest> <T><parents> <srcs...> (HIMMEL-4545) -> 0 when a copy
-# to a relative destination under an unproven cwd cannot put anything at the
-# lift or inside its directory, whatever the cwd turns out to be. The lift is
-# written only as a file NAMED bank-lift.json (the mention rule denies that
-# spelling first), or as the contents of a directory landing on state, .himmel
-# or HOME. So every source and the destination must be a plain literal name that
-# is none of those; `-T` / `--parents` / `-R` and a trailing-slash or `.`
-# source (which spill a directory's contents) never qualify. A destination that
-# already exists, under the payload's cwd, as a symlink (chain) to the lift or
-# to its state / .himmel / HOME directory is refused: the name is plain but
-# the write is not. The same holds under each literal absolute `cd`/`pushd`
-# target; a relative or computed `cd`, `eval` and the like refuse the allow.
-_plain_name_copy() {
-    local dest="$1" flags="$2" s
-    shift 2
-    [ "$flags" = 000 ] || return 1
-    _lit_name "$dest" || return 1
-    for s in "$@"; do _lit_name "$s" || return 1; done
-    case "$CWD" in
-        /*)
-            case "$(lift_ref "${CWD%/}/$dest")" in
-                LIFT|STATE|HIMMEL|HOME) return 1 ;;
-            esac
-            ;;
-    esac
-    # The cwd is unproven because of a directory-changing word. A literal
-    # absolute `cd`/`pushd <dir>` names where the copy lands: the link is
-    # looked up there too. Any other directory-changing word (a relative or
-    # computed cd, eval, a subshell, ...) leaves the cwd unknown: refused.
-    local rest wrest dir re
-    rest=$CMD wrest=$WTOK_SP
-    re='(^|[^A-Za-z0-9_.-])(cd|pushd)[[:space:]]+(--[[:space:]]+)?(/[A-Za-z0-9_./+@%,:=-]*)([[:space:];&|]|$)'
-    while [[ "$rest" =~ $re ]]; do
-        dir=${BASH_REMATCH[4]}
-        case "$(lift_ref "${dir%/}/$dest")" in
-            LIFT|STATE|HIMMEL|HOME) return 1 ;;
-        esac
-        rest=${rest/"${BASH_REMATCH[0]}"/ }
-    done
-    # The dequoted text is walked token by token, not by regex: a quoted or
-    # escaped directory name may hold a space or `;&|` (`c''d '/a/b c'`), and a
-    # regex stops the path at the first one (j2320d). A literal absolute target
-    # token is looked up whole and dropped with its cd word; any other target
-    # stays in the text for DIRMOVE_RE to refuse.
-    local wline wtk wn wi wj wd wout wnew=""
-    while IFS= read -r wline; do
-        IFS=$'\037' read -r -a wtk <<<"$wline"
-        wn=${#wtk[@]} wi=0 wout=""
-        while [ "$wi" -lt "$wn" ]; do
-            # `source` / `.` run a file in THIS shell, so it may change the
-            # cwd out of sight (codex-1, round 3): never qualifies.
-            case "${wtk[$wi]}" in source|.) return 1 ;; esac
-            if [ "${wtk[$wi]}" = cd ] || [ "${wtk[$wi]}" = pushd ]; then
-                wj=$((wi + 1))
-                [ "${wtk[$wj]-}" = -- ] && wj=$((wj + 1))
-                wd=${wtk[$wj]-}
-                if [[ "$wd" =~ ^/[A-Za-z0-9_./+@%,:=[:space:]\;\&\|-]*$ ]]; then
-                    case "$(lift_ref "${wd%/}/$dest")" in
-                        LIFT|STATE|HIMMEL|HOME) return 1 ;;
-                    esac
-                    wi=$((wj + 1))
-                    continue
-                fi
-            fi
-            wout="$wout ${wtk[$wi]}"
-            wi=$((wi + 1))
-        done
-        wnew="$wnew$wout"$'\n'
-    done <<EOF_WTOK
-$WTOK
-EOF_WTOK
-    wrest=$wnew
-    [ "$(printf '%s\n%s' "$rest" "$wrest" | grep -Ec "$DIRMOVE_RE")" = 0 ] || return 1
-    # DIRMOVE_RE reads the text, so a command word computed by a substitution
-    # (`$(printf c%s d) /dir`, a backtick, `. <(...)`, `$x /dir`) is invisible
-    # to it, and the base denied every ( or backtick. Peel each substitution
-    # to `$SUB`; every segment that still carries an expansion must then be an
-    # echo/printf, an assignment-only word list, or a copy verb.
-    local t seg
-    for t in "$rest" "$wrest"; do
-        _peel_subst "$t" || return 1
-        while IFS= read -r seg; do
-            case "$seg" in *'$'*|*'`'*) ;; *) continue ;; esac
-            [[ "$seg" =~ ^[[:space:]]*(echo|printf|cp|mv|ln|rsync|install)([[:space:]]|$) ]] && continue
-            [[ "$seg" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]*)+$ ]] && continue
-            return 1
-        done <<EOF_SEG
-$(printf '%s' "$PEELED" | tr ';&|(){}' '\n')
-EOF_SEG
-    done
-    return 0
-}
-
-# _peel_subst <text> -> sets PEELED to the text with every innermost $( ),
-# $(( )), <( ), >( ) and backtick pair replaced by `$SUB`; returns 1 when a
-# substitution is left unpeeled (nested arithmetic parens, a lone backtick).
-# shellcheck disable=SC2016  # the patterns name literal substitution shapes
-_peel_subst() {
-    PEELED=$1
-    local i=0 prev
-    while :; do
-        case "$PEELED" in *'$('*|*'<('*|*'>('*|*'`'*) ;; *) return 0 ;; esac
-        [ "$i" -lt 20 ] || return 1
-        prev=$PEELED
-        PEELED=$(printf '%s' "$PEELED" | sed -E -e 's/\$\(\([^()]*\)\)/$SUB/g' -e 's/[$<>]\([^()]*\)/$SUB/g' -e 's/`[^`]*`/$SUB/g')
-        [ "$PEELED" != "$prev" ] || return 1
-        i=$((i + 1))
-    done
-}
-
 # check_copy <verb> <args...>: cp / mv / install / rsync / ln destination and
 # aliasing rules.
 check_copy() {
     local verb="$1"; shift
-    local tdir="" T=0 sym=0 a v kind src srcb need dest dk endopts=0 parents=0 rel optval=0
+    local tdir="" T=0 sym=0 a v kind src srcb need dest dk endopts=0 parents=0 rel
     local -a pos=()
     while [ $# -gt 0 ]; do
         a="$1"; shift
@@ -1079,10 +935,6 @@ check_copy() {
             --no-dereference) [ "$verb" = ln ] && T=1 ;;
             --symbolic*|--link) sym=1 ;;
             --suffix|--mode|--owner|--group|--backup-dir|--rsh|--filter|--exclude|--include|--temp-dir|--partial-dir|--compare-dest|--copy-dest|--link-dest|--chmod|--chown) shift ;;
-            # a long option that carries a value can name a file the copy
-            # writes (rsync --log-file=plainlink); the plain-name allow
-            # refuses it
-            --*=*|--log-file|--write-batch|--only-write-batch) optval=1 ;;
             --*) ;;
             -?*)
                 v="${a#-}"
@@ -1137,12 +989,13 @@ check_copy() {
     fi
     # With the cwd unproven a relative destination cannot be placed (the
     # --parents path and the ancestor check below build on it); an absolute
-    # one is judged as with a proven cwd. HIMMEL-4545: except a plain
-    # file-to-name copy, which cannot reach the lift through any cwd.
-    if _rel_unproven "$dest"; then
-        _plain_name_copy "$dest" "$T$parents$optval" ${pos[@]+"${pos[@]}"} \
-            || deny "$verb writes to a relative destination ($dest): $UNPROVEN_FIX"
-    fi
+    # one is judged as with a proven cwd.
+    # ponytail: an unproven-cwd relative write stays over-denied, even a plain
+    # name (HIMMEL-4545): four review rounds found escapes in every model of
+    # the cwd (computed cd, spaced path, source, logical `..` through a
+    # symlink, brace-built command words); upgrade path is a cd model with
+    # logical `..` and brace expansion, under its own ticket.
+    _rel_unproven "$dest" && deny "$verb writes to a relative destination ($dest): $UNPROVEN_FIX"
     # HIMMEL-4458: cp --parents / rsync -R (--relative) recreate the SOURCE's
     # path under the destination, so a glob-spelled source
     # (.himmel/state/bank-l?ft.json) lands as the lift. Judge the path the
