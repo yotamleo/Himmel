@@ -1179,7 +1179,7 @@ pobf_xopt() {
     local w
     for w in $2; do
         case "$w" in
-            --) break ;;
+            --) ;;  # not a stop: `-e --` makes it an option ARGUMENT, options still follow
             --open-files-in-pager*|--pager*|--paginate*|--exec*|--ext-diff*|--textconv*|--output*|--upload-pack*|--receive-pack*|--pre|--pre=*|--compress*|--editor*|--config-env*) return 0 ;;
             --*) [ "$1" = git ] || continue
                  case "$POBF_GIT_SAFE" in *" ${w%%=*} "*) ;; *) return 0 ;; esac ;;

@@ -2156,6 +2156,9 @@ for F in "git grep \"\$(printf needle)\" --open-files-in-pager='$OBF'" \
          "git grep \`printf needle\` --open-files-in-pager='$OBF'" \
          "printf needle | git grep --future-exec-opt='$OBF' x" \
          "printf needle | git grep -O '$OBF' x" \
+         "printf needle | git grep -e -- --open-files-in-pager='$OBF'" \
+         "git grep -e -- --open-files-in-pager='$OBF'" \
+         "git grep \"\$(printf needle)\" -e -- --open-files-in-pager='$OBF'" \
          "perl -e 'readpipe(\"$OBF\")'" \
          "perl -e 'open(F, \"$OBF|\")'" \
          "ruby -e 'IO.popen(\"$OBF\")'" \
