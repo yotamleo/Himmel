@@ -850,8 +850,6 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0 PR_TOKFAIL=0 PR_GIT_EXEC=0
-# A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
-PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 # HIMMEL-5095: true when short-option cluster <word> carries a capital O as a
 # FLAG letter, i.e. before any value-taking letter (git's parse-options: the
 # rest of the cluster after -e/-m/-b/... is that option's value, so the O in
@@ -875,6 +873,7 @@ short_cluster_has_O() { # short_cluster_has_O <word> <subcommand or ''>
 }
 git_mentions_only() { # git_mentions_only <command-word index>
     local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk nsub=0 es
+    local bsub='' bnext=0 rsub=0 xc xch
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -893,6 +892,19 @@ git_mentions_only() { # git_mentions_only <command-word index>
             # the subcommand is unknowable, so only a positively identified
             # literal one may take the relaxed reading.
             if [ -z "$sub" ]; then sub='*'; dir=0; fi
+            # HIMMEL-5102 (j2328c): a glob/brace word in the subcommand slot
+            # (`re[b]ase`, `rebase{,}`) may BE rebase or bisect: fail closed.
+            if [ "$sub" = '*' ] && [ "$nsub" = 0 ] && [ "$paths" != 1 ]; then PR_GIT_UNSAFE=1; PR_GIT_EXEC=1; fi
+            # HIMMEL-5102: a glob in the bisect verb slot (`r[u]n`) or an
+            # expanded word after rebase may be the run verb or an exec flag.
+            case "$bsub" in
+                bisect) [ "$bnext" = 0 ] || { bnext=0; PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; } ;;
+            esac
+            if [ "$rsub" = 1 ]; then
+                case "$w" in
+                    -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1 ;;
+                esac
+            fi
             xp=1; j=$((j + 1)); continue
         fi
         # After --, option-shaped words are literal pathspec operands.
@@ -905,7 +917,8 @@ git_mentions_only() { # git_mentions_only <command-word index>
         # runner: git aliases/config and helper options can execute operands.
         case "$w" in
             --oneline | --extended | --extended-regexp) ;;
-            -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
+            -c* | --config* | --exec* | --ex | --exe | --ex=* | --exe=* | \
+                --upload* | --receive* | ext::* | \
                 --o* | --ext*) PR_GIT_UNSAFE=1; bad=1 ;;
             *) if short_cluster_has_O "$w" "$es"; then PR_GIT_UNSAFE=1; bad=1; fi ;;
         esac
@@ -916,7 +929,8 @@ git_mentions_only() { # git_mentions_only <command-word index>
             --oneline | --on* | --output-indicator-* | --extended | --extended-regexp) ;;
             # Only the prefixes of --output and --open-files-in-pager (--ou* would
             # also hit --ours); a bare --o* also hit --others and --objects.
-            --exec* | --upload* | --receive* | ext::* | --ext* | --op* | \
+            --exec* | --ex | --exe | --ex=* | --exe=* | \
+                --upload* | --receive* | ext::* | --ext* | --op* | \
                 --ou | --out | --outp | --outpu | --output | \
                 --ou=* | --out=* | --outp=* | --outpu=* | --output=*) PR_GIT_EXEC=1 ;;
             -c* | --config*)
@@ -945,6 +959,49 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac
                 fi ;;
         esac
+        # HIMMEL-5102: `git bisect run <prog>` and `git rebase -x|--exec <cmd>`
+        # run an arbitrary program, so a guarded script they name is never a
+        # pathspec mention. bsub is set only for a positively identified builtin.
+        case "$bsub" in
+            # bnext: this is the first plain word after `bisect` (redirect
+            # targets are skipped at the loop top), i.e. the verb.
+            bisect) [ "$bnext" = 0 ] || {
+                    bnext=0
+                    [ "$w" != run ] || { PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; }
+                } ;;
+        esac
+        # rsub is independent of bsub: a later `bisect` operand word must not
+        # overwrite the armed rebase (`git -P rebase bisect -x CMD main`).
+        if [ "$rsub" = 1 ]; then
+            # -x takes the rest of the word as its command; -s/-X/-C/-S take
+            # theirs as a value, so a later x there is text.
+            case "$w" in
+                --*) ;;
+                -?*) xc=${w#-}
+                    while [ -n "$xc" ]; do
+                        xch=${xc:0:1}; xc=${xc:1}
+                        case "$xch" in
+                            x) PR_GIT_EXEC=1; PR_GIT_UNSAFE=1; break ;;
+                            s|X|C|S|r) break ;;
+                        esac
+                    done ;;
+            esac
+        fi
+        # An unknown global option (`-P`, `--bare`, ...) leaves sub='*', so the
+        # builtin arm below never sees the subcommand; arm it from the word.
+        # Re-armed on every later bisect/rebase word: a valued global option
+        # after sub='*' (`-P --namespace bisect rebase -x`) is not skipped, so
+        # its value can be mistaken for the subcommand; the real one re-arms.
+        if [ "$sub" = '*' ]; then
+            # HIMMEL-5102 (j2328d): any other non-option word may be an alias
+            # for rebase or bisect (`git -P rb -x CMD`): arm both, fail closed.
+            case "$w" in
+                bisect) bsub=bisect; bnext=1 ;;
+                rebase) rsub=1 ;;
+                -*) ;;
+                *) rsub=1; bsub=bisect; bnext=1 ;;
+            esac
+        fi
         if [ "$dir" = 1 ]; then
             dir=0
             [ "${ST_Q[j]}" = 0 ] || sub='*'
@@ -972,8 +1029,13 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     ls-files | ls-tree | merge | mv | notes | pull | push | rebase | \
                     reflog | remote | reset | rev-list | rev-parse | revert | \
                     shortlog | stash | status | tag | worktree)
-                    bad=1; nsub=1 ;;
-                *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
+                    bad=1; nsub=1
+                    case "$w" in bisect) bsub=bisect; bnext=1 ;; rebase) rsub=1 ;; esac ;;
+                # HIMMEL-5102 (j2328d): the unknown word may be an alias for
+                # rebase or bisect (`git rb -x CMD`): arm both, fail closed.
+                *) bad=1
+                    if [ "$nsub" = 0 ]; then rsub=1; bsub=bisect; bnext=1; fi
+                    [ "$nsub" = 1 ] || sub='*' ;;
             esac
             # A quoted word is not positively identified either.
             [ "${ST_Q[j]}" = 0 ] || sub='*'
@@ -1004,7 +1066,10 @@ readers_only() { # true when every command the command line runs is a reader
     # no word is known, so no option can be proven a pathspec mention.
     st_tokenize "$cmd" || {
         PR_TOKFAIL=1
-        [[ $cmd =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
+        # HIMMEL-5102 (j2328c): the command word itself may be unparseable
+        # (`g\it`, `g''it`, `g\<newline>it`), so no text match can prove there
+        # is no git word: a tokenizer failure is unsafe whatever it is.
+        PR_GIT_UNSAFE=1
         return 1
     }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1

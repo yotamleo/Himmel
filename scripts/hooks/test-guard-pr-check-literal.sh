@@ -1163,7 +1163,9 @@ case "$item_rc" in
 esac'
 run "base pr-check.md 4.6/4.7 case-fence literal, clean tree -> still denied (HIMMEL-3707, guard unchanged)" 2 \
     "$(payload "$OLD_ITEM_FENCE" "$WT")" "$HR"
-need_in_err "deny names the unresolvable operand" "does not resolve to this root's"
+# HIMMEL-5102 (j2328c): a tokenizer failure is now unsafe on its own, so this
+# fence is refused by the generic git-option deny before the operand check.
+need_in_err "deny names the tokenizer failure as unsafe" "cannot be proven to be pathspec mentions"
 
 # The rewritten pr-check.md 4.6/4.7 literal (HIMMEL-3707 fix): one plain bash
 # call, no case statement left for the tokenizer to misread -> allow.
@@ -1755,6 +1757,149 @@ done
 # shellcheck disable=SC2016 # the $( is literal hook input
 run "HIMMEL-4953 accepted over-deny [wc + unrelated substitution] -> deny" 2 \
     "$(payload 'wc -l scripts/cr/pr-check-env.sh; echo $(date)' "$WT")" "$HR"
+# HIMMEL-5102: `git bisect run <prog>` and `git rebase -x|--exec <cmd>` run an
+# arbitrary program, so a guarded script named beside them is never a pathspec
+# mention. Every spelling (separate, joined, = form, bundled) is denied.
+for v in \
+    'git bisect run bash scripts/cr/pr-check-env.sh' \
+    'git bisect run scripts/cr/pr-check-env.sh' \
+    'git bisect run -- bash scripts/cr/pr-check-env.sh' \
+    'git bisect run bash -c x scripts/cr/' \
+    'git --no-pager bisect run bash -c x scripts/cr/' \
+    'git -C . bisect run bash scripts/cr/pr-check-env.sh' \
+    'git rebase -x bash scripts/cr/pr-check-env.sh' \
+    'git rebase -xbash scripts/cr/pr-check-env.sh' \
+    'git rebase -x "bash scripts/cr/pr-check-env.sh" main' \
+    'git rebase -i -x bash scripts/cr/pr-check-env.sh' \
+    'git rebase -ix bash scripts/cr/pr-check-env.sh' \
+    'git rebase --exec bash scripts/cr/pr-check-env.sh' \
+    'git rebase --exec=bash scripts/cr/pr-check-env.sh' \
+    'git rebase --exec "bash scripts/cr/pr-check-env.sh" main' \
+    'git rebase -x bash main -- scripts/cr/' \
+    'git rebase -x bash -- scripts/handover/' \
+    'git rebase --exec bash main scripts/cr/' \
+    'git rebase -i main -x bash scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5102 bisect run / rebase exec [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# Controls: the non-running bisect verbs and a plain or interactive rebase.
+for v in \
+    'git bisect start' \
+    'git bisect good' \
+    'git bisect bad' \
+    'git bisect reset' \
+    'git bisect log' \
+    'git rebase -i main' \
+    'git rebase main' \
+    'git rebase --continue' \
+    'git rebase --abort' \
+    'git log --oneline -3 -- scripts/cr/pr-check-env.sh' \
+    'git grep -e run -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5102 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# Round 2 (judge j2328a): an unknown global option before the subcommand, an
+# abbreviated --exec, a redirect before the run verb, a glob in the verb slot,
+# and the policy rows (fail closed whenever a program is run, no writer named).
+for v in \
+    'git -P rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -p rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --paginate rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --bare rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --literal-pathspecs rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --no-replace-objects rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --no-optional-locks rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P bisect run scripts/cr/pr-check-env.sh' \
+    'git -p bisect run scripts/cr/pr-check-env.sh' \
+    'git --paginate bisect run scripts/cr/pr-check-env.sh' \
+    'git --bare bisect run scripts/cr/pr-check-env.sh' \
+    'git rebase --ex scripts/cr/pr-check-env.sh' \
+    'git rebase --exe scripts/cr/pr-check-env.sh' \
+    'git rebase --ex=scripts/cr/pr-check-env.sh' \
+    'git rebase --exe=scripts/cr/pr-check-env.sh' \
+    'git bisect 2>&1 run scripts/cr/pr-check-env.sh' \
+    'git bisect >/dev/null run scripts/cr/pr-check-env.sh' \
+    'git bisect </dev/null run scripts/cr/pr-check-env.sh' \
+    'git bisect r[u]n scripts/cr/pr-check-env.sh' \
+    'git bisect "run" scripts/cr/pr-check-env.sh' \
+    'git rebase -kx scripts/cr/pr-check-env.sh' \
+    'git -c k=v rebase -x scripts/cr/pr-check-env.sh main' \
+    'git bisect start; git bisect run scripts/cr/pr-check-env.sh' \
+    'git bisect run make' \
+    'git rebase -x "npm test" main'; do
+    run "HIMMEL-5102 round2 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git rebase -s ort main' \
+    'git rebase -X theirs main' \
+    'git rebase -Xsubtree=x main' \
+    'git rebase -Sx main' \
+    'git rebase -C1 main' \
+    'git rebase -rx main'; do
+    run "HIMMEL-5102 round2 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# Round 3 (judge j2328b): a valued global option after an unknown one takes its
+# value as the subcommand, and a command word the tokenizer cannot parse.
+# shellcheck disable=SC2016 # a literal ${x:-y} is the tokenizer-failure payload
+for v in \
+    'git -P --namespace bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P --namespace rebase bisect run scripts/cr/pr-check-env.sh' \
+    'git "--namespace" bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git --bare --namespace bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P -C bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P --git-dir bisect bisect run scripts/cr/pr-check-env.sh' \
+    'git -P --work-tree bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'g\it rebase -x scripts/cr/pr-check-env.sh main; : ${x:-y}' \
+    "g''it bisect run scripts/cr/pr-check-env.sh; : \${x:-y}"; do
+    run "HIMMEL-5102 round3 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git -P --namespace bisect log -- scripts/cr/pr-check-env.sh' \
+    'git -P --namespace rebase main'; do
+    run "HIMMEL-5102 round3 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# Round 4 (codex-1): a later bisect/rebase operand word must not overwrite the
+# other builtin's armed state.
+for v in \
+    'git -P rebase bisect -x scripts/cr/pr-check-env.sh main' \
+    'git -P bisect rebase -x scripts/cr/pr-check-env.sh main' \
+    'git -P rebase bisect --exec scripts/cr/pr-check-env.sh main'; do
+    run "HIMMEL-5102 round4 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+run "HIMMEL-5102 round4 control [git -P rebase bisect main] -> allow" 0 "$(payload 'git -P rebase bisect main' "$WT")" "$HR"
+# Round 5 (judge j2328c): a glob/brace word in the subcommand slot, and a
+# tokenizer failure on an obfuscated git word, fail closed.
+for v in \
+    'git re[b]ase -x scripts/cr/pr-check-env.sh main' \
+    'git rebase{,} -x scripts/cr/pr-check-env.sh main' \
+    'git re?ase -x scripts/cr/pr-check-env.sh main' \
+    'git bi[s]ect run scripts/cr/pr-check-env.sh' \
+    'git re[b]ase -x "npm test" main' \
+    $'g\\\nit rebase -x scripts/cr/pr-check-env.sh main ; : ${x:-y}' \
+    $'$\'\\x67\'it rebase -x scripts/cr/pr-check-env.sh main' \
+    $'$(printf \'\\147it\') rebase -x scripts/cr/pr-check-env.sh main'; do
+    run "HIMMEL-5102 round5 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    'git log -- docs/*.md' \
+    'git -P grep foo -- scripts/*'; do
+    run "HIMMEL-5102 round5 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# Round 6 (judge j2328d): an unknown first word may be an alias for rebase or
+# bisect (`git rb -x CMD`); arm both, fail closed.
+for v in \
+    'git rb -x scripts/cr/pr-check-env.sh main' \
+    'git config alias.rb rebase; git rb -x scripts/cr/pr-check-env.sh main' \
+    'git bs run scripts/cr/pr-check-env.sh' \
+    'git rb -x "npm test" main'; do
+    run "HIMMEL-5102 round6 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# An alias behind an unknown global option stays armed too.
+for v in \
+    'git -P rb -x scripts/cr/pr-check-env.sh main' \
+    'git --bare rb -x scripts/cr/pr-check-env.sh main' \
+    'git -P bs run scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-5102 round6 [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+run "HIMMEL-5102 round6 control [git -P log --oneline] -> allow" 0 "$(payload 'git -P log --oneline' "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo
