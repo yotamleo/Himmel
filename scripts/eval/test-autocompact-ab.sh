@@ -13,7 +13,7 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected 
 ctl="$FX/docs/HIMMEL-9001-N901-ctl-2026-10-11.md"
 trt="$FX/docs/HIMMEL-9002-N902-trt-2026-10-11.md"
 opn="$FX/docs/HIMMEL-9003-N903-open-2026-10-11.md"
-printf '{"schema":1,"legs":[{"doc":"%s","label":"N901","arm":"200k"},{"doc":"%s","label":"N902"},{"doc":"%s","label":"N903","arm":"400k"}]}\n' "$ctl" "$trt" "$opn" > "$tmp/m.json"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N901","arm":"200k"},{"doc":"%s","label":"N902","arm":"400k"},{"doc":"%s","label":"N903","arm":"400k"}]}\n' "$ctl" "$trt" "$opn" > "$tmp/m.json"
 
 out="$tmp/out.json"
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" --json > "$out" 2>"$tmp/err"; rc=$?
@@ -34,7 +34,13 @@ check "ctl mean output per turn" 100.0 "$(jq "$c | .mean_out_per_turn" "$out")"
 check "ctl CI first try" yes "$(jq -r "$c | .ci_first_try" "$out")"
 check "ctl pr" 101 "$(jq -r "$c | .pr" "$out")"
 check "ctl handoffs" 0 "$(jq "$c | .handoffs" "$out")"
-check "trt arm from the brief ruling line" 400k "$(jq -r "$t | .arm" "$out")"
+check "trt arm from the manifest" 400k "$(jq -r "$t | .arm" "$out")"
+python3 -I "$SUT" --doc "$trt" --projects "$FX/projects" --json > "$tmp/b.json" 2>/dev/null
+check "brief ruling line alone is not evidence of the arm" unlabelled "$(jq -r '.legs[0].arm' "$tmp/b.json")"
+cp "$FX/docs/HIMMEL-9002-N902b-trt-RESUME.md" "$tmp/HIMMEL-9002-N9020-other-RESUME.md"
+cp "$trt" "$tmp/HIMMEL-9002-N902-trt-2026-10-11.md"; cp "$FX/docs/HIMMEL-9002-N902b-trt-RESUME.md" "$tmp/"
+python3 -I "$SUT" --doc "$tmp/HIMMEL-9002-N902-trt-2026-10-11.md" --projects "$FX/projects" --all --json > "$tmp/r.json" 2>/dev/null
+check "N902 RESUME glob does not collect N9020 docs" 1 "$(jq '.legs[0].handoffs' "$tmp/r.json")"
 check "trt compactions" 0 "$(jq "$t | .compactions | length" "$out")"
 check "trt handoffs (RESUME doc)" 1 "$(jq "$t | .handoffs" "$out")"
 check "trt calls include the RESUME session" 3 "$(jq "$t | .calls" "$out")"

@@ -93,6 +93,9 @@ is opt-in and audited:
   prints, per wrapped leg, compactions with the token level at each, handoffs,
   the cache_read / cache_create / uncached split, price-weighted cost,
   wall-clock, PR outcome and mean output tokens per turn, then a per-arm table.
+  The arm is the manifest record only (the brief line alone is not evidence);
+  RESUME sessions are included in a leg's totals, and a leg with no matching
+  transcript is counted as `unmeasured` and left out of the arm means.
 
 ## Past the threshold
 

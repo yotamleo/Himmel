@@ -8,9 +8,10 @@
 #
 # Legs come from fleet manifests (legs[].doc, optional legs[].arm) and/or --doc.
 # Only WRAPPED legs (the doc's last `- ` bullet starts with WRAPPED) are
-# reported unless --all. The arm is the manifest `arm`, else the brief's
-# `> **Context:** ab-<200k|400k> ...` line; a leg with neither is `unlabelled`
-# and is left out of the arm summary.
+# reported unless --all. The arm is the manifest `arm` (the launcher's record);
+# a leg without one is `unlabelled` and is left out of the arm summary. The
+# brief's `ab-400k` line is not evidence: a 200000 launch can carry it.
+# Legs with no matching transcript are `unmeasured` and left out of the means.
 #
 # Per leg: arm, compactions (count + the token level at each, `preTokens` of the
 # compact_boundary row), handoffs (RESUME docs beside the leg doc), input tokens
@@ -142,11 +143,16 @@ def leg_row(doc, manifest_arm, projects):
     handoffs, names = 0, [stem]
     if m:
         pat = os.path.join(os.path.dirname(doc), "%s-%s*RESUME*.md" % (m.group(1), m.group(2)))
-        resumes = glob.glob(pat)
+        # the glob has no boundary after the label (N902 also matches N9020)
+        lead = "%s-%s" % (m.group(1), m.group(2))
+        resumes = [r for r in glob.glob(pat)
+                   if not os.path.basename(r)[len(lead):len(lead) + 1].isdigit()]
         handoffs = len(resumes)
         # a resumed session is titled by its RESUME doc stem
         names += [os.path.basename(r)[:-3] for r in resumes if r.endswith(".md")]
-    arm = manifest_arm or d["arm"] or "unlabelled"
+    # the manifest arm is the launcher's record; the brief line alone is not
+    # evidence (a 200000 launch can carry it), so it is never a fallback
+    arm = manifest_arm or "unlabelled"
     row = {"leg": stem, "arm": arm,
            "wrapped": bool(d["markers"]) and d["markers"][-1][0] == "WRAPPED",
            "handoffs": handoffs}
