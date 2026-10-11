@@ -6,7 +6,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUT="$HERE/autocompact-ab.py"
 FX="$HERE/fixtures/autocompact-ab"
-tmp="$(mktemp -d)" || exit 1; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/autocompact-ab.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 fails=0
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected [$2] got [$3]"; fails=$((fails + 1)); fi; }
 
