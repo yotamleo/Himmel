@@ -887,97 +887,150 @@ is_redirect_word() {
 # whole disk just like `find /`. Verdict: PASS (never ALLOW), not DENY -- a
 # bounded walk (`tree -L 1 /`) and an attended prompt are legitimate, and only
 # find carries the unattended-orphan history behind HIMMEL-2121's deny.
-# Tokenized with CR as a word byte (bash's view). Only a real root counts, not
-# ~ / $HOME (`du -sh ~` stays ALLOW).
+#
+# Default is "walks" (PASS). A segment is "not a walk" only when EVERY option
+# is an exact, modelled spelling for that binary (value-taking ones included),
+# nothing is CR-glued, and, when the binary recurses, no operand is a root, a
+# glob, a `..` path or an unresolved $/%/~user word. An unknown long option
+# (any abbreviation), an unknown short letter in a cluster or a glued CR all
+# fall to PASS: an over-PASS costs one prompt, an ALLOW of a walk is the defect.
+# Tokenized with CR as a word byte (bash's view); `~` and `~/x` stay allowed.
+# ponytail: the shared tokenizer splits on CR where bash does not, so a reader
+# that gates ALLOW on a CR-glued operand sees it as an option; only the
+# root-walk checks read CR as a word byte, upgrade: make CR a word byte in
+# every ALLOW-gating reader once test-crlf-boundary.sh tolerates it (HIMMEL-3886).
+SW_REC=0 SW_UNK=0
+sw_apply_val() {  # $1 value kind (d|D|n|x), $2 the option's value
+    case "$1" in
+        d) case "$2" in recurse) SW_REC=1 ;; read|skip) ;; *) SW_UNK=1 ;; esac ;;
+        D) case "$2" in read|skip) ;; *) SW_UNK=1 ;; esac ;;
+        n) case "$2" in ''|*[!0-9]*) SW_UNK=1 ;; esac ;;
+    esac
+}
+
 segment_walks_root() {
-    local base j total tok raw opt k prev='' have_e=0 rec=0 level=0 root=0 dd=0 vskip=0
-    local -a a ops
+    local base j total tok raw opt k c rest kind vkind=x nov val rl have_e=0 level=0 dd=0 vskip=0
+    local -a a ops opr
     TOK_CR_WORD=1; resolve_seg_binary "$1"; TOK_CR_WORD=0
     [ "$RB_STATUS" = bin ] || return 1
     base="${RB_BIN##*/}"
+    SW_REC=0; SW_UNK=0
     case "$base" in
-        du|rg|ripgrep|ag|tree) rec=1 ;;
-        ls|grep|egrep|fgrep) ;;
+        du)               SW_REC=1; nov='shckmbxaSlHLPAz0'; val='dBtX'; rl='' ;;
+        rg|ripgrep)       SW_REC=1; nov='iSsnNuvwxcHIlLFpaoqzP0b'; val='efgtTmABCjdEMr'; rl='' ;;
+        ag)               SW_REC=1; nov='iSsnNuvwxcHlLFQaozfr'; val='gGpABCmDW'; rl='' ;;
+        tree)             SW_REC=1; nov='adlfiqNQpugshDFvrtcnCxA'; val='LIPoHT'; rl='' ;;
+        ls)               nov='aAcCdFfgGhHiklLmnoprsStuUvxX1'; val=''; rl='R' ;;
+        grep|egrep|fgrep) nov='iInvwxcLlqsHhoaEFGPzZbTUV0123456789'; val='efmABCdD'; rl='rR' ;;
         *) return 1 ;;
     esac
-    a=("${RB_TOKENS[@]}"); total=${#a[@]}; ops=()
+    a=("${RB_TOKENS[@]}"); total=${#a[@]}; ops=(); opr=()
     for ((j = RB_IDX + 1; j < total; j++)); do
         raw="${a[$j]}"
         shell_word_value "$raw" || continue
         tok="$SW_VALUE"
-        if [ "$vskip" -eq 1 ]; then       # the value of -e/-f/-I/-P/-o: neither option nor path
-            vskip=0; prev="$tok"
+        tok="${tok%$'\r'}"                    # a CRLF line ending is not a glued CR
+        [ -n "$tok" ] || continue
+        case "$tok" in *$'\r'*) SW_UNK=1 ;; esac
+        if [ "$vskip" -eq 1 ]; then           # the value of a value-taking option
+            vskip=0; sw_apply_val "$vkind" "$tok"
             continue
         fi
-        if [ "$dd" -eq 1 ]; then          # after `--` every word is an operand
-            is_redirect_word "$raw" "$tok" || ops+=("$tok")
+        if [ "$dd" -eq 1 ]; then              # after `--` every word is an operand
+            is_redirect_word "$raw" "$tok" || { ops+=("$tok"); opr+=("$raw"); }
             continue
         fi
         case "$tok" in
             --) dd=1 ;;
-            --recursive|--dereference-recursive|--directories=recurse)
-                case "$base" in ls|grep|egrep|fgrep) rec=1 ;; esac ;;
-            recurse)   # only the argument of -d / --directories enables recursion
-                case "$prev" in -d|--directories) rec=1 ;; esac
-                is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
-            --level|--level=*) level=1 ;;
-            --regexp|--file) have_e=1; vskip=1 ;;
-            --regexp=*|--file=*|--files|--type-list) have_e=1 ;;
-            --charset|--filelimit|--timefmt|--sort) [ "$base" = tree ] && vskip=1 ;;
-            --*) ;;
-            -*)
+            --*)
                 case "$base" in
-                    ls)               case "$tok" in *R*) rec=1 ;; esac ;;
-                    grep|egrep|fgrep|tree)
-                        # the first value-taking letter ends the cluster; what
-                        # follows it is its attached value, and the NEXT word
-                        # is the value only when that letter is the last char
-                        opt="${tok#-}"; k=0
-                        while [ "$k" -lt "${#opt}" ]; do
-                            case "$base:${opt:$k:1}" in
-                                grep:[rR]|egrep:[rR]|fgrep:[rR]) rec=1 ;;
-                                grep:[ef]|egrep:[ef]|fgrep:[ef])
-                                    have_e=1
-                                    if [ "$((k + 1))" -eq "${#opt}" ]; then vskip=1; fi
-                                    break ;;
-                                grep:[mABCdD]|egrep:[mABCdD]|fgrep:[mABCdD]) break ;;
-                                tree:L) level=1; break ;;
-                                tree:[IPo])
-                                    if [ "$((k + 1))" -eq "${#opt}" ]; then vskip=1; fi
-                                    break ;;
-                            esac
-                            k=$((k + 1))
-                        done ;;
-                    rg|ripgrep|ag)
-                        # the first value-taking letter ends the cluster; e/f = pattern
-                        opt="${tok#-}"; k=0
-                        while [ "$k" -lt "${#opt}" ]; do
-                            case "${opt:$k:1}" in
-                                e|f) have_e=1
-                                     if [ "$((k + 1))" -eq "${#opt}" ]; then vskip=1; fi
-                                     break ;;
-                                g|G|t|T|m|A|B|C|j|d|E|M|r|p|W) break ;;
-                            esac
-                            k=$((k + 1))
-                        done ;;
+                    ls) case "$tok" in
+                            --recursive) SW_REC=1 ;;
+                            --all|--almost-all|--human-readable|--classify|--directory|--reverse|--size|--inode|--dereference|--group-directories-first|--numeric-uid-gid|--color|--color=*|--sort=*|--time-style=*|--format=*|--width=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    grep|egrep|fgrep) case "$tok" in
+                            --recursive|--dereference-recursive|--directories=recurse) SW_REC=1 ;;
+                            --directories=read|--directories=skip) ;;
+                            --directories) vskip=1; vkind=d ;;
+                            --regexp|--file) have_e=1; vskip=1; vkind=x ;;
+                            --regexp=*|--file=*) have_e=1 ;;
+                            --ignore-case|--no-ignore-case|--invert-match|--word-regexp|--line-regexp|--count|--files-with-matches|--files-without-match|--line-number|--no-messages|--with-filename|--no-filename|--quiet|--silent|--only-matching|--text|--extended-regexp|--fixed-strings|--basic-regexp|--perl-regexp|--null|--color|--color=*|--include=*|--exclude=*|--exclude-dir=*|--max-count=*|--binary-files=*|--after-context=*|--before-context=*|--context=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    rg|ripgrep|ag) case "$tok" in
+                            --files|--type-list) have_e=1 ;;
+                            --regexp|--file) have_e=1; vskip=1; vkind=x ;;
+                            --regexp=*|--file=*) have_e=1 ;;
+                            --glob|--iglob|--type|--type-not|--max-depth|--max-count|--after-context|--before-context|--context|--threads|--replace|--max-filesize|--depth) vskip=1; vkind=x ;;
+                            --glob=*|--iglob=*|--type=*|--type-not=*|--max-depth=*|--max-count=*|--after-context=*|--before-context=*|--context=*|--threads=*|--replace=*|--max-filesize=*|--depth=*) ;;
+                            --hidden|--no-ignore|--no-ignore-vcs|--ignore-case|--smart-case|--case-sensitive|--line-number|--no-line-number|--count|--files-with-matches|--files-without-match|--fixed-strings|--word-regexp|--invert-match|--no-heading|--heading|--color|--color=*|--no-messages|--follow|--text|--column|--vimgrep|--json|--stats|--quiet|--unrestricted|--only-matching|--null) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    tree) case "$tok" in
+                            --dirsfirst|--noreport|--prune|--du|--inodes|--device|--gitignore|--matchdirs|--nolinks) ;;
+                            --charset|--filelimit|--timefmt|--sort) vskip=1; vkind=x ;;
+                            --charset=*|--filelimit=*|--timefmt=*|--sort=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
+                    du) case "$tok" in
+                            --summarize|--human-readable|--total|--apparent-size|--one-file-system|--dereference|--si|--all|--count-links|--separate-dirs|--bytes|--time|--max-depth=*|--block-size=*|--exclude=*|--time=*) ;;
+                            *) SW_UNK=1 ;;
+                        esac ;;
                 esac ;;
-            *) is_redirect_word "$raw" "$tok" || ops+=("$tok") ;;
+            -*)
+                # short cluster: the first value-taking letter ends it; what follows
+                # is its attached value, and the NEXT word is the value only when
+                # that letter is the last char. An unmodelled letter is PASS.
+                opt="${tok#-}"; k=0
+                while [ "$k" -lt "${#opt}" ]; do
+                    c="${opt:$k:1}"; k=$((k + 1))
+                    if [ -n "$rl" ]; then
+                        case "$rl" in *"$c"*) SW_REC=1; continue ;; esac
+                    fi
+                    case "$nov" in *"$c"*) continue ;; esac
+                    case "$val" in
+                        *"$c"*)
+                            kind=x
+                            case "$base:$c" in
+                                grep:[ef]|egrep:[ef]|fgrep:[ef]|rg:[ef]|ripgrep:[ef]|ag:g) have_e=1 ;;
+                                grep:d|egrep:d|fgrep:d) kind=d ;;
+                                grep:D|egrep:D|fgrep:D) kind=D ;;
+                                grep:[mABC]|egrep:[mABC]|fgrep:[mABC]) kind=n ;;
+                                tree:L) level=1 ;;
+                            esac
+                            rest="${opt:$k}"
+                            if [ -n "$rest" ]; then sw_apply_val "$kind" "$rest"; else vskip=1; vkind="$kind"; fi
+                            break ;;
+                    esac
+                    SW_UNK=1; break
+                done ;;
+            *) is_redirect_word "$raw" "$tok" || { ops+=("$tok"); opr+=("$raw"); } ;;
         esac
-        prev="$tok"
     done
     case "$base" in
         grep|egrep|fgrep|rg|ripgrep|ag)
-            # the first positional is the pattern unless -e/-f supplied it
-            if [ "$have_e" -eq 0 ] && [ "${#ops[@]}" -gt 0 ]; then ops=("${ops[@]:1}"); fi ;;
+            # the first positional is the pattern unless -e/-f/-g supplied it
+            if [ "$have_e" -eq 0 ] && [ "${#ops[@]}" -gt 0 ]; then
+                ops=("${ops[@]:1}"); opr=("${opr[@]:1}")
+            fi ;;
     esac
-    [ "$rec" -eq 1 ] || return 1
+    [ "$SW_UNK" -eq 1 ] && return 0
+    [ "$SW_REC" -eq 1 ] || return 1
     if [ "$level" -eq 1 ] && [ "$base" = tree ]; then return 1; fi
-    for tok in ${ops[@]+"${ops[@]}"}; do
-        case "$tok" in '~'*|'$'*|'%'*) continue ;; esac
-        path_textually_resolves_to_root "$tok" && root=1
-        is_root_anchor "$tok" && root=1
+    for ((j = 0; j < ${#ops[@]}; j++)); do
+        tok="${ops[$j]}"; raw="${opr[$j]}"
+        case "$raw" in *'*'*|*'?'*|*'['*|*'{'*) return 0 ;; esac
+        case "$tok" in *..*) return 0 ;; esac
+        # shellcheck disable=SC2088 # a literal ~, never expanded
+        case "$tok" in
+            '~'|'~/'*) continue ;;
+            '~'*|'$'*|'%'*) return 0 ;;
+        esac
+        path_textually_resolves_to_root "$tok" && return 0
+        is_root_anchor "$tok" && return 0
     done
-    [ "$root" -eq 1 ]
+    return 1
 }
 
 segment_is_safe() {
