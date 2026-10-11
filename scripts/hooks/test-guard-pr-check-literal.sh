@@ -1902,6 +1902,56 @@ done
 run "HIMMEL-5102 round6 control [git -P log --oneline] -> allow" 0 "$(payload 'git -P log --oneline' "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
+# HIMMEL-5170 (j2328a follow-up): git runs an editor or an alias program the
+# guard never reads. An editor env prefix, or a git config write of an editor
+# or alias key, that names a guarded writer is denied (the VAR= prefix only
+# sets `wrapped`, and the positional `git config <key> <value>` is a later
+# call). Fail closed on the hook key, not on each spelling.
+for v in \
+    'GIT_SEQUENCE_EDITOR=scripts/cr/write-verdicts.sh git rebase -i main' \
+    'GIT_SEQUENCE_EDITOR="scripts/cr/write-verdicts.sh" git rebase -i main' \
+    'GIT_EDITOR=scripts/cr/write-verdicts.sh git commit' \
+    'EDITOR=scripts/cr/write-verdicts.sh git commit' \
+    'VISUAL=scripts/cr/write-verdicts.sh git commit' \
+    'GIT_EDITOR=scripts/handover/merge-on-green.sh git commit' \
+    'git config sequence.editor scripts/cr/write-verdicts.sh' \
+    'git config core.editor scripts/cr/write-verdicts.sh' \
+    'git config --global core.editor scripts/cr/write-verdicts.sh' \
+    'git config --local sequence.editor "scripts/cr/write-verdicts.sh"' \
+    'git config alias.rb "!scripts/cr/write-verdicts.sh"' \
+    'git config alias.rb !scripts/cr/write-verdicts.sh' \
+    'git config alias.ci "commit -F scripts/cr/write-verdicts.sh"' \
+    'GIT_EDITOR+=scripts/cr/write-verdicts.sh git commit' \
+    'GIT_SEQUENCE_EDITOR+=scripts/cr/write-verdicts.sh git rebase -i main' \
+    'export EDITOR+=scripts/cr/write-verdicts.sh; git commit' \
+    'printf -v GIT_EDITOR %s scripts/cr/write-verdicts.sh; export GIT_EDITOR; git commit' \
+    'GIT_PAGER=scripts/cr/write-verdicts.sh git log' \
+    'PAGER=scripts/cr/write-verdicts.sh git log' \
+    'GIT_SSH_COMMAND=scripts/cr/write-verdicts.sh git fetch' \
+    'GIT_EXTERNAL_DIFF=scripts/cr/write-verdicts.sh git diff' \
+    'git config core.pager scripts/cr/write-verdicts.sh' \
+    'git config pager.log scripts/cr/write-verdicts.sh' \
+    'git config core.fsmonitor scripts/cr/write-verdicts.sh' \
+    'git config core.sshCommand scripts/cr/write-verdicts.sh' \
+    'git config diff.external scripts/cr/write-verdicts.sh'; do
+    run "HIMMEL-5170 editor/alias hook [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# Already denied on base (HIMMEL-5102 one-call -c exec keys): controls, not RED.
+for v in \
+    'git -c sequence.editor=scripts/cr/write-verdicts.sh rebase -i main' \
+    'git -c core.editor=scripts/cr/write-verdicts.sh commit'; do
+    run "HIMMEL-5170 already-denied control [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# Controls: an ordinary config write and an editor that names no guarded writer.
+for v in \
+    'git config user.name x' \
+    'git config sequence.editor vim' \
+    'GIT_EDITOR=vim git commit' \
+    'GIT_SEQUENCE_EDITOR=true git rebase -i main' \
+    'git log --oneline -3 -- scripts/cr/write-verdicts.sh'; do
+    run "HIMMEL-5170 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "all guard-pr-check-literal cases passed"
