@@ -1175,9 +1175,22 @@ pobf_put() {
 # ponytail: a closed non-executing list for git; a new safe git option is
 # over-denied until listed, never under-denied, HIMMEL-4402.
 POBF_GIT_SAFE=' --oneline --stat --name-only --name-status --no-color --color --count --line-number --max-count --all --since --until --after --before --author --committer --grep --format --pretty --abbrev --abbrev-commit --short --porcelain --branch --cached --others --exclude-standard --ignore-case --files-with-matches --files-without-match --fixed-strings --extended-regexp --basic-regexp --perl-regexp --word-regexp --invert-match --no-index --untracked --show-toplevel --git-dir --abbrev-ref --verify --heads --tags --quiet --null --heading --break --and --or --not --all-match --recurse-submodules --text --full-name --first-parent --merges --no-merges --reverse --skip --diff-filter --follow --decorate --graph --date --shortstat --numstat --summary --patch --no-patch --stdin --revs-only --no-flags --flags --sq --default --symbolic --symbolic-full-name --is-inside-work-tree --is-bare-repository --show-cdup --show-prefix --git-common-dir --absolute-git-dir --deleted --modified --ignored --directory --error-unmatch --eol --stage --unmerged --killed '
+# getopt_long and git parse-options accept any unambiguous prefix of a long
+# option (`sort --compr=cat`, `git grep --open-files=less`): a long word whose
+# name is a prefix, 3+ chars, of one of these voids relief. ripgrep does not
+# abbreviate; its exact --pre match stays in the stage classifier.
+POBF_XOPT_LONG='open-files-in-pager pager paginate exec ext-diff textconv output upload-pack receive-pack pre compress editor config-env'
 pobf_xopt() {
-    local w
+    local w n p
     for w in $2; do
+        if [[ $w == --* ]]; then
+            n=${w%%=*}; n=${n#--}
+            if [ ${#n} -ge 3 ]; then
+                for p in $POBF_XOPT_LONG; do
+                    case "$p" in "$n"*) return 0 ;; esac
+                done
+            fi
+        fi
         case "$w" in
             # A backslash or a quote left in an option word is a spelling the two
             # readings do not model (`--pr\e` is `--pre` to bash): void, fail-closed.

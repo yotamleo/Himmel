@@ -2191,6 +2191,17 @@ for F in "rg --pr\\e='$OBF' needle" \
     assert_deny "4402 backslash option voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
 done
 assert_allow "4402 control: rg --pretty with no escapes keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; rg --pretty needle -- '$OBF'")"
+# Console ruling on 2346: getopt_long and git parse-options accept any
+# unambiguous long-option prefix, so a 3+ char prefix of a program-running
+# option voids relief.
+for F in "sort --compr='$OBF' needle" \
+         "git grep --open-files='$OBF' needle" \
+         "git diff --ext='$OBF' needle" \
+         "git log --ext='$OBF' needle" \
+         "printf needle | sort --compr='$OBF' x"; do
+    assert_deny "4402 abbreviated long option voided: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
+done
+assert_allow "4402 control: sort --check keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; sort --check needle -- '$OBF'")"
 # Controls: a read-only git stage with listed options keeps relief.
 assert_allow "4402 control: git grep with listed options keeps relief" "$(j "unset HIMMEL_CONSOLE_LEG; git grep -n --count needle -- '$OBF'")"
 assert_allow "4402 control: continuation with no option keeps relief"  "$(j "unset HIMMEL_CONSOLE_LEG; git grep \"\$(printf needle)\" -- '$OBF'")"
