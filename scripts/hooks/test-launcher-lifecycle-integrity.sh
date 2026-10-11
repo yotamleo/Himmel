@@ -134,10 +134,13 @@ run2() {   # <event> <member>...  -> sets RC, OUT, ERR
 }
 
 run2 Stop "$M1" "$BLK"
-if grep -q '"decision":"block"' <<<"$OUT" && grep -q '^blk$' "$CANARY" 2>/dev/null && ! grep -q '^m1$' "$CANARY" 2>/dev/null; then
-  ok "Stop chain: tampered member skipped alone, the later member's block decision is kept"
+# HIMMEL-5198: the block holds on exit 2, and Claude Code reads stderr there, so
+# the blocking member's own reason must be on stderr, not just the skip notice.
+if [ "$RC" -eq 2 ] && grep -q '"decision":"block"' <<<"$OUT" && grep -q 'keep-going' <<<"$ERR" \
+  && grep -q '^blk$' "$CANARY" 2>/dev/null && ! grep -q '^m1$' "$CANARY" 2>/dev/null; then
+  ok "Stop chain: tampered member skipped alone, the later member's block holds on exit 2 with its reason on stderr"
 else
-  bad "Stop chain (tampered, block): rc=$RC canary=$(cat "$CANARY" 2>/dev/null | tr '\n' ,) out=$OUT"
+  bad "Stop chain (tampered, block): rc=$RC err=$ERR canary=$(cat "$CANARY" 2>/dev/null | tr '\n' ,) out=$OUT"
 fi
 
 run2 Stop "$M0" "$M1" "$M2"

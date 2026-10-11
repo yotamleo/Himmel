@@ -861,6 +861,15 @@ function runChain(members, lifecycle = false) {
     // exit 2 is the deny convention; a deny expressed as JSON on exit 0 is the
     // same decision in the structured channel. Both end the chain here.
     if (status === 2 || (status === 0 && isDeny(output))) {
+      // HIMMEL-5198: Claude Code ignores stdout JSON on exit 2 and reads stderr
+      // as the reason, so a JSON block must carry its own reason there — else
+      // stderr holds only an earlier member's unrelated notice. A member that
+      // wrote its own stderr already chose its reason, so that stays as is.
+      const blockReason = output && (output.decision === 'block' ? output.reason
+        : output.hookSpecificOutput && output.hookSpecificOutput.permissionDecisionReason);
+      if (typeof blockReason === 'string' && blockReason.trim() && !stderr.trim()) {
+        process.stderr.write(`${blockReason}\n`);
+      }
       process.stdout.write(stdout);
       process.stderr.write(stderr);
       return 2;
