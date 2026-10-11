@@ -176,7 +176,8 @@ def summary(rows):
     for arm in ("200k", "400k"):
         every = [r for r in rows if r["arm"] == arm]
         # a leg with no transcript is unmeasured, not zero: left out of the means
-        rs = [r for r in every if r["transcripts"] > 0]
+        # (a transcript with no usable assistant usage row counts as no transcript)
+        rs = [r for r in every if r["transcripts"] > 0 and r["calls"] > 0]
         if not every:
             continue
         if not rs:
@@ -239,12 +240,12 @@ def main():
     for r in rows:
         lv = ",".join(fmt_tok(c["tokens"]) for c in r["compactions"]) or "-"
         print("%-52s %-10s %5d %-24s %4d %9s %9s %9s %9s %8.1f %7.0f %-5s %3d %6s" % (
-            r["leg"][:52], r["arm"], len(r["compactions"]), lv[:24], r["handoffs"],
+            r["leg"][:52], r["arm"], len(r["compactions"]), lv, r["handoffs"],
             fmt_tok(r["cache_read"]), fmt_tok(r["cache_create"]), fmt_tok(r["uncached"]),
             fmt_tok(r["cost_eq"]), r["wall_s"] / 60.0, r["mean_out_per_turn"],
             r["ci_first_try"], r["review_rounds"], r["pr"] or "-"))
-        if r["transcripts"] == 0:
-            print("  ^ no transcript found for this leg (customTitle not matched)")
+        if r["transcripts"] == 0 or r["calls"] == 0:
+            print("  ^ no measured transcript for this leg (customTitle not matched or no usage rows)")
     unl = [r for r in rows if r["arm"] == "unlabelled"]
     if unl:
         print("\n%d unlabelled leg(s) left out of the summary" % len(unl))
