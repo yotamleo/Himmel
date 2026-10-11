@@ -1702,6 +1702,12 @@ assert "ag --after x / never ALLOW"            PASS  "$(decide "$(j_bash "ag --a
 assert "ag --before x / never ALLOW"           PASS  "$(decide "$(j_bash "ag --before x /")")"
 assert "ctl: rg --context 2 x scripts ALLOW"   ALLOW "$(decide "$(j_bash "rg --context 2 x scripts")")"
 assert "ctl: ag x src stays ALLOW"             ALLOW "$(decide "$(j_bash "ag x src")")"
+# delta round: an empty cooked word is a real (empty) pattern, not nothing.
+assert "grep -r '' / never ALLOW"              PASS  "$(decide "$(j_bash "grep -r '' /")")"
+assert "rg '' / never ALLOW"                   PASS  "$(decide "$(j_bash "rg '' /")")"
+assert "ag '' / never ALLOW"                   PASS  "$(decide "$(j_bash "ag '' /")")"
+assert 'grep -r "" / never ALLOW'              PASS  "$(decide "$(j_bash 'grep -r "" /')")"
+assert "ctl: grep -r '' src stays ALLOW"       ALLOW "$(decide "$(j_bash "grep -r '' src")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then
