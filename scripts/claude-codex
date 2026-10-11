@@ -91,9 +91,14 @@ RESEED=0
 FORCE=0
 PREFLIGHT_ONLY=0
 GUARD_CHECK=0
+SEED_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --reseed) RESEED=1; shift ;;
+    # HIMMEL-5183: seed the lane config dir and exit 0 before the proxy probe and the
+    # launch; the pilot jail seeds a row's config outside the lane, then binds the
+    # policy files read-only. Not for use with --preflight-only (which skips the seed).
+    --seed-only) SEED_ONLY=1; shift ;;
     --force)  FORCE=1;  shift ;;
     # HIMMEL-1037: cheap auth/liveness probe for the background dispatcher's
     # PRE-LAUNCH backoff — run the proxy preflight and exit (0=healthy,
@@ -108,6 +113,10 @@ while [ $# -gt 0 ]; do
     *) break ;;
   esac
 done
+if [ "$SEED_ONLY" -eq 1 ] && [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+  echo "claude-codex: --seed-only and --preflight-only are mutually exclusive (the probe skips the seed)." >&2
+  exit 2
+fi
 
 CFG="${HOME}/.config/claude-codex"
 
@@ -409,6 +418,7 @@ SEED_LOCK_STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
 if [ "$PREFLIGHT_ONLY" -ne 1 ] && { [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; }; then
   seed_with_lock
 fi
+[ "$SEED_ONLY" -ne 1 ] || exit 0
 
 # Trust boundary (CR HIMMEL-979): the proxy receives the auth key AND all
 # session content, so the default posture is loopback-only. A non-loopback

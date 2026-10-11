@@ -22,6 +22,13 @@ command -v node >/dev/null 2>&1 || { echo 'claude-deepseek: node required; faili
 RESEED=0
 # shellcheck disable=SC2034 # RESEED is consumed by the sourced mirror-seed library.
 if [ "${1-}" = --reseed ]; then RESEED=1; shift; fi
+# HIMMEL-5183: --seed-only seeds the lane config dir (settings.json, mirror, sentinel,
+# fingerprint) and exits 0 before the balance probe and the launch; the pilot jail seeds
+# a row's config outside the lane, then binds the policy files read-only.
+SEED_ONLY=0
+if [ "${1-}" = --seed-only ]; then SEED_ONLY=1; shift; fi
+# shellcheck disable=SC2034 # RESEED is consumed by the sourced mirror-seed library.
+if [ "$SEED_ONLY" -eq 1 ] && [ "$RESEED" -eq 0 ] && [ "${1-}" = --reseed ]; then RESEED=1; shift; fi
 
 # Authorize explicit provider inference cells, preserving first-match denial,
 # including wildcard hard rows. Only the approved literal condition is known.
@@ -69,6 +76,7 @@ try {
 
 # GET /user/balance is account metadata only. Key travels on stdin, not argv.
 # Unknown/non-USD balances refuse; no guessed FX conversion or fail-open probe.
+if [ "$SEED_ONLY" -ne 1 ]; then # --seed-only never probes the balance (no network, no key use)
 command -v curl >/dev/null 2>&1 || { echo 'claude-deepseek: balance UNKNOWN (curl missing); refusing.' >&2; exit 5; }
 case "$DEEPSEEK_API_KEY" in *$'\n'*|*$'\r'*|*\"*|*\\*) echo 'claude-deepseek: invalid API key format.' >&2; exit 2 ;; esac
 balance_raw="$(printf 'header = "Authorization: Bearer %s"\n' "$DEEPSEEK_API_KEY" | curl -fsS --max-time 10 --noproxy '*' -K - https://api.deepseek.com/user/balance 2>/dev/null)" || balance_raw=''
@@ -88,6 +96,7 @@ let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
  }catch(_){process.exit(5);}
 });
 ')" || { echo 'claude-deepseek: balance below floor, unavailable or UNKNOWN; refusing (DEEPSEEK_MIN_BALANCE_USD defaults to 3).' >&2; exit 5; }
+fi
 
 seed_fail() { echo "claude-deepseek: seed failed: $1" >&2; exit 4; }
 sanitize_settings() {
@@ -138,6 +147,7 @@ try {
 }
 # DeepSeek always serializes onboarding/trust, even when the mirror is fresh.
 seed_with_lock
+[ "$SEED_ONLY" -ne 1 ] || exit 0
 command -v claude >/dev/null 2>&1 || { echo 'claude-deepseek: claude missing from PATH.' >&2; exit 2; }
 # Route the recognized alias to Flash, never the provider opus/V4 Pro alias.
 CONTEXT_WINDOW=786432
