@@ -55,6 +55,36 @@ pass=0
 fail=0
 ok()  { pass=$((pass + 1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf '  FAIL %s\n' "$1"; }
+# absent <pattern> <file>...: succeeds only when every file exists, is readable
+# and grep finds no match (rc 1). `! grep` would also pass on a read error
+# (rc 2), so an absence row could go green over a file that was never written
+# (HIMMEL-5186).
+absent() {
+  local pat="$1" f rc
+  shift
+  for f in "$@"; do
+    [ -f "$f" ] && [ -r "$f" ] || return 1
+    grep -q -- "$pat" "$f"; rc=$?
+    [ "$rc" -eq 1 ] || return 1
+  done
+  return 0
+}
+if absent 'x' "$T/no-such-file" 2>/dev/null; then
+  bad "HIMMEL-5186 control: absent() must FAIL on a missing file"
+else
+  ok "HIMMEL-5186 control: absent() fails on a missing file"
+fi
+printf 'hello\n' > "$T/absent.fix"
+if absent 'hello' "$T/absent.fix"; then
+  bad "HIMMEL-5186 control: absent() must FAIL when the pattern is present"
+else
+  ok "HIMMEL-5186 control: absent() fails when the pattern is present"
+fi
+if absent 'nope' "$T/absent.fix"; then
+  ok "HIMMEL-5186 control: absent() passes on a readable file without the pattern"
+else
+  bad "HIMMEL-5186 control: absent() must PASS on a readable file without the pattern"
+fi
 
 GUARD="$PROJECT/scripts/hooks/fake-guard.sh"
 cat > "$GUARD" <<'GUARD_EOF'
@@ -305,7 +335,7 @@ else
 fi
 # The notice is once per session: a second hook call stays silent.
 gone_run g6 "$T/g6"; rc=$?
-if [ "$rc" -eq 0 ] && ! grep -q 'HIMMEL-5171' "$T/g6.out" "$T/g6.err"; then
+if [ "$rc" -eq 0 ] && absent 'HIMMEL-5171' "$T/g6.out" "$T/g6.err"; then
   ok "HIMMEL-5171: the fail-open notice is shown once per session"
 else
   bad "HIMMEL-5171 notice once: expected rc=0 and no notice, got rc=$rc out=$(cat "$T/g6.out") err=$(cat "$T/g6.err")"
@@ -414,7 +444,7 @@ cp "$GUARD" "$T/guard.orig"
 printf '\n# tampered\n' >> "$GUARD"
 gone_dir g12; printf 'failed\n' > "$T/g12/$SID.recorder"
 gone_run g12 "$T/g12"; rc=$?
-if [ "$rc" -eq 2 ] && ! grep -q 'HIMMEL-5171' "$T/g12.out"; then
+if [ "$rc" -eq 2 ] && absent 'HIMMEL-5171' "$T/g12.out"; then
   ok "HIMMEL-5171: a tampered pinned guard with a valid record and a failed marker is still denied"
 else
   bad "HIMMEL-5171 tamper + failed marker: expected rc=2, got rc=$rc out=$(cat "$T/g12.out") err=$(cat "$T/g12.err")"
@@ -613,7 +643,7 @@ launch() {
 }
 
 expect_allow() {   # <label>
-  if [ "$LAST_RC" -eq 0 ] && ! grep -q 'DENY' "$T/last.err"; then
+  if [ "$LAST_RC" -eq 0 ] && absent 'DENY' "$T/last.err"; then
     ok "$1"
   else
     bad "$1 — expected allow, got rc=$LAST_RC err=$(cat "$T/last.err")"
