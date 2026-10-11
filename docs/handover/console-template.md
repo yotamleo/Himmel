@@ -560,6 +560,14 @@ never act on them.
   `bash scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head>
   --pr <n> --evidence-file <path>` writes `verdicts/<qid>/`. A verdict that
   lives only in your context dies with it; the file is what a successor reads.
+- **Dispatch a judge call as `console-judge-ro`, not the built-in Explore**
+  (HIMMEL-5180): same read-only tool list, passes the ruling-20 console
+  dispatch fence, and carries a 1-hour prompt-cache TTL. That TTL only pays
+  for a judge that idles past 5 minutes (test runs, CI waits); a short paper
+  judge pays the 1-hour write premium for nothing, so dispatch it as Explore
+  (prediction table: `docs/internals/prompt-cache.md`). After each judge,
+  append its ledger row:
+  `bash scripts/eval/judge-cache-row.sh --ledger <ledger> <agent-*.jsonl>`.
 
 ## Handing over
 

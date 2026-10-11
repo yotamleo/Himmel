@@ -3698,12 +3698,17 @@ marker families — `worktree` (`.claude/worktrees`, `clean-garden.sh`,
 "open a/the PR", `gh pr edit`), `cr-gate` (`/pr-check`, "CR-clean",
 `clear-cr-marker`, "CodeRabbit"). A single-family match never denies — that
 conjunction is the false-positive budget keeping bounded read-only research
-frictionless. `subagent_type: Explore` always allows — the ONLY carve-out.
+frictionless. `subagent_type: Explore` and `console-judge-ro` (HIMMEL-5180:
+`.claude/agents/console-judge-ro.md` pins `tools: Read, Grep, Glob, Bash`, the
+same structural read-only lane, plus a 1-hour cache TTL) always allow — the
+ONLY carve-outs. `guard-implementor-dispatch.sh` exempts `console-judge-ro`
+the same way it exempts Explore.
 There is deliberately no prompt-text read-only declaration carve-out: three
 CR rounds each added one and each leaked it a different way (a partial-scope
 aside, an output-shaped phrase, a mode declaration governing a subordinate
 clause rather than the whole dispatch), so it was removed rather than
-patched a fourth time. A genuinely read-only dispatch uses `Explore`, or the
+patched a fourth time. A genuinely read-only dispatch uses `Explore` or
+`console-judge-ro`, or the
 audited `CONSOLE_DISPATCH_OK=1` override below.
 
 **Console detection (fail-open — unknown means NOT console):**

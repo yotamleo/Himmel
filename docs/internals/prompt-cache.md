@@ -76,6 +76,94 @@ Unrelated caches (gh, graphify, qmd, npm, `USAGE_CACHE_TTL`,
 The probe reads only `usage` and timestamps; the runs put no transcript
 content in the repo.
 
+## Judge subagent TTL: predictions, baseline, ledger (HIMMEL-5180)
+
+**Docs facts** (<https://code.claude.com/docs/en/prompt-caching#which-ttl-each-request-gets>,
+<https://code.claude.com/docs/en/sub-agents>, read 2026-10-11): a subagent gets
+the 5-minute TTL even on a subscription; the 1-hour TTL is the default only
+for the main conversation. A subagent file chooses its own with
+`experimental:` / `cacheTtl: 1h` (Claude Code v2.1.248+, nested under
+`experimental`, never top level), ignored while the subscription draws usage
+credits. Precedence, first match wins: `FORCE_PROMPT_CACHING_5M=1`, the
+bucket env var, the `subagentPromptCacheTtl` setting, the frontmatter
+`cacheTtl`, `ENABLE_PROMPT_CACHING_1H=1`, the default. `subagentPromptCacheTtl`
+stays unset so straight-through subagents keep 5 minutes.
+`.claude/agents/console-judge-ro.md` (and `console-judge.md`) carry the 1h.
+Multipliers, as in "The model" above (API pricing page): 5-minute write 1.25×,
+1-hour write 2×, read 0.1× of base input.
+
+**What decides it is the idle gap, not the wall time.** Every request that
+hits the cache resets the timer, so a judge that keeps calling tools never
+expires either tier. Per judge, with `W` the tokens it writes in total and `P`
+the context size when an idle gap `g` lands:
+
+- 1h premium = (2 − 1.25) × `W` = 0.75 `W`, paid on every write.
+- A gap `5 min < g < 60 min` on 5m re-writes `P` instead of reading it:
+  1.25 `P` − 0.1 `P` = 1.15 `P` lost; on 1h it costs nothing.
+- A gap over 60 min expires both tiers: 1h only adds the premium.
+- Break-even: 1h wins once the 5m-expiring gaps sum to 1.15 Σ`P`ᵢ > 0.75 `W`;
+  one gap at ≥ 65 % of the run's final context pays for the whole premium, two
+  at ≥ 33 %, and a gap near the start of a run (small `P`) does not.
+
+### Predictions (written before the AFTER measurement)
+
+| Pattern | Gaps | Winner | Break-even / expected effect |
+|---|---|---|---|
+| short paper judge (under 5 min wall, reads files, no test run) | none over 300 s | **5m** | never breaks even; 1h costs +0.75 `W`, predicted +35 to 50 % of the judge's input-token-equivalent cost |
+| judge that idles on a test run or CI wait over 5 min (under 60 min) | one or more of 300 s to 3600 s | **1h** when the gap lands at ≥ 65 % of final context (single gap), else 5m | each such late gap saves 0.40 `P` net of the premium; a gap at 30 % of context loses |
+| long judge (over 30 min wall) | depends on gaps, not wall | **1h** if it has ≥ 1 late gap of 5 to 60 min; **5m** if it never pauses 5 min; **5m** if every pause exceeds 60 min | wall time alone predicts nothing; read the longest gap |
+
+### Baseline (2026-10-10 shift, 8 Explore judge calls, all on 5m)
+
+Source: the 8 `agent-*.jsonl` under the console session's `subagents/`. Rows
+from `scripts/eval/judge-cache-row.sh` (usage rows deduped by message id).
+Counterfactual 1h cost = 2 × `cc` + 0.1 × `cr`, valid only because no gap
+passed 300 s (reads are identical on both tiers); actual 5m = 1.25 × `cc` +
+0.1 × `cr`, in base-input-token equivalents.
+
+| judge | wall s | turns | cc 5m | cc 1h | read | longest gap s | gaps > 300 s | cost 5m | cost 1h (cf.) | 1h extra |
+|---|---|---|---|---|---|---|---|---|---|---|
+| j2334b | 177 | 15 | 74,754 | 0 | 575,044 | 31 | 0 | 150,947 | 207,012 | +37 % |
+| j2340a | 353 | 10 | 80,138 | 0 | 429,949 | 144 | 0 | 143,167 | 203,271 | +42 % |
+| j2320e | 87 | 6 | 42,694 | 0 | 120,960 | 61 | 0 | 65,464 | 97,484 | +49 % |
+| j2339a | 78 | 7 | 32,854 | 0 | 147,544 | 37 | 0 | 55,822 | 80,462 | +44 % |
+| j2341a (trust) | 91 | 5 | 30,761 | 0 | 94,152 | 46 | 0 | 47,866 | 70,937 | +48 % |
+| j2338a | 73 | 5 | 33,982 | 0 | 79,945 | 31 | 0 | 50,472 | 75,958 | +50 % |
+| j2337a (trust) | 194 | 10 | 48,200 | 0 | 339,968 | 66 | 0 | 94,247 | 130,397 | +38 % |
+| j2320d | 252 | 14 | 65,063 | 0 | 450,995 | 76 | 0 | 126,428 | 175,226 | +39 % |
+| **total** | | | 408,446 | 0 | 2,238,557 | max 144 | 0 | 734,413 | 1,040,748 | **+42 %** |
+
+**Scoring.** Row 1 (short paper judge → 5m) is confirmed 8 of 8: no judge
+idled past 300 s, so the 1h tier would have added 306,334 input-token
+equivalents (+42 %) for nothing. Rows 2 and 3 are **not scored**: the longest
+wall in the sample is 353 s and the longest gap 144 s, so no baseline judge is
+the pattern the ticket targets (j2325a, about 70 minutes, is not in this
+sample). The consequence is a dispatch rule, not a global switch: forcing 1h
+on every judge would have raised this shift's judge input cost by 42 %. A
+console dispatches `console-judge-ro` (1h) only for a judge expected to wait
+on a test run or CI, and keeps the built-in Explore (5m) for a paper judge.
+The AFTER measurement therefore needs judges that did idle; until n ≥ 3 of
+those exist, rows 2 and 3 stay predictions.
+
+### The ledger recipe
+
+After each judge call, append one row (judge, agent, model, TTL actually
+billed, wall s, turns, cc 5m, cc 1h, read, longest gap, gaps over 300 s):
+
+```bash
+bash scripts/eval/judge-cache-row.sh --header --ledger <ledger.tsv> \
+  <projects>/<proj>/<console-session>/subagents/agent-<id>.jsonl
+```
+
+Drop `--header` after the first row. `agent` comes from the sibling
+`.meta.json`, so an Explore row and a `console-judge-ro` row land in one
+ledger. Re-decide the TTL from the ledger: score each row against the break-even
+above (1.15 Σ`P`ᵢ over its 5m-expiring gaps vs 0.75 `W` ). `ponytail:` the row
+holds the longest gap and the count over 300 s, not each gap's context size,
+so a late-vs-early gap is read from the transcript when a row is close;
+upgrade path: add a per-gap context column when a judge lands within 10 % of
+break-even.
+
 ## Re-run
 
 ```bash
