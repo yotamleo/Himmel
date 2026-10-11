@@ -13,7 +13,9 @@ check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected 
 ctl="$FX/docs/HIMMEL-9001-N901-ctl-2026-10-11.md"
 trt="$FX/docs/HIMMEL-9002-N902-trt-2026-10-11.md"
 opn="$FX/docs/HIMMEL-9003-N903-open-2026-10-11.md"
-printf '{"schema":1,"legs":[{"doc":"%s","label":"N901","arm":"200k"},{"doc":"%s","label":"N902","arm":"400k"},{"doc":"%s","label":"N903","arm":"400k"}]}\n' "$ctl" "$trt" "$opn" > "$tmp/m.json"
+res="$FX/docs/HIMMEL-9002-N902b-trt-RESUME.md"
+# the RESUME successor N902b is listed beside its parent (parent BLOCKED, successor WRAPPED)
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N901","arm":"200k"},{"doc":"%s","label":"N902","arm":"400k"},{"doc":"%s","label":"N902b","arm":"400k"},{"doc":"%s","label":"N903","arm":"400k"}]}\n' "$ctl" "$trt" "$res" "$opn" > "$tmp/m.json"
 
 out="$tmp/out.json"
 python3 -I "$SUT" --manifest "$tmp/m.json" --projects "$FX/projects" --json > "$out" 2>"$tmp/err"; rc=$?
@@ -35,6 +37,17 @@ check "ctl CI first try" yes "$(jq -r "$c | .ci_first_try" "$out")"
 check "ctl pr" 101 "$(jq -r "$c | .pr" "$out")"
 check "ctl handoffs" 0 "$(jq "$c | .handoffs" "$out")"
 check "trt arm from the manifest" 400k "$(jq -r "$t | .arm" "$out")"
+check "listed RESUME successor folds into ONE leg row" 1 "$(jq "[$t] | length" "$out")"
+check "chain row is the parent leg" HIMMEL-9002-N902-trt-2026-10-11 "$(jq -r "$t | .leg" "$out")"
+check "chain wrapped by its last doc (parent BLOCKED)" 1 "$(jq '[.legs[] | select(.leg | startswith("HIMMEL-9002"))] | length' "$out")"
+check "summary counts the chain as one 400k leg" "1 0" "$(jq -r '.summary[] | select(.arm=="400k") | "\(.legs) \(.unmeasured)"' "$out")"
+check "both transcripts counted once (listed + globbed)" 2 "$(jq "$t | .transcripts" "$out")"
+# a listed successor whose manifest arm differs from its parent's: arm-unproven, not in the summary
+printf '{"schema":1,"legs":[{"doc":"%s","arm":"200k"},{"doc":"%s","arm":"400k"},{"doc":"%s","arm":"200k"}]}\n' "$ctl" "$trt" "$res" > "$tmp/mm.json"
+python3 -I "$SUT" --manifest "$tmp/mm.json" --projects "$FX/projects" --json > "$tmp/mm.out" 2>/dev/null
+check "arm-mismatched successor: one row" 1 "$(jq "[$t] | length" "$tmp/mm.out")"
+check "arm-mismatched successor: arm unproven" unproven "$(jq -r "$t | .arm" "$tmp/mm.out")"
+check "arm-mismatched successor: out of the summary" "200k" "$(jq -r '[.summary[].arm] | join(",")' "$tmp/mm.out")"
 python3 -I "$SUT" --doc "$trt" --projects "$FX/projects" --json > "$tmp/b.json" 2>/dev/null
 check "brief ruling line alone is not evidence of the arm" unlabelled "$(jq -r '.legs[0].arm' "$tmp/b.json")"
 cp "$FX/docs/HIMMEL-9002-N902b-trt-RESUME.md" "$tmp/HIMMEL-9002-N9020-other-RESUME.md"

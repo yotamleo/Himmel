@@ -7,9 +7,12 @@
 #                     [--projects <dir>] [--all] [--json]
 #
 # Legs come from fleet manifests (legs[].doc, optional legs[].arm) and/or --doc.
-# Only WRAPPED legs (the doc's last `- ` bullet starts with WRAPPED) are
+# One row per TICKET-N<k> (scripts/lib/leg-identity.sh): a RESUME successor,
+# listed or found beside its parent, folds into the parent's row, and the leg is
+# wrapped when the LAST doc in the chain ends in WRAPPED. Only wrapped legs are
 # reported unless --all. The arm is the manifest `arm` (the launcher's record);
-# a leg without one is `unlabelled` and is left out of the arm summary. The
+# a leg without one is `unlabelled`, and a chain whose listed docs carry
+# different arms is `unproven`; both are left out of the arm summary. The
 # brief's `ab-400k` line is not evidence: a 200000 launch can carry it.
 # Legs with no matching transcript are `unmeasured` and left out of the means.
 #
@@ -25,7 +28,7 @@
 # number, review-round mentions) because CI itself is not in the transcript;
 # upgrade path = join the leg-cost ledger `pr` against gh run history once the
 # A/B has data worth that.
-import argparse, glob, json, os, re, sys
+import argparse, glob, json, os, re, subprocess, sys
 from datetime import datetime
 
 W_CR = float(os.environ.get("LEG_BURN_W_CACHE_READ", "0.1"))
@@ -133,30 +136,92 @@ def parse_transcripts(paths):
             "mean_out_per_turn": round(out / len(calls), 1) if calls else 0}
 
 
-def leg_row(doc, manifest_arm, projects):
-    d = read_doc(doc)
-    if d is None:
-        return None
+LEG_IDENTITY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "lib", "leg-identity.sh")
+
+
+def identity(doc):
+    """(label, base, session names) from scripts/lib/leg-identity.sh, the one
+    derivation of a leg's identity; never a local regex."""
+    try:
+        out = subprocess.run(
+            ["bash", "-c", 'source "$1"; leg_identity "$2"; leg_base "$2"', "_", LEG_IDENTITY, doc],
+            capture_output=True, text=True, timeout=30).stdout.split("\n")
+        label, _, names = out[0].partition("\t")
+        base = out[1] if len(out) > 1 and out[1] else label
+        if label:
+            return label, base, [n for n in names.split(",") if n]
+    except (OSError, subprocess.SubprocessError):
+        pass
     stem = os.path.basename(doc)
     stem = stem[:-3] if stem.endswith(".md") else stem
-    m = STEM.match(stem)
-    handoffs, names = 0, [stem]
-    if m:
-        pat = os.path.join(os.path.dirname(doc), "%s-%s*RESUME*.md" % (m.group(1), m.group(2)))
-        # the glob has no boundary after the label (N902 also matches N9020)
-        lead = "%s-%s" % (m.group(1), m.group(2))
-        resumes = [r for r in glob.glob(pat)
-                   if not os.path.basename(r)[len(lead):len(lead) + 1].isdigit()]
-        handoffs = len(resumes)
-        # a resumed session is titled by its RESUME doc stem
-        names += [os.path.basename(r)[:-3] for r in resumes if r.endswith(".md")]
+    return stem, stem, [stem]
+
+
+def chain_key(doc, base):
+    """One leg = TICKET-N<k>: the ticket key of the stem plus leg_base."""
+    stem = os.path.basename(doc)
+    m = re.match(r"^([A-Za-z][A-Za-z0-9]*-\d+)-", stem)
+    return (m.group(1) if m else "", base)
+
+
+def resume_siblings(doc):
+    """RESUME docs beside `doc` that continue the same TICKET-N<k> leg."""
+    m = STEM.match(os.path.basename(doc))
+    if not m:
+        return []
+    lead = "%s-%s" % (m.group(1), m.group(2))
+    pat = os.path.join(os.path.dirname(doc), "%s*RESUME*.md" % lead)
+    # the glob has no boundary after the label (N902 also matches N9020)
+    return [r for r in glob.glob(pat)
+            if not os.path.basename(r)[len(lead):len(lead) + 1].isdigit()]
+
+
+def chain_rows(members, projects):
+    """members: [(doc, manifest_arm)] sharing one TICKET-N<k>. One row per leg."""
+    docs = {}
+    for doc, arm in members:
+        docs[doc] = docs.get(doc) or arm
+    for doc in list(docs):
+        for r in resume_siblings(doc):
+            docs.setdefault(r, None)
+    info = {}
+    for doc in docs:
+        label, base, names = identity(doc)
+        info[doc] = (label, base, names)
+    # parent first (label == base), then successors by their letters
+    order = sorted(docs, key=lambda p: (info[p][0] != info[p][1], info[p][0], p))
+    parsed = [(p, read_doc(p)) for p in order]
+    parsed = [(p, d) for p, d in parsed if d is not None]
+    if not parsed:
+        return None
+    head = parsed[0][0]
+    stem = os.path.basename(head)
+    stem = stem[:-3] if stem.endswith(".md") else stem
+    markers = [m for _, d in parsed for m in d["markers"]]
+    last = parsed[-1][1]["markers"]
     # the manifest arm is the launcher's record; the brief line alone is not
-    # evidence (a 200000 launch can carry it), so it is never a fallback
-    arm = manifest_arm or "unlabelled"
+    # evidence (a 200000 launch can carry it), so it is never a fallback. A
+    # successor folds into its parent only on an equal manifest arm; a chain
+    # whose listed docs disagree (or lack the record) is arm-unproven.
+    listed = {m[0] for m in members}
+    arms = [docs[p] for p, _ in parsed if p in listed]
+    if len(set(arms)) == 1:
+        arm = arms[0] or "unlabelled"
+    else:
+        arm = "unproven"
+    names, seen_n = [], set()
+    for p, _ in parsed:
+        n = os.path.basename(p)[:-3] if p.endswith(".md") else os.path.basename(p)
+        for x in [n] + info[p][2]:
+            if x not in seen_n:
+                seen_n.add(x)
+                names.append(x)
     row = {"leg": stem, "arm": arm,
-           "wrapped": bool(d["markers"]) and d["markers"][-1][0] == "WRAPPED",
-           "handoffs": handoffs}
-    row.update(pr_outcome(d["markers"]))
+           "chain": [os.path.basename(p) for p, _ in parsed],
+           "wrapped": bool(last) and last[-1][0] == "WRAPPED",
+           "handoffs": len(parsed) - 1}
+    row.update(pr_outcome(markers))
     paths = find_transcripts(projects, names)
     row["transcripts"] = len(paths)
     row.update(parse_transcripts(paths))
@@ -218,14 +283,25 @@ def main():
         print("usage: autocompact-ab.py [--manifest <fleet.json>]... [--doc <leg doc>]...", file=sys.stderr)
         return 2
 
-    rows, seen = [], set()
+    # one row per TICKET-N<k>: a listed RESUME successor folds into its parent
+    groups, order = {}, []
     for doc, arm in legs:
-        if not doc or doc in seen:
+        if not doc:
             continue
-        seen.add(doc)
-        r = leg_row(doc, arm, a.projects)
-        if r is None:
+        if not os.path.isfile(doc):
             print("autocompact-ab: unreadable leg doc, skipped: %s" % doc, file=sys.stderr)
+            continue
+        _, base, _ = identity(doc)
+        key = chain_key(doc, base)
+        if key not in groups:
+            groups[key] = {}
+            order.append(key)
+        groups[key][doc] = groups[key].get(doc) or arm
+    rows = []
+    for key in order:
+        r = chain_rows(list(groups[key].items()), a.projects)
+        if r is None:
+            print("autocompact-ab: unreadable leg doc, skipped: %s" % key[1], file=sys.stderr)
         elif r["wrapped"] or a.all:
             rows.append(r)
 
@@ -246,9 +322,9 @@ def main():
             r["ci_first_try"], r["review_rounds"], r["pr"] or "-"))
         if r["transcripts"] == 0 or r["calls"] == 0:
             print("  ^ no measured transcript for this leg (customTitle not matched or no usage rows)")
-    unl = [r for r in rows if r["arm"] == "unlabelled"]
+    unl = [r for r in rows if r["arm"] in ("unlabelled", "unproven")]
     if unl:
-        print("\n%d unlabelled leg(s) left out of the summary" % len(unl))
+        print("\n%d unlabelled or arm-unproven leg(s) left out of the summary" % len(unl))
     print("\narm summary (means per leg)")
     print("%-5s %5s %6s %6s %10s %9s %8s %7s %4s  (legs without a transcript are excluded)" % (
         "arm", "legs", "comp", "hand", "cost-eq", "wall-min", "out/trn", "ci-1st", "rev"))

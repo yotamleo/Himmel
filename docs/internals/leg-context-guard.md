@@ -94,8 +94,12 @@ is opt-in and audited:
   the cache_read / cache_create / uncached split, price-weighted cost,
   wall-clock, PR outcome and mean output tokens per turn, then a per-arm table.
   The arm is the manifest record only (the brief line alone is not evidence);
-  RESUME sessions are included in a leg's totals, and a leg with no matching
-  transcript is counted as `unmeasured` and left out of the arm means.
+  one row per `TICKET-N<k>` (`scripts/lib/leg-identity.sh`): a RESUME successor
+  folds into its parent's row, the leg is wrapped when the last doc of the
+  chain is, and every transcript is counted once. A chain whose listed docs
+  carry different manifest arms is `unproven` and left out of the summary. A
+  leg with no matching transcript is counted as `unmeasured` and left out of
+  the arm means.
 
 ## Past the threshold
 
