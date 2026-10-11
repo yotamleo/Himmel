@@ -47,7 +47,8 @@ _flake_urldecode() {
 # local path, so file:///srv/r.git is /srv/r.git and never /srv/r (HIMMEL-5156);
 # its scheme is case-insensitive and its path is percent-decoded (HIMMEL-5157).
 # file://host/path drops the host like git does (git reads the path and ignores
-# the host), so file://host/srv/r is /srv/r (HIMMEL-5169).
+# the host), so file://host/srv/r is /srv/r (HIMMEL-5169); a bracketed host is
+# skipped through its ] as git does, so file://[a/b]/p is /p (HIMMEL-5184).
 # A relative local path is resolved against <base> when one is given, so
 # ../r.git from two different parents is two ids (HIMMEL-5156); an absolute one
 # has its . and .. and doubled slashes collapsed, so /srv/x/../r.git is
@@ -59,9 +60,20 @@ _flake_norm_url() {
       # a sentinel x rides every substitution so a decoded trailing newline
       # is part of the path (HIMMEL-5161)
       _u=$(_flake_urldecode "${_u#???????}"; printf x); _u=${_u%x}
-      case "$_u" in
-        /*) ;;
-        */*) _u=/${_u#*/} ;;
+      # git's host_end: the first @[ (else a leading [) opens a bracketed host,
+      # skipped through its ]; the path is what follows (HIMMEL-5184). An @[
+      # with no ] after it opens nothing, and once an @[ exists git never falls
+      # back to a leading [. A path-less origin is rejected by git and shares
+      # the root id.
+      _r=$_u
+      case "$_r" in
+        *@\[*\]*) _r=${_r#*@\[}; _r=${_r#*\]} ;;
+        *@\[*) ;;
+        \[*\]*) _r=${_r#*\]} ;;
+      esac
+      case "$_r" in
+        /*) _u=$_r ;;
+        */*) _u=/${_r#*/} ;;
         *) _u=/ ;;
       esac ;;
     *://*) _s=$(printf '%s' "${_u%%://*}" | tr '[:upper:]' '[:lower:]'); _u=${_u#*://}; _net=1 ;;
@@ -106,8 +118,9 @@ _flake_repo_id() {
       *)
         # a separate git dir: the main checkout is this top-level, but only when
         # <dir> is that checkout; a linked worktree of such a repo cannot name it
-        # (ponytail: HIMMEL-5169, resolved against the git dir there, revisit if a fleet repo
-        # uses --separate-git-dir with linked worktrees)
+        # (ponytail: a relative origin resolves against the git dir there, not
+        # the main checkout, HIMMEL-5191 revisits if a fleet repo uses
+        # --separate-git-dir with linked worktrees)
         if [ "$(git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null)" = "$_common" ]; then
           _base=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)
         fi

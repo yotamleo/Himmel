@@ -511,6 +511,69 @@ if _isid "$nl6" && _isid "$nl7" && [ "$nl6" = "$nl7" ]; then
 else
   fail "F16: host newline: %0A [$nl6] vs plain [$nl7] must match"
 fi
+# HIMMEL-5184: git rejects a path-less file:// origin (file://host, file://a,
+# file://), so no usable repo has one; they are pinned to the root id, the same
+# as file:/// and /, instead of left to drift.
+mk_url_repo "$sb/pl1" "file://host"
+mk_url_repo "$sb/pl2" "file://a"
+mk_url_repo "$sb/pl3" "file://"
+mk_url_repo "$sb/pl4" "file:///"
+mk_url_repo "$sb/pl5" "/"
+mk_url_repo "$sb/pl6" "file://[a]"
+pl1=$(_flake_repo_id "$sb/pl1" 2>&1); pl2=$(_flake_repo_id "$sb/pl2" 2>&1); pl3=$(_flake_repo_id "$sb/pl3" 2>&1)
+pl4=$(_flake_repo_id "$sb/pl4" 2>&1); pl5=$(_flake_repo_id "$sb/pl5" 2>&1); pl6=$(_flake_repo_id "$sb/pl6" 2>&1)
+if _isid "$pl1" && [ "$pl1" = "$pl5" ] && [ "$pl2" = "$pl5" ] && [ "$pl3" = "$pl5" ] && [ "$pl4" = "$pl5" ] && [ "$pl6" = "$pl5" ] && [ "$pl5" != "$p3" ]; then
+  pass "F16: path-less file:// origins (git rejects them) share the root id with file:/// and /"
+else
+  fail "F16: path-less: host [$pl1] a [$pl2] empty [$pl3] file:/// [$pl4] / [$pl5] [a] [$pl6] must match"
+fi
+# HIMMEL-5184: git's host_end skips a bracketed host, so the path is what
+# follows the ] (git ls-remote 'file://[a/b]/p' runs upload-pack on /p); the
+# first @[ anywhere in the URL starts the bracket, as in git; an unclosed [ is
+# not skipped.
+mk_url_repo "$sb/br1" "file://[a/b]/p"
+mk_url_repo "$sb/br2" "file://u@[a/b]/p"
+mk_url_repo "$sb/br3" "file://[a]/p"
+mk_url_repo "$sb/br4" "file://[a/b"
+mk_url_repo "$sb/br5" "file:///x@[y]/z"
+mk_url_repo "$sb/br6" "/p"
+mk_url_repo "$sb/br7" "/b"
+mk_url_repo "$sb/br8" "/z"
+br1=$(_flake_repo_id "$sb/br1" 2>&1); br2=$(_flake_repo_id "$sb/br2" 2>&1); br3=$(_flake_repo_id "$sb/br3" 2>&1)
+br4=$(_flake_repo_id "$sb/br4" 2>&1); br5=$(_flake_repo_id "$sb/br5" 2>&1); br6=$(_flake_repo_id "$sb/br6" 2>&1)
+br7=$(_flake_repo_id "$sb/br7" 2>&1); br8=$(_flake_repo_id "$sb/br8" 2>&1)
+if _isid "$br6" && [ "$br1" = "$br6" ] && [ "$br2" = "$br6" ] && [ "$br3" = "$br6" ]; then
+  pass "F16: file://[a/b]/p, u@[a/b]/p and [a]/p are /p (bracket host skipped like git)"
+else
+  fail "F16: bracket host: [a/b]/p [$br1] u@[a/b]/p [$br2] [a]/p [$br3] want /p [$br6]"
+fi
+if _isid "$br7" && [ "$br4" = "$br7" ] && [ "$br5" = "$br8" ] && [ "$br7" != "$br8" ]; then
+  pass "F16: an unclosed [ is not skipped (/b); an @[ in the path is the bracket start, as in git (/z)"
+else
+  fail "F16: bracket edges: [a/b [$br4] want /b [$br7]; /x@[y]/z [$br5] want /z [$br8]"
+fi
+# an @[ with no closing ] opens no bracket: git keeps /x@[y/z whole for
+# file:///x@[y/z, and reads x@[y as the host (path /z) for file://x@[y/z
+mk_url_repo "$sb/br9" "file:///x@[y/z"
+mk_url_repo "$sb/br10" "file://x@[y/z"
+mk_url_repo "$sb/br11" "/x@[y/z"
+br9=$(_flake_repo_id "$sb/br9" 2>&1); br10=$(_flake_repo_id "$sb/br10" 2>&1); br11=$(_flake_repo_id "$sb/br11" 2>&1)
+if _isid "$br11" && [ "$br9" = "$br11" ] && [ "$br10" = "$br8" ] && [ "$br11" != "$br8" ]; then
+  pass "F16: an unclosed @[ keeps the path whole (/x@[y/z) and is a host when before the path (/z)"
+else
+  fail "F16: unclosed @[: file:///x@[y/z [$br9] want /x@[y/z [$br11]; file://x@[y/z [$br10] want /z [$br8]"
+fi
+# once an @[ exists git never falls back to a leading [: file://[a/b]@[c/d is
+# host [a, path /b]@[c/d (never /d, the id of file:///d)
+mk_url_repo "$sb/br12" "file://[a/b]@[c/d"
+mk_url_repo "$sb/br13" "/b]@[c/d"
+mk_url_repo "$sb/br14" "file:///d"
+br12=$(_flake_repo_id "$sb/br12" 2>&1); br13=$(_flake_repo_id "$sb/br13" 2>&1); br14=$(_flake_repo_id "$sb/br14" 2>&1)
+if _isid "$br13" && [ "$br12" = "$br13" ] && [ "$br12" != "$br14" ]; then
+  pass "F16: an unclosed @[ blocks the leading-[ rule (file://[a/b]@[c/d is /b]@[c/d, not /d)"
+else
+  fail "F16: file://[a/b]@[c/d [$br12] want /b]@[c/d [$br13], never /d [$br14]"
+fi
 # HIMMEL-5169: the origin is read with a sentinel, so a literal trailing
 # newline in the config value (not a decoded one) stays part of the path
 mk_url_repo "$sb/ln1" "/srv/r"
