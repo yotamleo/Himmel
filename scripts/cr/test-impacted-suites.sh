@@ -30,6 +30,9 @@ if [ ! -f "$IS" ]; then
     exit 1
 fi
 
+# SHD is first assigned in row 36b but named in the EXIT traps of rows 36/36a; declared
+# here so an early exit cannot abort that cleanup on an unbound variable (HIMMEL-5189).
+SHD=""
 FX="$(fixture_mktemp_dir)" || exit 1
 trap 'rm -rf "$FX"' EXIT
 
