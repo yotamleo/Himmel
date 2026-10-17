@@ -6,7 +6,8 @@
 # per-model slug IDs). The panel appends its own availability + raw-finding rows
 # to the CR ledger before it exits.
 # Stdout = merged findings block. Stderr = panel-availability lines.
-# Exit 0 = >=1 responded; 1 = all failed (caller -> claude-only); 2 = usage;
+# Exit 0 = >=1 responded; 1 = all failed (caller -> claude-only); 2 = usage error or
+# temp-file (mktemp) failure (stderr says which);
 # 3 = invalid --worktree; 4 = --worktree diff is empty; 5 = git/ledger failure;
 # 6 = citation-guard id not computable (SHA-256 unavailable/failed) — run
 #     REFUSED, fail-closed: no review emitted, no ledger rows appended.
@@ -110,6 +111,7 @@ usage: critic-panel.sh [--worktree <path>] [--head <sha>] [--branch <name>] [--b
                            to it, so a base branch that moved between capture and
                            review cannot change the reviewed diff (HIMMEL-1984)
   --check [--all-tiers]    probe registry health without reviewing a diff
+exit 2: usage error, or temp-file (mktemp) failure - check free space in TMPDIR
 exit 3: --worktree path is not a git worktree
 exit 4: --worktree <base>...HEAD diff is empty, or stdin mode got no piped diff (review refused)
 exit 5: git metadata, diff computation, or CR-ledger persistence failed

@@ -264,6 +264,17 @@ PINABORTRETRY
                     ;;
                 esac
                 echo "critic panel REFUSED to certify this run (exit 6: the citation-guard digest could not be computed - fix sha256sum/shasum) - claude-only review; the CR marker stays held at this SHA until the panel is re-run on a new HEAD" >&2
+            elif [ "$panel_rc" -eq 2 ]; then
+                # exit 2 is a usage error or a mktemp failure, not a failed
+                # critic: name the cause the panel printed.
+                case "$panel_avail_lines" in
+                *"mktemp failed"*)
+                    echo "critic panel unavailable (exit 2: critic-panel: mktemp failed - check free space in TMPDIR) - claude-only review" >&2
+                    ;;
+                *)
+                    echo "critic panel unavailable (exit 2: usage error: ${panel_avail_lines%%$'\n'*}) - claude-only review" >&2
+                    ;;
+                esac
             else
                 echo "critic panel unavailable (all critics failed) - claude-only review" >&2
             fi

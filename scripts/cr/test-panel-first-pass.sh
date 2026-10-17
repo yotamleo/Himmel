@@ -252,6 +252,23 @@ if [ "$rc" -eq 0 ]; then ok "T6b panel exit 6 degrades to exit 0"; else bad "T6b
 assert_has "$err" "critic panel REFUSED to certify this run (exit 6" "T6b refusal note on stderr"
 assert_lacks "$err" "all critics failed" "T6b exit 6 is not described as all critics failed"
 assert_lacks "$out" "PHANTOM-FINDING-MUST-NOT-SURVIVE" "T6b findings reset to empty"
+# T6e: panel exit 2 from a mktemp failure names it, never "all critics
+# failed"; a usage-error exit 2 does not claim mktemp.
+rm -rf "$repo/.git/cr-review-rounds"
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && FAKE_RC=2 FAKE_ERR='critic-panel: mktemp failed' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+err="$(cat "$tmp/err")"
+if [ "$rc" -eq 0 ]; then ok "T6e panel exit 2 degrades to exit 0"; else bad "T6e panel exit 2 exit (got $rc)"; fi
+assert_has "$err" "critic panel unavailable (exit 2: critic-panel: mktemp failed - check free space in TMPDIR) - claude-only review" "T6e mktemp cause named on stderr"
+assert_lacks "$err" "all critics failed" "T6e exit 2 is not described as all critics failed"
+rm -rf "$repo/.git/cr-review-rounds"
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && FAKE_RC=2 FAKE_ERR='usage: critic-panel.sh [--worktree <path>]' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+err="$(cat "$tmp/err")"
+assert_has "$err" "critic panel unavailable (exit 2: usage error: usage: critic-panel.sh [--worktree <path>]) - claude-only review" "T6e usage cause named on stderr"
+assert_lacks "$err" "mktemp" "T6e usage-error exit 2 does not claim mktemp"
 # Every panel run advances the branch's 3-round counter; T6b is an extra run
 # the later cases were not budgeted for, so give them a fresh counter.
 rm -rf "$repo/.git/cr-review-rounds"

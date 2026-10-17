@@ -185,6 +185,17 @@ PINABORTRETRY
                     # refusal, recorded on the ledger; not a
                     # failed panel.
                     echo "docs-audit critic panel REFUSED to certify this run (exit 6: the citation-guard digest could not be computed - fix sha256sum/shasum); the CR marker stays held at this SHA until the panel is re-run on a new HEAD" >&2
+                elif [ "$panel_rc" -eq 2 ]; then
+                    # exit 2 is a usage error or a mktemp failure, not a
+                    # failed critic: name the cause the panel printed.
+                    case "$docs_audit_panel_avail_lines" in
+                    *"mktemp failed"*)
+                        echo "docs-audit cross-model critic unavailable (exit 2: critic-panel: mktemp failed - check free space in TMPDIR) - record any panel-availability unavailable rows; under CR_REQUIRE_CROSS_MODEL the marker will stay closed until a non-Claude critic records avail ok" >&2
+                        ;;
+                    *)
+                        echo "docs-audit cross-model critic unavailable (exit 2: usage error: ${docs_audit_panel_avail_lines%%$'\n'*}) - record any panel-availability unavailable rows; under CR_REQUIRE_CROSS_MODEL the marker will stay closed until a non-Claude critic records avail ok" >&2
+                        ;;
+                    esac
                 else
                     echo "docs-audit cross-model critic unavailable (all critics failed) - record any panel-availability unavailable rows; under CR_REQUIRE_CROSS_MODEL the marker will stay closed until a non-Claude critic records avail ok" >&2
                 fi

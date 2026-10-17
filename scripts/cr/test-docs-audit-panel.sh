@@ -174,6 +174,20 @@ check "$(cat "$stdout_file")" "" "T7b stdout (findings discarded)"
 contains "$(cat "$stderr_file")" "docs-audit critic panel REFUSED to certify this run (exit 6" "T7b stderr names the refusal"
 case "$(cat "$stderr_file")" in *"all critics failed"*) echo "FAIL: T7b exit 6 must not read as all critics failed"; fail=1 ;; esac
 
+# 7c. panel exit 2 from a mktemp failure names it, never "all critics
+# failed"; a usage-error exit 2 does not claim mktemp.
+export CR_REQUIRE_CROSS_MODEL=1
+unset CR_PROFILE 2>/dev/null || true
+export STUB_RC=2 STUB_OUT="should-be-discarded" STUB_ERR="critic-panel: mktemp failed"
+rc=$(run_sut --head "$head_feat" --branch feat)
+check "$rc" "0" "T7c rc (degrade, not abort)"
+contains "$(cat "$stderr_file")" "docs-audit cross-model critic unavailable (exit 2: critic-panel: mktemp failed - check free space in TMPDIR)" "T7c stderr names the mktemp cause"
+case "$(cat "$stderr_file")" in *"all critics failed"*) echo "FAIL: T7c exit 2 must not read as all critics failed"; fail=1 ;; esac
+export STUB_RC=2 STUB_OUT="should-be-discarded" STUB_ERR="usage: critic-panel.sh [--worktree <path>]"
+rc=$(run_sut --head "$head_feat" --branch feat)
+contains "$(cat "$stderr_file")" "docs-audit cross-model critic unavailable (exit 2: usage error: usage: critic-panel.sh [--worktree <path>])" "T7c stderr names the usage cause"
+case "$(cat "$stderr_file")" in *"mktemp"*) echo "FAIL: T7c usage-error exit 2 must not claim mktemp"; fail=1 ;; esac
+
 # 8. Stubbed panel exit 0: findings land on stdout ONLY, panel-availability
 # lands on stderr ONLY - the two streams never merge.
 export CR_REQUIRE_CROSS_MODEL=1
