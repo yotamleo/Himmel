@@ -443,6 +443,14 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: added-unwired-check
+        name: A file this branch adds must be wired (ready-check item 11)
+        language: system
+        entry: bash scripts/testing/check-added-unwired.sh --branch-diff
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
       - id: code-review-before-push
         name: Multi-agent code review (pr-review-toolkit) before push
         language: system
