@@ -125,6 +125,24 @@ else
   run_step pre-commit install "pip" -- $TMO 120 python3 -m pip install --disable-pip-version-check --break-system-packages pre-commit
 fi
 
+# 3a. gitleaks: the pre-push secret scan needs the binary and the image lacks it.
+# Same pin and checksum as the CI secret scan (.github/workflows/ci.yml).
+GL_VER=8.30.1
+GL_SHA=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+gitleaks_install() {
+  local d; d="$(mktemp -d "${TMPDIR:-/tmp}/gitleaks.XXXXXX")" || return 1
+  $TMO 120 curl -fsSL -o "$d/gl.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" \
+    && echo "$GL_SHA  $d/gl.tgz" | sha256sum -c - \
+    && tar -xzf "$d/gl.tgz" -C "$d" gitleaks \
+    && install -m 0755 "$d/gitleaks" /usr/local/bin/gitleaks
+  local rc=$?; rm -rf "$d"; return "$rc"
+}
+if have gitleaks; then
+  plan gitleaks skip "present"
+else
+  soft_step gitleaks install "v$GL_VER (release tarball, sha256-pinned)" -- gitleaks_install
+fi
+
 # 3b. git gate hooks: a fresh clone has none, so the pre-commit,
 # commit-msg (ticket ID, attestation trailers) and pre-push gates never fire in
 # the cloud. A bare `pre-commit install` installs only the first type, so all

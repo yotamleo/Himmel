@@ -1,0 +1,244 @@
+{
+  "comment": "Cloud-lane capability matrix (HIMMEL-6135). cloud-route.mjs builds its run-time-need check from every row with a match (joined in order, flag i) and its ask cap from max_asks; a row with no match is reference for briefs and shepherds. Method and sources: the state repo research doc cloud-lane-capability-map-2026-10-17.md.",
+  "max_asks": 3,
+  "rows": [
+    {
+      "id": "luna-vault",
+      "capability": "luna vault and other personal vaults",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): luna, vaults absent, by design",
+      "source": "docs/setup/cloud-environment.md (parity table)",
+      "match": "\\bluna\\b|\\bvault\\b",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "handover-state",
+      "capability": "handover state repo ($HANDOVER_DIR, handovers/, specs/)",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): handover state absent, by design",
+      "source": "docs/setup/cloud-environment.md (parity table)",
+      "match": "handover state|\\$HANDOVER_DIR|\\bstate[ -]repo\\b|(?<![\\w.-])handovers\\/[\\w.-]+\\/|(?<![\\w.-])specs\\/HIMMEL-\\d",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "qmd-vector",
+      "capability": "qmd vector search, embed, model pull",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE; the himmel BM25 collection stays cloud",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): setup-env.sh indexes himmel BM25 only, no model pull and no embed (fits the ~5 min setup)",
+      "source": "scripts/cloud/setup-env.sh (qmd-index step)",
+      "match": "\\bqmd\\s+(?:query|vsearch|embed|pull)\\b|vector search",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "graphify-semantic",
+      "capability": "semantic graphify extraction (/graphify, --backend)",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE; graphify AST update and query stay cloud",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): graphify installed AST-only, no backend extra and no backend key",
+      "source": "scripts/cloud/setup-env.sh (graphify steps)",
+      "match": "(?<![\\w.-])\\/graphify\\b|semantic (?:graphify|extraction)|\\bgraphify\\b[^\\n]*--backend",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "qmd-other-collection",
+      "capability": "qmd collections other than himmel",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): setup-env.sh adds the himmel collection and nothing else",
+      "source": "scripts/cloud/setup-env.sh (qmd-index step)",
+      "match": "\\bqmd\\b[^\\n]*?(?<![\\w-])(?:-c|--collections?)[\\s=]+['\"]?(?!himmel(?![\\w-]))[\\w-]",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "station-state",
+      "capability": "station state under ~/.himmel or ~/.cache",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): fresh root home, user CLAUDE.md absent, user deny rules 0",
+      "source": "docs/setup/cloud-environment.md (parity table)",
+      "match": "(?:~|\\$HOME|\\$\\{HOME\\})\\/\\.(?:himmel|cache)\\/",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "live-ledger",
+      "capability": "the LIVE eval / run ledgers on the station",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): no station state in the VM (fresh home)",
+      "source": "docs/setup/cloud-environment.md (parity table)",
+      "match": "\\bLIVE\\b[^\\n.]{0,40}\\bledger\\b",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "station-scheduler",
+      "capability": "arming the cadence, systemd timers, at/atrm jobs",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): the VM is per-session; at ships without a running atd and nothing outlives the session",
+      "source": "scripts/cloud/setup-env.sh (apt step)",
+      "match": "\\barm(?:s|ed|ing)?\\b[^\\n.]{0,40}\\bcadence\\b|\\bsystemd[ -](?:timer|unit|service)s?\\b|\\batrm\\b",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "test-vm",
+      "capability": "himmel test VMs (vmsdk, VBoxManage, VM snapshots)",
+      "state": "cannot",
+      "local_split": "run the ticket LOCAL-NATIVE; the console runs VM suites",
+      "evidence": "session_01FTpE2XHmk2hPJ71fwo5nSs (PR 1771): test-install-symmetry-vm rc=3, no VM reachable",
+      "source": "PR 1771 CLOUD-DONE comment",
+      "match": "\\btest VMs?\\b|himmel-ops:vm|\\bvmsdk\\b|\\bVBoxManage\\b|\\bVM[- ]only\\b|\\b(?:on|in|inside) (?:a|the) (?:test )?VM\\b|\\bVM snapshots?\\b",
+      "route": "LOCAL-NATIVE"
+    },
+    {
+      "id": "multi-ask",
+      "capability": "briefs with several asks (cap: max_asks)",
+      "state": "partial",
+      "local_split": "more than max_asks asks: LOCAL-NATIVE",
+      "evidence": "PR 1925: 5 asks all mapped done under Ticket coverage; session_01YVUS69PmeBP7BDn23ZZ2n4 (PR 1765) reported the asks it could not do. No silent drop found; the cap stays as the conservative bound",
+      "source": "PR 1925 body, PR 1765 CLOUD-DONE comment"
+    },
+    {
+      "id": "open-pr",
+      "capability": "commit and open a PR to main",
+      "state": "does",
+      "evidence": "189 of 193 PRs carrying a claude.ai/code session link merged (the 4 closed: none for a cloud capability), e.g. session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493)",
+      "source": "gh pr list over yotamleo/Himmel"
+    },
+    {
+      "id": "push-branch",
+      "capability": "push to a branch of its choice",
+      "state": "partial",
+      "local_split": "the session pushes to its claude/... branch and the classifier refuses commits outside the brief file scope; the local shepherd owns out-of-scope follow-ups",
+      "evidence": "session_01D8SLdstcHYxysU2d5HvEbT (PR 1760): could only push claude/leg-resume-brief-repo-flag-sp6zmm; session_01SmK2DSikFdi3x7VWdUC1Zd (PR 2168): out-of-scope commit refused",
+      "source": "PR 1760, 2168 CLOUD-DONE comments"
+    },
+    {
+      "id": "shell-suites",
+      "capability": "repo shell suites",
+      "state": "partial",
+      "local_split": "suites that need a non-root user, unshare or a VM run at the local shepherd",
+      "evidence": "session_01EdvHkMJjbkVH78iuz4qu4u (PR 2014): test-uninstall-provenance 62/63 as uid 0; session_012yMgxSaSskpLb4qrfXBhk1 (PR 2314): test-claude-mock-turn needs unshare -rn",
+      "source": "PR 2014, 2314 CLOUD-DONE comments"
+    },
+    {
+      "id": "bun-node-tests",
+      "capability": "bun and node tests",
+      "state": "partial",
+      "local_split": "a red that also fails on untouched main in the VM (uid 0, proxy, no unshare) is re-run locally",
+      "evidence": "session_01BCqPMDHjUE9Z52yEy3J3Uf (PR 2306): bun test 42 pass 1 fail, the same fail on untouched origin/main as uid 0; bun 1.4.2, node 22.22.0 per session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493)",
+      "source": "PR 2306 CLOUD-DONE comment"
+    },
+    {
+      "id": "shellcheck",
+      "capability": "shellcheck",
+      "state": "does",
+      "evidence": "session_01UYU1H9JAxc4PYgcc6JPr6x (PR 2200): shellcheck rc=0 on all three touched files",
+      "source": "PR 2200 CLOUD-DONE comment"
+    },
+    {
+      "id": "git-gates",
+      "capability": "pre-commit, commit-msg, pre-push gates",
+      "state": "does",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): the git-hooks step installs all three; a ticketless commit message is refused rc 1",
+      "source": "docs/setup/cloud-environment.md (parity table)"
+    },
+    {
+      "id": "gitleaks",
+      "capability": "gitleaks binary for the pre-push secret scan",
+      "state": "does",
+      "local_split": "if the setup-env.sh gitleaks step reports failed, the local shepherd runs the secret scan",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): gitleaks not installed by setup (before HIMMEL-6135); setup-env.sh step 3a now installs gitleaks 8.30.1, sha256-pinned to the CI release; cse_014jSqhdQMC6HYFeB2y2vBpc (PR 3037 CLOUD-DONE probe): setup-env.sh rc 0, step=gitleaks action=install v8.30.1, gitleaks version 8.30.1",
+      "source": "scripts/cloud/setup-env.sh (gitleaks step); docs/setup/cloud-environment.md (parity table)"
+    },
+    {
+      "id": "repo-hooks",
+      "capability": "repo .claude/settings.json hooks",
+      "state": "partial",
+      "local_split": "a hook that needs HIMMEL_REPO over-blocks; the shepherd runs that step",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): 40 hook commands wired, 9/9 PreToolUse deny probes DENY; session_01BpfAfkxHtZhfAP3spgSXyR (PR 1761): guard-pr-check-literal refused impacted-suites.sh, HIMMEL_REPO unset",
+      "source": "PR 2493, PR 1761"
+    },
+    {
+      "id": "user-scope",
+      "capability": "user-scope deny rules and user CLAUDE.md",
+      "state": "cannot",
+      "local_split": "every rule a cloud session needs lives in the repo",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): deny=0, user CLAUDE.md absent",
+      "source": "docs/setup/cloud-environment.md (parity table)"
+    },
+    {
+      "id": "plugins",
+      "capability": "himmel plugins",
+      "state": "partial",
+      "local_split": "only the lean set (himmel-ops, lean-skills) via setup-env.sh --with-plugins; the claude.ai plugin upload does not load",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): plugins-installed himmel-ops@himmel,lean-skills@himmel, 2 plugin hook files (81 locally)",
+      "source": "PR 2493"
+    },
+    {
+      "id": "jira",
+      "capability": "Jira (Atlassian connector or the repo CLI)",
+      "state": "cannot",
+      "local_split": "the local shepherd does every Jira move and comment",
+      "evidence": "session_0147gtwYugQiJ5odwGAJdSba (PR 2005): connector not available; session_01DZfjtTs2skmhgvXwoJkKU9 (PR 2008): connected but not enabled; session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493): jira-token-set no",
+      "source": "PR 2005, 2008, 2493"
+    },
+    {
+      "id": "send-message",
+      "capability": "SendMessage to a local console",
+      "state": "cannot",
+      "local_split": "the session answers with a CLOUD-DONE / CLOUD-ACK PR comment; a local shepherd relays READY",
+      "evidence": "session_013KTA4ZC9nxtrGz6SDZvH7q (PR 1752): replied by a top-level CLOUD-ACK PR comment, never by SendMessage",
+      "source": "PR 1752"
+    },
+    {
+      "id": "steer-follow-up",
+      "capability": "console sends a follow-up to a running session",
+      "state": "does",
+      "evidence": "session_013KTA4ZC9nxtrGz6SDZvH7q (PR 1752): a claude -p --cloud follow-up got CLOUD-ACK within minutes (stopped: yes, last pushed sha)",
+      "source": "PR 1752"
+    },
+    {
+      "id": "stop-session",
+      "capability": "stop or pause a session from the CLI",
+      "state": "cannot",
+      "local_split": "send a stop follow-up and wait for CLOUD-ACK",
+      "evidence": "session_013KTA4ZC9nxtrGz6SDZvH7q (PR 1752): stopping needed a follow-up message; no CLI stop exists",
+      "source": "PR 1752"
+    },
+    {
+      "id": "gh-graphql",
+      "capability": "gh commands that use GraphQL (gh pr list, gh pr view)",
+      "state": "cannot",
+      "local_split": "use gh api REST endpoints (repos/{owner}/{repo}/...) in the cloud",
+      "evidence": "cse_014jSqhdQMC6HYFeB2y2vBpc (PR 3037 CLOUD-DONE probe): gh pr list rc 1, HTTP 403 GraphQL is not available from Claude Code sessions; gh api repos/yotamleo/Himmel/pulls rc 0",
+      "source": "PR 3037"
+    },
+    {
+      "id": "long-commands",
+      "capability": "commands up to 10 minutes",
+      "state": "partial",
+      "local_split": "suites past 600 s run locally",
+      "evidence": "session_01Jo7fMAczdmtLo9JcyzwbYK (PR 1809): test-arm-resume hit the 600 s cap; the cap comes only from the env-vars dialog",
+      "source": "PR 1809; scripts/cloud/environment.env"
+    },
+    {
+      "id": "egress",
+      "capability": "network egress",
+      "state": "partial",
+      "local_split": "hosts outside the Trusted allowlist are reached locally",
+      "evidence": "session_01TpA3C48Z3WXun4uaXa9yMs (PR 2493, HIMMEL-5442 parity probe: setup-env.sh, parity-probe.sh, check-env.sh all rc 0): pypi, npm, ubuntu archive 200; example.com 000; HTTPS goes through a proxy",
+      "source": "docs/setup/cloud-environment.md (parity table)"
+    },
+    {
+      "id": "himmel-repo-anchor",
+      "capability": "scripts that need HIMMEL_REPO (the primary-checkout anchor)",
+      "state": "cannot",
+      "local_split": "those steps run at the local shepherd",
+      "evidence": "session_01BpfAfkxHtZhfAP3spgSXyR (PR 1761): HIMMEL_REPO unset, impacted-suites step refused",
+      "source": "PR 1761; HIMMEL-4580"
+    }
+  ]
+}

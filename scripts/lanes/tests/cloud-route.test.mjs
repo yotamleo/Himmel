@@ -192,6 +192,9 @@ test('brief uses bounded repo-only search and the session checkout graph', () =>
   const brief = buildBrief(tk({ files: ['docs/x.md'], raw: 'ticket' }), { date: '2026-10-07' });
   assert.match(brief, /bash scripts\/lib\/qmd-bounded\.sh search "<terms>" -c himmel/);
   assert.match(brief, /bash scripts\/cloud\/setup-env\.sh/);
+  assert.match(brief, /Run `bash scripts\/cloud\/setup-env\.sh` from this worktree before any edit/, 'per-session setup is unconditional: the setup-time clone is throwaway');
+  assert.doesNotMatch(brief, /If you need repo retrieval/);
+  assert.match(brief, /scripts\/lanes\/cloud-capabilities\.json/);
   assert.match(brief, /--graph graphify-out\/graph\.json/);
   assert.doesNotMatch(brief, /--graph \/tmp\/himmel-setup/);
 });
@@ -585,4 +588,39 @@ test('CLI: a record with an invalid ticket string is skipped and does not drop t
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stdout, /routed HIMMEL-9101/);
   assert.match(r.stdout, /HIMMEL-9102\tBLOCKED\t.*routed HIMMEL-9100 in an earlier run/);
+});
+
+const MATRIX = JSON.parse(readFileSync(join(HERE, '..', 'cloud-capabilities.json'), 'utf8'));
+
+test('matrix: every row is does / cannot / partial and cites a cloud observation', () => {
+  assert.ok(MATRIX.rows.length > 0);
+  for (const r of MATRIX.rows) {
+    assert.match(r.id, /^[a-z0-9-]+$/, JSON.stringify(r));
+    assert.ok(['does', 'cannot', 'partial'].includes(r.state), r.id);
+    assert.ok(r.evidence && r.evidence.length > 0, `${r.id} has no evidence`);
+    if (r.state !== 'does') assert.ok(r.local_split, `${r.id} has no local split`);
+    if (r.match) new RegExp(r.match, 'i');
+  }
+});
+
+test('matrix: a run-time need names the matrix row it matched', () => {
+  const v = classifyTicket(tk({ description: 'Edit scripts/a.sh. It reads the luna vault.' }), ctx());
+  assert.equal(v.class, 'LOCAL-NATIVE');
+  assert.match(v.reason, /\[cloud-matrix: luna-vault\]/);
+});
+
+test('matrix: cloud-route routes from the matrix it is given, not from code', () => {
+  const matrix = { rows: [{ id: 'frob', state: 'cannot', evidence: 'x', local_split: 'local', match: '\\bfrobnicate\\b', route: 'LOCAL-NATIVE' }], max_asks: 1 };
+  const frob = classifyTicket(tk({ description: 'Edit scripts/a.sh. It runs frobnicate.' }), ctx({ matrix }));
+  assert.equal(frob.class, 'LOCAL-NATIVE');
+  assert.match(frob.reason, /\[cloud-matrix: frob\]/);
+  assert.equal(classifyTicket(tk({ description: 'Edit scripts/a.sh. It reads the luna vault.' }), ctx({ matrix })).class, 'CLOUD-OK');
+  const two = classifyTicket(tk({ description: 'Asks:\n1. one in scripts/a.sh\n2. two' }), ctx({ matrix }));
+  assert.equal(two.class, 'LOCAL-NATIVE');
+  assert.match(two.reason, /2 asks \(more than 1\)/);
+});
+
+test('matrix: a matrix with no match rows has no run-time need', () => {
+  const matrix = { rows: [{ id: 'note', state: 'does', evidence: 'x' }], max_asks: 3 };
+  assert.equal(classifyTicket(tk({ description: 'Edit scripts/a.sh. It reads the luna vault.' }), ctx({ matrix })).class, 'CLOUD-OK');
 });

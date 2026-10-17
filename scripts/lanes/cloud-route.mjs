@@ -38,10 +38,27 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..', '..');
-const MAX_ASKS = 3;
 const REPO_SLUG = 'yotamleo/Himmel';
 const HOOKS = /^scripts\/hooks\//;
-const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bstate[ -]repo\b|(?<![\w.-])handovers\/[\w.-]+\/|(?<![\w.-])specs\/HIMMEL-\d|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n]*--backend|\bqmd\b[^\n]*?(?<![\w-])(?:-c|--collections?)[\s=]+['"]?(?!himmel(?![\w-]))[\w-]|(?:~|\$HOME|\$\{HOME\})\/\.(?:himmel|cache)\/|\btest VMs?\b|himmel-ops:vm|\bvmsdk\b|\bVBoxManage\b|\bLIVE\b[^\n.]{0,40}\bledger\b|\barm(?:s|ed|ing)?\b[^\n.]{0,40}\bcadence\b|\bsystemd[ -](?:timer|unit|service)s?\b|\batrm\b|\bVM[- ]only\b|\b(?:on|in|inside) (?:a|the) (?:test )?VM\b|\bVM snapshots?\b/i;
+// What the cloud lane can and cannot do is data: every matrix row with a `match`
+// is a run-time need that keeps a ticket on the station, and max_asks caps asks.
+export const MATRIX_PATH = join(HERE, 'cloud-capabilities.json');
+export function loadMatrix(path = MATRIX_PATH) { return JSON.parse(readFileSync(path, 'utf8')); }
+const compiled = new WeakMap();
+let defaultMatrix;
+function needsOf(matrix) {
+  if (!compiled.has(matrix)) {
+    const rows = matrix.rows.filter((r) => r.match).map((r) => ({ ...r, re: new RegExp(r.match, 'iy') }));
+    // no match rows: a pattern that never matches, not the empty one that matches everything
+    const re = rows.length ? new RegExp(rows.map((r) => r.match).join('|'), 'i') : /(?!)/;
+    compiled.set(matrix, { rows, re, max: matrix.max_asks });
+  }
+  return compiled.get(matrix);
+}
+// the row whose own pattern produced the combined match: same start, same text
+function rowOf(needs, m) {
+  return needs.rows.find((r) => { r.re.lastIndex = m.index; return r.re.exec(m.input)?.[0] === m[0]; });
+}
 const BARE_RE = /(?<![\w./-])([a-z][a-z0-9]*(?:-[a-z0-9]+)+)(?:\.(?:sh|mjs|js|py|ps1))?(?![\w/-]|\.\w)/g;
 const FILE_RE = /(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|skills|plugins|packaging|tests|\.agents|\.claude|\.github|\.codex)\/[\w.+@-]+(?:\/[\w.+@-]+)*\/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)/g;
 
@@ -189,10 +206,11 @@ export function classifyTicket(t, ctx) {
   const files = [...new Set(named.map((f) => posix.normalize(f)))];
   const asks = Math.max(1, askLines(t.description).length);
   const v = (cls, reason) => ({ class: cls, reason, files, asks });
+  const needs = needsOf(ctx.matrix ?? (defaultMatrix ??= loadMatrix()));
 
   if (!/^(to do|backlog|open)$/i.test(t.status ?? '')) return v('BLOCKED', `status is '${t.status}', not To Do/Backlog/Open — already in flight or done`);
   // a run-time need (state-repo spec paths and the like) is the more specific LOCAL-NATIVE reason
-  const strange = t.files?.length || NEEDS.test(text) ? [] : unrecognisedPaths(text);
+  const strange = t.files?.length || needs.re.test(text) ? [] : unrecognisedPaths(text);
   for (const f of files) {
     const h = (ctx.held ?? []).find((x) => overlaps(f, x.file));
     if (h) return v('BLOCKED', `${f} is held (${h.why}) — one writer per file`);
@@ -203,9 +221,12 @@ export function classifyTicket(t, ctx) {
   if (trust) return v('LOCAL-NATIVE', `touches trust path ${trust} — needs a trust-reviewed GO`);
   if (strange.length) return v('LOCAL-NATIVE', `unrecognised path ${strange.join(', ')} — outside the known roots, so the hook, trust and held checks cannot be trusted (pass files)`);
   if (!files.length) return v('LOCAL-NATIVE', 'no file named in the ticket — nothing to scope a brief on (pass files)');
-  const need = text.match(NEEDS);
-  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state, the state repo, qmd models, semantic graphify, ~/.himmel state, test VMs, live ledgers and cadence arming stay on the station (the cloud has AST-only graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
-  if (asks > MAX_ASKS) return v('LOCAL-NATIVE', `${asks} asks (more than ${MAX_ASKS}) — cloud sessions drop second asks`);
+  const need = text.match(needs.re);
+  if (need) {
+    const row = rowOf(needs, need);
+    return v('LOCAL-NATIVE', `run-time need '${need[0]}' [cloud-matrix: ${row.id}] — the cloud ${row.state === 'partial' ? 'only partly has' : 'has no'} ${row.capability}: ${row.local_split}`);
+  }
+  if (asks > needs.max) return v('LOCAL-NATIVE', `${asks} asks (more than ${needs.max}) [cloud-matrix: multi-ask] — past the cloud ask cap`);
   if (ctx.treeUnknown) return v('BLOCKED', 'file tree unavailable (git failed) — cannot resolve the named files');
   const lost = ctx.tree ? unresolved(files, ctx.tree) : [];
   if (lost.length) return v('LOCAL-NATIVE', `cannot resolve ${lost.join(', ')} at the base — no such file or directory, so the hook, trust and held checks cannot be trusted (pass files)`);
@@ -249,7 +270,7 @@ ${named}
 1. Read \`CLAUDE.md\` and these files in full before editing: ${files.join(' ')}
 2. Claim the ticket: if the Atlassian MCP tools are listed, transition ${t.key} to \`In Progress\`; otherwise record "transition ${t.key} to In Progress" for the \`## Jira steps not done\` section (a cloud session has no handover doc and no queue lock; the ticket status is the claim).
 3. Create the branch as a worktree BEFORE any edit: \`git worktree add -b ${branch} .claude/worktrees/himmel-${n} origin/main\`, and work inside it (the repo's edit-on-main guard denies edits in the cloud's primary clone, even on a feature branch).
-   If you need repo retrieval, run \`bash scripts/cloud/setup-env.sh\` from this worktree first; it rebuilds the AST graph and repo-only index here. Query \`graphify query "<question>" --graph graphify-out/graph.json\`, never the unclassified cached /tmp graph. Search with \`bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel\`, never bare qmd search or a vault collection.
+   Run \`bash scripts/cloud/setup-env.sh\` from this worktree before any edit: the environment's setup ran in a throwaway clone, so this installs the git gate hooks here and rebuilds the AST graph and repo-only index. What this VM can and cannot do, with the local split for each gap: \`scripts/lanes/cloud-capabilities.json\`. Query \`graphify query "<question>" --graph graphify-out/graph.json\`, never the unclassified cached /tmp graph. Search with \`bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel\`, never bare qmd search or a vault collection.
 4. Edit ONLY these files: ${files.join(' ')}. Keep the diff minimal and match the surrounding style.
 5. Write the new or changed test FIRST and show it RED without the fix, then green. Run \`shellcheck\` on every \`.sh\` file you touch. Report rc and the PASS/FAIL tail of each.
 6. Make exactly ONE commit, never amend it. Before pushing, run the impacted suites: \`bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell\` lists every suite that references a changed file, and \`bash scripts/ci/run-shell-tests.sh --impacted origin/main..HEAD\` runs them. A red suite is fixed in a NEW commit, never an amend.

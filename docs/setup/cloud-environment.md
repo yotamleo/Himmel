@@ -185,7 +185,7 @@ post the full output as one top-level PR comment whose first line is
 | Attestation and ticket-ID gate | refuses a ticketless message (rc 1) | same, rc 1 | none |
 | bun | 1.4.3 | 1.4.2 | Image version, no action |
 | node, jq, gh, git | 24.21.0, 1.8.2, 2.102.0, 2.56.0 | 22.22.0, 1.7, 2.89.0, 2.43.0 | Image versions lag the station; the probe and its checks ran on both. No action |
-| gitleaks, `HIMMEL_REPO` | present | not probed, not installed by setup | HIMMEL-4580 |
+| gitleaks, `HIMMEL_REPO` | present | **closed here:** step `gitleaks` of `setup-env.sh` installs gitleaks 8.30.1, sha256-pinned to the CI release; `HIMMEL_REPO` not set | `HIMMEL_REPO`: HIMMEL-4580 |
 | shellcheck, `at` | present | present | none |
 | graphify | pinned 0.9.80 | image had 0.9.77, graph built AST-only. **Closed here:** setup skipped any present graphify; it now reinstalls one that differs from the pin, and the probe's `graphify-at-pin` row names a drift | Build time against the budget: HIMMEL-4581 |
 | qmd | 2.8.3 on PATH, 11 collections | installed by setup, no shim on PATH, so the probe read `<absent>`. **Closed here:** the probe resolves it through `qmd-bounded.sh` like setup does. One collection, `himmel`, BM25 only | By design: vaults and handover state stay local; a ticket needing a model-backed qmd query or vectors routes LOCAL-NATIVE |

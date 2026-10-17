@@ -44,7 +44,7 @@ so the operator runs it.
 |---|---|
 | BLOCKED | ticket not To Do; a touched file is held by an open PR (`gh pr diff --name-only`) or the console list; or `gh` failed, so freedom is unproven |
 | HOOK-BYPASS | touches `scripts/hooks/`: hooks do not run in the cloud and edits need the integrity bypass |
-| LOCAL-NATIVE | touches a trust path (`scripts/ci/ci-trust-paths.txt`, read as data); needs luna, a vault or handover state at run time (private data never leaves the station); more than 3 asks; or names no file. AST-only graphify and BM25 `qmd search` over the repo do not route local: the cloud setup installs both. `qmd query`, vector search and `qmd embed`/`pull` still do (the cloud has no qmd models), and so does a semantic graphify run (`/graphify`, `--backend`) |
+| LOCAL-NATIVE | touches a trust path (`scripts/ci/ci-trust-paths.txt`, read as data); hits a run-time need in the capability matrix `scripts/lanes/cloud-capabilities.json` (read as data: each row with a `match` — luna and vaults, handover state, qmd models, semantic graphify, other qmd collections, `~/.himmel` state, live ledgers, cadence arming, test VMs); has more asks than the matrix `max_asks`; or names no file. The reason names the row (`[cloud-matrix: <id>]`) and its local split. AST-only graphify and BM25 search of the `himmel` collection stay cloud: the setup installs both |
 | CLOUD-OK | none of the above |
 
 Files come from the ticket text (repo paths) unless the spec supplies them.

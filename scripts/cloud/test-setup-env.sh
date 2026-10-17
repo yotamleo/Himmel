@@ -27,7 +27,7 @@ mkdir -p "$FAKE/scripts/jira" "$FAKE/marketplace/plugins/obsidian-triage/tools"
 # "nothing installed"; a stub means "already present".
 EMPTY="$TMP/empty"; mkdir -p "$EMPTY"
 HAVE="$TMP/have"; mkdir -p "$HAVE"
-for t in shellcheck at pre-commit; do printf '#!/bin/sh\nexit 0\n' > "$HAVE/$t"; chmod +x "$HAVE/$t"; done
+for t in shellcheck at pre-commit gitleaks; do printf '#!/bin/sh\nexit 0\n' > "$HAVE/$t"; chmod +x "$HAVE/$t"; done
 
 BASH_BIN="$(command -v bash)"
 run() { # run <path-dir> [args...] -> stdout in $OUT, rc in $RC
@@ -54,6 +54,14 @@ mkdir -p "$FAKE/scripts/jira/dist"; : > "$FAKE/scripts/jira/dist/index.js"
 run "$HAVE" --dry-run
 case "$OUT" in *"step=jira-dist action=skip"*) ok "built jira dist is skipped" ;; *) bad "built dist not skipped: $OUT" ;; esac
 rm -rf "$FAKE/scripts/jira/dist"
+
+# 3c. gitleaks: the pre-push secret gate needs it and the image lacks it. Pinned
+# to the CI version with a checksum; absent -> install, present -> skip.
+run "$EMPTY" --dry-run
+case "$OUT" in *"step=gitleaks action=install"*"8.30.1"*) ok "absent gitleaks is planned as a pinned install" ;; *) bad "absent gitleaks not a pinned install: $OUT" ;; esac
+run "$HAVE" --dry-run
+case "$OUT" in *"step=gitleaks action=skip"*) ok "present gitleaks is skipped" ;; *) bad "present gitleaks not skipped: $OUT" ;; esac
+if grep -q '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$SETUP"; then ok "gitleaks download is checksum-pinned"; else bad "gitleaks download carries no sha256 pin"; fi
 
 # 4. dry-run changes nothing in the tree.
 run "$EMPTY" --dry-run
