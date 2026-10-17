@@ -40,7 +40,7 @@ its failure edge:
 | Shape | Use when | Breaks when |
 |---|---|---|
 | **fan-out-synthesize** | independent subtasks, one artifact to assemble (per-ticket overnight dispatch) | routing is ambiguous — the coordinator can't cleanly partition the work |
-| **adversarial-verify** | findings must survive independent refutation (review rounds) | the verifier shares context with the producer (rubber-stamps) |
+| **adversarial-verify** | findings must survive independent refutation (review rounds); verified findings come back sorted into act / consider / noted / dismissed buckets with an agreement map (findings two reviewers raised independently rank first) | the verifier shares context with the producer (rubber-stamps) |
 | **loop-until-done** | unknown-size discovery; converge on a target/quiet count | no orchestrator-owned stop-condition — the loop never terminates |
 | **peer-negotiation** (deliberation ONLY, never writes) | exploring competing hypotheses, design debate | any peer is allowed to write — it degrades into an unstructured swarm |
 
