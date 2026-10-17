@@ -29,6 +29,8 @@ test("a judge session's parent is the console that dispatched it, across the bri
 test("consult children use their dispatch edge and stamped succession overrides the original console", () => {
   expect(graphOf("consult" as any, `dispatched by \`${CONSOLE}\``).parent).toBe(CONSOLE);
   expect(graphOf("leg", `your console is **\`${PRIOR}\`**\n- 20:16 LIVE — SUCCESSION accepted: ${CONSOLE} replaces ${PRIOR}`).parent).toBe(CONSOLE);
+  // the relay wording a leg improvised: it still names the new console
+  expect(graphOf("leg", `your console is **\`${PRIOR}\`**\n- 17:56 SUCCESSION accepted — relay from ${PRIOR}, new console ${CONSOLE} (listed live), token kept`).parent).toBe(CONSOLE);
 });
 
 test("a console hangs under the operator and names the console it succeeded", () => {

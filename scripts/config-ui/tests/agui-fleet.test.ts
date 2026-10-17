@@ -1,6 +1,7 @@
 // GET /api/agui/fleet — every live session on one page. Drives the REAL fleet.sh (claude_sessions,
 // leg_tail_status) through claude-sessions.sh's own seams: a stub pgrep and a fake /proc whose cmdlines carry -n.
 import { test, expect, afterEach } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +31,12 @@ test("token-gated and read-only: no token is 401, POST is 405", async () => {
 });
 
 test("3 live sessions and 1 wrapped: roles, tickets, PR, state, activity, subagents, failures", async () => {
-  const { port } = boot();
+  const { port, dir, home } = boot();
+  // a console is running only while its queue lock is held
+  const root = join(dir, "handover");
+  const doc = join(root, "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(doc, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
+  execFileSync("bash", [join(import.meta.dir, "../../handover/queue-lock.sh"), "acquire", doc], { env: { PATH: process.env.PATH, HOME: home, HANDOVER_DIR: root } });
   const b = await (await fleet(port)).json();
   expect(b.census).toBe("ok");
   const by = Object.fromEntries(b.sessions.map((s: any) => [s.name, s]));
@@ -163,6 +169,62 @@ test("a console that released its lock is retired even while its process is aliv
   writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
   const b = await (await fleet(s.port)).json();
   expect(b.sessions.find((r: any) => r.name === FLEET.console.name).lock).toBe("released");
+});
+
+test("a console whose last bullet describes a wrapped leg stays running while its lock is held", async () => {
+  const s = boot();
+  const root = join(s.dir, "handover");
+  const file = join(root, "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n- 09:30 WRAPPED N9999 (#1 → abc)\n");
+  execFileSync("bash", [join(import.meta.dir, "../../handover/queue-lock.sh"), "acquire", file], { env: { PATH: process.env.PATH, HOME: s.home, HANDOVER_DIR: root } });
+  const row = (await (await fleet(s.port)).json()).sessions.find((r: any) => r.name === FLEET.console.name);
+  expect(row).toMatchObject({ lock: "held", live: true, state: "running" });
+});
+
+test("a console's own wrap line retires it", async () => {
+  const s = boot();
+  const file = join(s.dir, "handover", "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n- 09:30 WRAPPED — handoff written\n");
+  const row = (await (await fleet(s.port)).json()).sessions.find((r: any) => r.name === FLEET.console.name);
+  expect(row).toMatchObject({ lock: "released", live: false, state: "wrapped" });
+});
+
+test("a wrap line quoted above ## Results never retires a console whose lock is held", async () => {
+  const s = boot();
+  const root = join(s.dir, "handover");
+  const file = join(root, "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n- 08:00 WRAPPED — predecessor handoff\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
+  execFileSync("bash", [join(import.meta.dir, "../../handover/queue-lock.sh"), "acquire", file], { env: { PATH: process.env.PATH, HOME: s.home, HANDOVER_DIR: root } });
+  const row = (await (await fleet(s.port)).json()).sessions.find((r: any) => r.name === FLEET.console.name);
+  expect(row).toMatchObject({ lock: "held", live: true, state: "running" });
+});
+
+test("an own wrap line with the lock still held leaves the console live", async () => {
+  const s = boot();
+  const root = join(s.dir, "handover");
+  const file = join(root, "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n- 09:30 WRAPPED — handoff written\n");
+  execFileSync("bash", [join(import.meta.dir, "../../handover/queue-lock.sh"), "acquire", file], { env: { PATH: process.env.PATH, HOME: s.home, HANDOVER_DIR: root } });
+  const row = (await (await fleet(s.port)).json()).sessions.find((r: any) => r.name === FLEET.console.name);
+  expect(row).toMatchObject({ lock: "held", live: true, state: "running" });
+});
+
+test("a free lock with no own wrap line is not live", async () => {
+  const s = boot();
+  const file = join(s.dir, "handover", "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
+  const row = (await (await fleet(s.port)).json()).sessions.find((r: any) => r.name === FLEET.console.name);
+  expect(row).toMatchObject({ lock: "released", live: false, state: "unknown" });
+});
+
+test("an unreadable lock is unknown and never live", async () => {
+  const s = boot();
+  const root = join(s.dir, "handover");
+  const file = join(root, "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
+  mkdirSync(join(root, ".locks", "queue", `yotam__himmel__${FLEET.console.name}.lock`), { recursive: true });
+  const row = (await (await fleet(s.port)).json()).sessions.find((r: any) => r.name === FLEET.console.name);
+  expect(row).toMatchObject({ lock: "unknown", live: false, state: "unknown" });
 });
 
 test("a corrupt held lock directory is unknown, never proof the console released it", async () => {
