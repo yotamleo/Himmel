@@ -220,6 +220,46 @@ fi
 '; commit_case dyn_nodir
 verdict dyn_nodir ALL
 
+# absent <name> <file>: the dry-run list must NOT carry <file>
+absent() {
+  local out
+  out=$(bash "$SPR" --dry-run "$BASE" 2>/dev/null) || { bad "$1: dry-run failed"; return; }
+  if printf '%s\n' "$out" | grep -Fxq -- "$2"; then bad "$1: list wrongly carries $2"; else ok "$1: list omits $2"; fi
+}
+
+# merge_ref: CI's pull_request checkout is GitHub's merge ref (^1 = base branch tip, ^2 = PR head)
+# and a rerun reuses the event's STALE base.sha, so base..HEAD spans every main commit since. Shape
+# copied from lint job 117489260636 (run 39059106090, PR 2997): $BASE stale, main moved on, the PR
+# adds one file. Only the PR's own file may be linted, not the main-side file.
+reset; w scripts/zzmain.sh '#!/usr/bin/env bash
+echo main
+'; commit_case mr_main; MR_MAIN=$(git rev-parse HEAD)
+reset; w scripts/zzpr.sh '#!/usr/bin/env bash
+echo pr
+'; commit_case mr_pr; MR_PR=$(git rev-parse HEAD)
+git checkout -q "$MR_MAIN" && git merge -q --no-ff -m mergeref "$MR_PR" || bad "merge_ref: fixture merge failed"
+export GITHUB_EVENT_NAME=pull_request
+verdict merge_ref FILES scripts/zzpr.sh
+absent merge_ref scripts/zzmain.sh
+unset GITHUB_EVENT_NAME
+
+# one_pass: the closure must not re-grep the tree once per file (a 324-file closure ran past the
+# job cap). A git shim logs every call; the 4-deep chain needs at most the one up-front grep.
+mkdir -p "$T/gshim"
+RGIT=$(command -v git)
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/git.log"\nexec %s "$@"\n' "$T" "$RGIT" > "$T/gshim/git"
+chmod +x "$T/gshim/git"
+git checkout -q -f "$CBASE" && git clean -fdxq
+printf '# touched again\n' >> scripts/zzc/c0.sh; commit_case one_pass
+: > "$T/git.log"
+PATH="$T/gshim:$PATH" BASE=$CBASE verdict one_pass FILES scripts/zzc/c3.sh
+greps=$(grep -c ' grep ' "$T/git.log")
+[ "$greps" -le 2 ] && ok "one_pass: $greps git grep call(s) for a 4-deep closure" || bad "one_pass: $greps git grep calls, want at most 2"
+
+# timings: a slow run must be diagnosable from the job log
+out=$(bash "$SPR" --dry-run "$CBASE" 2>&1 >/dev/null)
+printf '%s' "$out" | grep -q 'selection took' && ok "timings: selection time is printed" || bad "timings: no selection time in: $out"
+
 # sweep_*: the non-dry fallback shards the full sweep in parallel through a stub pre-commit.
 # A stub shard fails when handed a file named *bad*; it records every invocation's file list.
 mkdir -p "$T/bin"

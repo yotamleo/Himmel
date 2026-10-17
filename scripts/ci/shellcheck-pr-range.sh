@@ -6,8 +6,10 @@
 # across the files of ONE invocation, so SC2034 "unused" verdicts depend on the
 # input set. So a PR lints the files it changed PLUS their source-graph
 # neighbours — files that source/`.` a changed (or deleted) file, and files a
-# changed file sources — in ONE serial run of the SAME hook (its `types` and
-# `exclude` still apply to --files).
+# changed file sources — through the SAME hook (its `types` and `exclude` still
+# apply to --files). "Changed" is the PR's own diff against its merge base, and the
+# selected set is sharded by source-graph component and linted in parallel
+# (sweep_all), with selection and lint timings printed.
 #
 # Fail-safe direction: when in doubt, lint everything (--all-files) if
 #   - the diff cannot be computed or a neighbour lookup errors,
@@ -43,13 +45,24 @@ run_all() {
 # path suffix, else same directory, else basename. An over-merged component only costs
 # speed. Components are packed largest-first onto nproc bins, one `pre-commit --files`
 # per bin; the exit status is the first non-zero bin's. Anything unplannable -> serial.
-serial_sweep() { exec pre-commit run shellcheck --all-files --show-diff-on-failure; }
+# `sweep_all <files>` shards just that newline-separated list (the PR's selected set, already
+# closed under its source neighbours); with no argument it shards the whole tree.
+subset=""
+serial_sweep() {
+  if [ -n "$subset" ]; then
+    printf '%s\n' "$subset" | tr '\n' '\0' | xargs -0 pre-commit run shellcheck --show-diff-on-failure --files
+    exit $?
+  fi
+  exec pre-commit run shellcheck --all-files --show-diff-on-failure
+}
 sweep_all() {
   local n sd i r rc=0 plan
+  [ $# -eq 0 ] || subset=$1
+  t_lint=$SECONDS
   n=$(nproc 2>/dev/null) || n=1 # swallow-ok: no nproc means no parallelism, the serial sweep runs
   [ "${n:-1}" -gt 1 ] 2>/dev/null || serial_sweep
   sd=$(mktemp -d "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") || serial_sweep
-  plan=$(git ls-files) || serial_sweep
+  if [ -n "$subset" ]; then plan=$subset; else plan=$(git ls-files) || serial_sweep; fi
   case "$plan" in '"'* | *'
 "'*) rm -rf "$sd"; serial_sweep ;; esac
   printf '%s\n' "$plan" > "$sd/files" || { rm -rf "$sd"; serial_sweep; }
@@ -100,6 +113,7 @@ sweep_all() {
     [ "$rc" -ne 0 ] || rc=$r
   done
   rm -rf "$sd"
+  echo "shellcheck-pr-range: lint took $((SECONDS - t_lint))s" >&2
   exit "$rc"
 }
 
@@ -108,7 +122,16 @@ sweep_all() {
 git() { command git -c core.quotePath=false "$@"; }
 dz=$(mktemp "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") || run_all "mktemp failed"
 trap 'rm -f "$dz"' EXIT
-git diff -z --no-renames --name-only --diff-filter=ACMRTD "$base" HEAD > "$dz" || run_all "git diff failed"
+# The PR's OWN diff against its merge base (three-dot), so commits merged forward from main are
+# not re-linted. On a pull_request run HEAD is GitHub's merge ref, whose parents are the base
+# branch tip (^1) and the PR head (^2): a rerun reuses the event's stale base.sha, so base..HEAD
+# would span every main commit since, while ^1...^2 is exactly the PR's own change.
+t_sel=$SECONDS
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && git rev-parse -q --verify 'HEAD^2' > /dev/null && ! git rev-parse -q --verify 'HEAD^3' > /dev/null; then
+  git diff -z --no-renames --name-only --diff-filter=ACMRTD 'HEAD^1...HEAD^2' > "$dz" || run_all "git diff failed"
+else
+  git diff -z --no-renames --name-only --diff-filter=ACMRTD "$base...HEAD" > "$dz" || run_all "git diff failed"
+fi
 changed=$(tr '\0' '\n' < "$dz")
 [ "$(tr -d '\0' < "$dz" | wc -c)" -eq "$(tr -d '\0\n' < "$dz" | wc -c)" ] || run_all "newline in a changed path"
 [ -n "$changed" ] || { echo "shellcheck-pr-range: no changed files" >&2; [ "$dry" = 1 ] && echo "FILES"; exit 0; }
@@ -133,7 +156,11 @@ esac
 
 tracked=$(git ls-files) || run_all "git ls-files failed"
 list=$(mktemp "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") ||run_all "mktemp failed"
-trap 'rm -f "$dz" "$list" "$list.n"' EXIT
+trap 'rm -f "$dz" "$list" "$list.n" "$list.g"' EXIT
+# every source/. line and `# shellcheck source=` directive in the tree, grepped ONCE: the
+# closure below looks consumers up in this file instead of re-grepping the tree per file
+case "$tracked" in *:*) run_all "a tracked path contains a colon" ;; esac
+git grep -n -I -E -e "$src_re" -e "$dir_re" -- . > "$list.g" 2>/dev/null || [ "$?" -eq 1 ] || run_all "git grep failed"
 
 # keep only lines whose source/. sits at command position OUTSIDE quotes: a `.` inside a jq
 # or sed program is not a source command. Quoted spans are blanked for the test only; the
@@ -150,9 +177,8 @@ cmd_pos() {
   done
   return 0
 }
-esc() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|/]/\\&/g'; }
 # consumers of $1: a source/. line or a `# shellcheck source=` directive naming it
-consumers() { git grep -l -E -e "${src_re}.*$(esc "$1")" -e "${dir_re}.*$(esc "$1")" -- . > "$list.n" 2>/dev/null; }
+consumers() { N="$1" awk '{ c = $0; sub(/^[^:]*:[0-9]+:/, "", c); if (index(c, ENVIRON["N"])) { sub(/:.*/, ""); print } }' "$list.g" | sort -u > "$list.n"; }
 
 printf '%s\n' "$changed" > "$list"
 while IFS= read -r f; do
@@ -216,6 +242,6 @@ grep -q '^"' "$list" && run_all "path needing quotes in the neighbour set"
 files=$(sort -u "$list" | while IFS= read -r p; do [ -f "$p" ] && printf '%s\n' "$p"; done)
 [ -n "$files" ] || { echo "shellcheck-pr-range: nothing lintable (only deletions)" >&2; [ "$dry" = 1 ] && echo "FILES"; exit 0; }
 
-if [ "$dry" = 1 ]; then echo "FILES"; printf '%s\n' "$files"; exit 0; fi
-echo "shellcheck-pr-range: $(printf '%s\n' "$files" | wc -l) files (changed + neighbours)" >&2
-printf '%s\n' "$files" | tr '\n' '\0' | xargs -0 pre-commit run shellcheck --show-diff-on-failure --files
+if [ "$dry" = 1 ]; then echo "shellcheck-pr-range: selection took $((SECONDS - t_sel))s" >&2; echo "FILES"; printf '%s\n' "$files"; exit 0; fi
+echo "shellcheck-pr-range: $(printf '%s\n' "$files" | wc -l) files (changed + neighbours), selection took $((SECONDS - t_sel))s" >&2
+sweep_all "$files"
