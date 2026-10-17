@@ -56,8 +56,12 @@ assert "default QMD_FORK_REF is a full 40-hex SHA" \
 default_repo="$(env -u QMD_FORK_REPO bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_fork_repo')"
 assert "default QMD_FORK_REPO is the carried fork yotamleo/qmd" \
   test "$default_repo" = "https://github.com/yotamleo/qmd.git"
-assert "default QMD_FORK_REF is the himmel/pin-http-auth commit" \
-  test "$default_ref" = "44fd060907fc99c5fab075c831ca2f1c06ced3a2"
+assert "default QMD_FORK_REF is the fork main merge commit tagged v2.8.3-himmel.1" \
+  test "$default_ref" = "c3b84dd7596c18967f6fcfbfeab44681499cb192"
+# shellcheck disable=SC2016
+# Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
+assert "the pin comment names the tag and HIMMEL-5952" \
+  bash -c 'grep -q "v2.8.3-himmel.1" "$1" && grep -q "HIMMEL-5952" "$1"' _ "$SCRIPT_DIR/qmd-bin.sh"
 
 echo "[test-qmd-bin] qmd_cmd resolver — prefer bun"
 tmpdir="$(mktemp -d)"
