@@ -1,0 +1,13 @@
+# A hooks block whose parity_guard entry carries a nested mapping (secret_env)
+# before its command, and no fail_closed: the guard is fail-open.
+hooks:
+  pre_tool_call:
+    - matcher: .*
+      secret_env:
+        TOKEN: x
+        ALLOWED:
+          - a
+      command: python3 /home/user/.hermes/agent-hooks/parity_guard.py
+      timeout: 10
+security:
+  redact_secrets: true

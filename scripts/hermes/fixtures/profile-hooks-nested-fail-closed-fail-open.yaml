@@ -1,0 +1,10 @@
+# A fail_closed: true that belongs to a nested mapping, not to the hook entry:
+# the parity_guard entry itself is still fail-open.
+hooks:
+  pre_tool_call:
+    - matcher: .*
+      command: python3 /home/user/.hermes/agent-hooks/parity_guard.py
+      secret_env:
+        fail_closed: true
+security:
+  redact_secrets: true

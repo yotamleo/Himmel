@@ -4027,7 +4027,7 @@ check_c60_hermes_origin() {
 # while `hermes hooks doctor` reported them healthy. Read-only: scans the
 # worker function in cron/scheduler.py, ignoring comment lines.
 check_c66_hermes_cron_hooks() {
-    local co="${DOCTOR_HERMES_CHECKOUT:-}" f body
+    local co="${DOCTOR_HERMES_CHECKOUT:-}" f body gw_pid gw_age gw_start mtime
     if [ -z "$co" ]; then
         if [ -n "${HERMES_HOME:-}" ]; then co="$HERMES_HOME/hermes-agent"
         elif [ -n "${LOCALAPPDATA:-}" ]; then co="$LOCALAPPDATA/hermes/hermes-agent"
@@ -4041,20 +4041,32 @@ check_c66_hermes_cron_hooks() {
     fi
     body="$(awk '/^def _run_external_worker_payload\(/ { f = 1; next } f && /^[^ \t#]/ { exit } f && !/^[ \t]*#/ { print }' "$f" 2>/dev/null)"
     if [ -z "$body" ]; then
-        emit INFO C66-hermes-cron-hooks "no external cron worker entrypoint in $f — cron jobs run in-process in the gateway, not checked"
+        emit WARN C66-hermes-cron-hooks "cron scheduler $f has no _run_external_worker_payload — upstream renamed or moved the worker entrypoint, so whether scheduled jobs run the profile's hooks is unverified" \
+            "read the new worker entrypoint in $f and update check_c66_hermes_cron_hooks in scripts/himmel-doctor.sh"
         return
     fi
     if grep -qE 'register_from_config|_register_config_hooks' <<< "$body"; then
-        emit OK C66-hermes-cron-hooks "hermes external cron worker registers the profile's config hooks"
+        # the source on disk is fenced; the running gateway only has it if it started after the file last changed
+        gw_pid="$(systemctl --user show -p MainPID --value hermes-gateway.service 2>/dev/null)" || gw_pid=""
+        if [ -n "${DOCTOR_HERMES_GATEWAY_START:-}" ]; then gw_start="$DOCTOR_HERMES_GATEWAY_START"
+        elif [ -n "$gw_pid" ] && [ "$gw_pid" != 0 ]; then
+            gw_age="$(ps -o etimes= -p "$gw_pid" 2>/dev/null | tr -d ' ')"
+            case "$gw_age" in ''|*[!0-9]*) gw_start="" ;; *) gw_start=$(( $(date +%s) - gw_age )) ;; esac
+        else gw_start=""
+        fi
+        mtime="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)" || mtime=""
+        if [ -n "$gw_start" ] && [ -n "$mtime" ] && [ "$gw_start" -lt "$mtime" ]; then
+            emit WARN C66-hermes-cron-hooks "hermes cron worker source is fenced, but the running gateway started before $f last changed — it may still run the old, unfenced code" \
+                "systemctl --user restart hermes-gateway.service"
+        else
+            emit OK C66-hermes-cron-hooks "hermes external cron worker registers the profile's config hooks"
+        fi
     else
         emit FAIL C66-hermes-cron-hooks "hermes external cron worker at $f never registers the profile's config hooks — scheduled jobs run with no pre_tool_call guard" \
             "hermes update (upstream 946eafdf2fe adds the registration), then systemctl --user restart hermes-gateway.service"
     fi
 }
 
-# --- C61-codex-cli: codex CLI older than the latest release ------
-# Latest comes from DOCTOR_CODEX_LATEST (tests) else `npm view` (10 s cap); an
-# unreachable registry is INFO, never a WARN. Read-only: it never upgrades.
 # --- C67-hermes-fail-open: a parity_guard hook registered fail-open ---
 # hermes registers a shell hook with fail_closed=False unless the entry says
 # otherwise, so a parity_guard that crashes, times out or cannot start ALLOWS
@@ -4078,13 +4090,21 @@ check_c67_hermes_fail_open() {
         n="$(awk '
             function flush() { if (cur && pg && !fc) bad++; cur = pg = fc = 0 }
             { sub(/\r$/, "") }
-            /^[^ \t#]/ { flush(); hooks = ($0 ~ /^hooks:/); ev = ""; next }
+            /^[^ \t#]/ { flush(); hooks = ($0 ~ /^hooks:/); ev = ""; evi = di = ""; next }
             !hooks { next }
-            /^[ \t]+[A-Za-z_]+:[ \t]*$/ { flush(); ev = $1; next }
+            /^[ \t]+[A-Za-z_]+:[ \t]*$/ {
+                match($0, /^[ \t]+/)
+                if (evi == "") evi = RLENGTH
+                if (RLENGTH <= evi) { flush(); ev = $1; di = ""; next }
+            }
             ev != "pre_tool_call:" { next }
-            /^[ \t]+- / { flush(); cur = 1 }
+            /^[ \t]+- / {
+                match($0, /^[ \t]+/)
+                if (di == "") di = RLENGTH
+                if (RLENGTH == di) { flush(); cur = 1; match($0, /^[ \t]*- +/); ek = RLENGTH }
+            }
             cur && /parity_guard\.py/ { pg = 1 }
-            cur && /^[ \t-]*(fail_closed|failClosed):[ \t]*[Tt]rue[ \t]*(#.*)?$/ { fc = 1 }
+            cur && /^[ \t-]*(fail_closed|failClosed):[ \t]*[Tt]rue[ \t]*(#.*)?$/ { match($0, /^[ \t]*(- +)?/); if (RLENGTH == ek) fc = 1 }
             END { flush(); print bad + 0 }' "$cfg" 2>/dev/null)"
         [ "${n:-0}" -gt 0 ] && open="$open ${cfg#"$hermes_home"/}"
     done
@@ -4096,6 +4116,9 @@ check_c67_hermes_fail_open() {
     fi
 }
 
+# --- C61-codex-cli: codex CLI older than the latest release ------
+# Latest comes from DOCTOR_CODEX_LATEST (tests) else `npm view` (10 s cap); an
+# unreachable registry is INFO, never a WARN. Read-only: it never upgrades.
 check_c61_codex_cli() {
     local bin="${DOCTOR_CODEX_BIN:-codex}" cur latest older timeout_bin="" t
     if ! command -v "$bin" >/dev/null 2>&1; then

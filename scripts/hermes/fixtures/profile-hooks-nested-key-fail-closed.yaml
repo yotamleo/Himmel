@@ -1,0 +1,12 @@
+# Same entry, fail_closed: true placed after the nested secret_env mapping.
+hooks:
+  pre_tool_call:
+    - matcher: .*
+      command: python3 /home/user/.hermes/agent-hooks/parity_guard.py
+      secret_env:
+        TOKEN: x
+        ALLOWED:
+          - a
+      fail_closed: true
+security:
+  redact_secrets: true

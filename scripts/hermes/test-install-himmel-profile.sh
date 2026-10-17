@@ -144,13 +144,21 @@ run >/dev/null
 fail_closed_entries() {
   awk -v needle="$2" '
     function flush() { if (cur && hit) { tot++; if (fc) ok++ } cur = hit = fc = 0 }
-    /^[^ \t#]/ { flush(); hooks = ($0 ~ /^hooks:/); ev = ""; next }
+    /^[^ \t#]/ { flush(); hooks = ($0 ~ /^hooks:/); ev = ""; evi = di = ""; next }
     !hooks { next }
-    /^[ \t]+[A-Za-z_]+:[ \t]*$/ { flush(); ev = $1; next }
+    /^[ \t]+[A-Za-z_]+:[ \t]*$/ {
+      match($0, /^[ \t]+/)
+      if (evi == "") evi = RLENGTH
+      if (RLENGTH <= evi) { flush(); ev = $1; di = ""; next }
+    }
     ev != "pre_tool_call:" { next }
-    /^[ \t]+- / { flush(); cur = 1 }
+    /^[ \t]+- / {
+      match($0, /^[ \t]+/)
+      if (di == "") di = RLENGTH
+      if (RLENGTH == di) { flush(); cur = 1; match($0, /^[ \t]*- +/); ek = RLENGTH }
+    }
     cur && index($0, needle) { hit = 1 }
-    cur && /^[ \t-]*fail_closed:[ \t]*true[ \t]*$/ { fc = 1 }
+    cur && /^[ \t-]*fail_closed:[ \t]*true[ \t]*$/ { match($0, /^[ \t]*(- +)?/); if (RLENGTH == ek) fc = 1 }
     END { flush(); printf "%d/%d\n", ok, tot }' "$1"
 }
 for p in himmel_agent research legacy station; do
@@ -169,6 +177,13 @@ before="$(cat "$HOME_DIR/profiles/station/config.yaml")"
 run >/dev/null
 if [ "$(cat "$HOME_DIR/profiles/station/config.yaml")" = "$before" ]; then pass "(I) fail_closed wiring is idempotent"
 else fail "(I) a re-run changed an already fail-closed profile"; fi
+
+for f in nested-key-fail-open:0/1 nested-key-fail-closed:1/1 nested-fail-closed-fail-open:0/1; do
+  cp "$SCRIPT_DIR/fixtures/profile-hooks-${f%:*}.yaml" "$TMP/nested.yaml"
+  got="$(fail_closed_entries "$TMP/nested.yaml" parity_guard.py)"
+  if [ "$got" = "${f#*:}" ]; then pass "(I) nested secret_env mapping stays inside its entry (${f%:*})"
+  else fail "(I) nested secret_env mapping (${f%:*}): parity_guard fail_closed = $got, want ${f#*:}"; fi
+done
 
 echo "== model_aliases sync (HIMMEL-737): sync_model_aliases.py direct =="
 MA_TMP="$TMP/model_aliases"
