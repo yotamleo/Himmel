@@ -172,8 +172,8 @@ chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.
 printf '%s\n' '{"five_hour":{"utilization":30},"seven_day":{"utilization":28}}' > "$W/bank.json"
 printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-111-legN61.md"
 printf '%s\n' '# leg' '- READY — done' > "$W/handover/HIMMEL-222-legN65.md"
-printf '%s' 1234567890 > "$W/handover/inbox/N61.md"
-printf '%s' 12345678 > "$W/handover/inbox/N65.md"
+printf '123456789\n' > "$W/handover/inbox/N61.md"
+printf '1234567\n' > "$W/handover/inbox/N65.md"
 printf '%s\n' 4 > "$W/handover/inbox/.cursor/N61"
 printf '%s\n' 8 > "$W/handover/inbox/.cursor/N65"
 printf 'pid=%s\n' "$$" > "$W/himmel-shell-suite-test.lock/owner"
@@ -214,13 +214,46 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 unowned-prs=none ext-prs=none bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip vault=skip cloud=skip orphans-wip=skip denials=none ciq=unknown plan-index=skip or=skip fails=skip vmrun=off'
+expected='TICK 12:34 legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 atq=2 suites=1alive/0dead prs=#2247,#2250 unowned-prs=none bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4 fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' legset=skip board=skip tracker=skip vault=skip cloud=skip orphans-wip=skip denials=none ciq=unknown vmrun=off'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
 else
     fail "default run exact line (rc=$rc lines=$lines out='$out')"
 fi
+
+# Removing required/default reader fields would break a successful sample or
+# leave persisted underfill/unowned markers uncleared. Values stay literal.
+for kv in legs=N61:FRESH,N65:FREE livestate=skip prs=#2247,#2250 tails=N61:LIVE,N65:READY \
+    legset=skip board=skip tracker=skip vault=skip cloud=skip orphans-wip=skip \
+    denials=none vmrun=off unowned-prs=none bank=5h30/wk28/codex=5h12/wk34; do
+    contains "reader field stays byte-identical: $kv" " $out " " $kv "
+done
+compact_full="$(STUB_FLEET_LINE='bank-preflight: FLEET native=8 claudex=0 openrouter=0 reserved=0 total=8/8' bash "$SUT")"
+contains 'capacity=ok stays present to clear the underfill streak' "$compact_full" ' capacity=ok '
+for kv in hb=ok ceiling=ok ext-prs=none tick=UNKNOWN orphans=none nonces=skip plan-index=skip or=skip fails=skip; do
+    not_contains "compact line omits unconsumed default $kv" " $out " " $kv "
+done
+
+# A consumed, empty or partial-only inbox has no unread complete line. Native
+# followers use <inbox>.cursor; hook delivery uses .cursor/<session> instead.
+printf '10\n' > "$W/handover/inbox/.cursor/N61"
+printf 'partial' > "$W/handover/inbox/N66.md"
+: > "$W/handover/inbox/N67.md"
+not_contains 'all consumed or partial inboxes omit inbox= entirely' "$(bash "$SUT")" ' inbox='
+printf 'new\n' > "$W/handover/inbox/N66.md"
+contains 'a new inbox with no cursor surfaces its unread line' "$(bash "$SUT")" ' inbox=N66:4/0 '
+printf '4\n' > "$W/handover/inbox/N66.md.cursor"
+not_contains 'native follower cursor hides a consumed inbox' "$(bash "$SUT")" ' inbox='
+printf 'broken\n' > "$W/handover/inbox/N66.md.cursor"
+contains 'a corrupt native cursor means the line is unread' "$(bash "$SUT")" ' inbox=N66:4/0 '
+printf '0\n' > "$W/handover/inbox/.cursor/N66"
+printf '4\n' > "$W/handover/inbox/N66.md.cursor"
+contains 'hook delivery cursor wins over a follower wake cursor' "$(bash "$SUT")" ' inbox=N66:4/0 '
+printf '04\n' > "$W/handover/inbox/.cursor/N66"
+not_contains 'a leading-zero hook cursor is compared in decimal' "$(bash "$SUT")" ' inbox='
+printf '4\n' > "$W/handover/inbox/.cursor/N61"
+rm -f "$W/handover/inbox/N66.md" "$W/handover/inbox/N66.md.cursor" "$W/handover/inbox/.cursor/N66" "$W/handover/inbox/N67.md"
 
 weekly_only="$(STUB_BANK_ROW='claudex funded measured weekly used=6% free=94% resets=2026-10-20T05:00:09.000Z' HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"
 case "$weekly_only" in
@@ -508,7 +541,7 @@ printf '%s\n' '# leg' '- LIVE — working' > "$n61doc"
 printf '%s\n' '# K' '' '## Live state' '' \
     'legs: `N61:K-N61-9f8e7d:tok-61:111`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
 rotated_out="$(DOC="$kdoc" bash "$SUT")"
-contains 'a held leg rotated onto the K prefix reads nonces=ok' "$rotated_out" 'nonces=ok'
+not_contains 'a held leg rotated onto the K prefix omits healthy nonces=' "$rotated_out" 'nonces='
 case "$rotated_out" in
     *UNCONFIRMED*|*RELAYED*|*STRANDED*) fail 'a rotated leg reports neither UNCONFIRMED nor RELAYED' ;;
     *) pass 'a rotated leg reports neither UNCONFIRMED nor RELAYED' ;;
@@ -517,7 +550,7 @@ esac
 # shellcheck disable=SC2016  # backtick leg span, literal fixture text
 printf '%s\n' '# K' '' '## Live state' '' \
     'legs: `N61:K-N61-9f8e7d:tok-61:111`, `N65:J-N65-aa11bb:tok-65:222`' 'queue: none' 'last GO: none' 'acked: none' > "$kdoc"
-contains 'a wrapped (FREE-lock) leg on an old prefix is not flagged -- nothing to rotate' "$(DOC="$kdoc" bash "$SUT")" 'nonces=ok'
+not_contains 'a wrapped (FREE-lock) leg on an old prefix is not flagged -- nothing to rotate' "$(DOC="$kdoc" bash "$SUT")" 'nonces='
 
 # `AA` must not read as a prefix of `A`: the boundary is the dash.
 aadoc="$W/handover/HIMMEL-nextleg-2026-09-20AA-console.md"
@@ -560,7 +593,7 @@ chmod +x "$W/bin-lossy/ps"
 lossy_out="$(CLAUDE_SESSIONS_PROC="$W/no-such-proc" PATH="$W/bin-lossy:$PATH" bash "$SUT")"
 contains 'the /proc-absent fallback still counts the dispatched leg (HIMMEL-3145)' "$lossy_out" 'procs=1'
 contains 'the /proc-absent fallback flags the degraded read' "$lossy_out" 'models=sonnet:1(lossy)'
-contains 'the /proc-absent fallback still reports ceiling=ok' "$lossy_out" 'ceiling=ok'
+not_contains 'the /proc-absent fallback omits healthy ceiling=' "$lossy_out" 'ceiling='
 
 # #1335 (ticket cause a): a console managing a DIFFERENT repo exports
 # REPO as that repo's checkout -- tick.sh must still resolve
@@ -652,8 +685,8 @@ mkcmdline 107 claude --model claude-sonnet-5 --autocompact auto \
     -p "$(printf 'spoof\nclaude -n HIMMEL-999-fake-legN1-2026-01-01 more work')"
 mk_pgrep_x "$W/bin-spoof" 107
 spoof_out="$(PATH="$W/bin-spoof:$PATH" bash "$SUT" --legs 'HIMMEL-999-fake-legN1-2026-01-01')"
-contains 'a spoofed -n inside free-text argv is not counted (HIMMEL-2999)' "$spoof_out" 'procs=0'
-contains 'a spoofed -n inside free-text argv does not bucket a model (HIMMEL-2999)' "$spoof_out" 'models=none'
+not_contains 'a spoofed -n inside free-text argv is not counted (HIMMEL-2999)' "$spoof_out" 'procs='
+not_contains 'a spoofed -n inside free-text argv does not bucket a model (HIMMEL-2999)' "$spoof_out" 'models='
 
 # a pid pgrep reports that has already vanished by the time
 # claude_sessions() reads it (no /proc/<pid> dir at all) is "not a tracked
@@ -895,7 +928,7 @@ gql_verbose="$(bash "$SUT" --verbose)"
 contains '--verbose labels the graphql budget (HIMMEL-3197)' "$gql_verbose" "gql: 4321/$gql_hm"
 gql_burn="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61')"
 case "$gql_burn" in
-    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm orphans=none nonces="*) pass 'gql= keeps its slot under --burn, orphans= trails it, nonces= closes the line (HIMMEL-3197, HIMMEL-2761, HIMMEL-3254)' ;;
+    *' burn=N61:'*" capacity=UNDERFILLED:7 gql=4321/$gql_hm "*) pass 'gql= keeps its slot under --burn with healthy orphan fields omitted' ;;
     *) fail "gql=/orphans= order under --burn (out='$gql_burn')" ;;
 esac
 
@@ -1203,7 +1236,7 @@ mkcmdline 122 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3269
 mk_pgrep_x "$W/bin-3277-odd" 122
 contains 'a live session under an underivable name reads procs=unknown (HIMMEL-3277)' "$(PATH="$W/bin-3277-odd:$PATH" bash "$SUT" --legs "$l191")" 'procs=unknown'
 # ...but a leg that is NOT held (wrapped) expects no process: 0 is a real count.
-contains 'a wrapped (FREE) leg with no session is a real procs=0 (HIMMEL-3277)' "$(PATH="$W/bin-3277-none:$PATH" bash "$SUT" --legs 'HIMMEL-7-N77-wrapped-2026-09-20-RESUME' 2>/dev/null)" 'procs=0'
+not_contains 'a wrapped (FREE) leg with no session omits the zero procs count' "$(PATH="$W/bin-3277-none:$PATH" bash "$SUT" --legs 'HIMMEL-7-N77-wrapped-2026-09-20-RESUME' 2>/dev/null)" 'procs='
 
 # --- the console template's own legs: placeholder must not parse.
 # The doc under test is the REAL docs/handover/console-template.md, not a fixture
@@ -1838,16 +1871,16 @@ STUB
         while { [ ! -f "$p4051_out/.last-run" ] || [ -d "$p4051_out/.launch" ]; } && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
     }
     write_console4051
-    contains 'no plan dir configured reads plan-index=skip (HIMMEL-4051)' "$(t4051)" ' plan-index=skip'
+    not_contains 'no plan dir configured omits plan-index=' "$(t4051)" ' plan-index='
     [ ! -e "$p4051_out" ] && pass 'skip touches no state (HIMMEL-4051)' || fail 'skip created the out dir (HIMMEL-4051)'
     write_console4051 "$p4051/missing"
-    contains 'a configured but absent plan dir reads plan-index=skip (HIMMEL-4051)' "$(t4051)" ' plan-index=skip'
+    not_contains 'a configured but absent plan dir omits plan-index=' "$(t4051)" ' plan-index='
 
     write_console4051 "$p4051_plan"
     contains 'a never-built index reads plan-index=REFRESHING (HIMMEL-4051)' "$(t4051)" ' plan-index=REFRESHING'
     wait4051
     contains 'the detached refresh embedded the collection (HIMMEL-4051)' "$(cat "$p4051_calls" 2>/dev/null)" 'embed -c roadmap-plan'
-    contains 'after the refresh the tick reads plan-index=ok (HIMMEL-4051)' "$(t4051)" ' plan-index=ok'
+    not_contains 'after the refresh the tick omits healthy plan-index=' "$(t4051)" ' plan-index='
     contains '--verbose labels the plan index (HIMMEL-4051)' "$(t4051 --verbose)" 'plan-index: ok'
     n4051="$(wc -l < "$p4051_calls")"
     t4051 >/dev/null
@@ -1860,7 +1893,7 @@ STUB
     rm -f "$p4051_out/.last-run"
     contains 'stale and due (interval 0) reads plan-index=REFRESHING (HIMMEL-4051)' "$(TICK_PLAN_INDEX_MIN_SECS=0 t4051)" ' plan-index=REFRESHING'
     wait4051
-    contains 'the due refresh made the index ok again (HIMMEL-4051)' "$(t4051)" ' plan-index=ok'
+    not_contains 'the due refresh made the index healthy again' "$(t4051)" ' plan-index='
 
     # a failing qmd: FAIL:<why>, and the backoff stops a relaunch every tick
     echo three >> "$p4051_mir/HIMMEL-111.md"
@@ -1943,8 +1976,8 @@ printf 'read\n' >> "$OR_READS"
 printf '%s\n' "${OR_READING-balance=7.50:key-limit_remaining spend=?}"
 STUB
 export OR_READS="$W/or-reads"
-contains 'no live OpenRouter leg shows or=skip' \
-  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/8' bash "$SUT")" ' or=skip'
+not_contains 'no live OpenRouter leg omits or=' \
+  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/8' bash "$SUT")" ' or='
 [ ! -e "$OR_READS" ] && pass 'no OpenRouter leg skips all cost reads' || fail 'cost helper read without OpenRouter leg'
 contains 'live OpenRouter leg surfaces smaller key cap and label' \
   "$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 openrouter=1 reserved=0 total=2/8' bash "$SUT")" ' or=7.50:key-limit_remaining'
@@ -1971,7 +2004,7 @@ printf '%s\n' "${STUB_SPARE-seven_day_reset_in=?  unspent_at_reset=?}"
 STUB
 spare_has() { case "$2" in *' spare='*) fail "$1 (out='$2')" ;; *) pass "$1" ;; esac; }
 spare_out="$(STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=33.7' bash "$SUT")"
-contains 'spare= shows when spare >= 10 and reset <= 24h (HIMMEL-4421)' "$spare_out" ' or=skip fails=? vmrun=off spare=33@6h'
+contains 'spare= shows when spare >= 10 and reset <= 24h (HIMMEL-4421)' "$spare_out" ' fails=? vmrun=off spare=33@6h'
 spare_has 'spare= is absent below the spare threshold (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=9.9' bash "$SUT")"
 spare_has 'spare= is absent when the reset is more than 24h out (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=24.5h unspent_at_reset=60.0' bash "$SUT")"
 spare_has 'spare= is absent when the monitor reads ? (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=? unspent_at_reset=?' bash "$SUT")"
@@ -2012,10 +2045,10 @@ d4670_free="$W/handover/HIMMEL-4670-console-nolock.md"
 printf '%s\n' '# console' > "$d4670"
 printf '%s\n' '# console' > "$d4670_free"
 same() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (got '$2', want '$3')"; fi; }
-fails_of() { TOKEN='' bash "$SUT" --doc "$1" 2>/dev/null | sed -E 's/.* fails=([^ ]*).*/\1/'; }
+fails_of() { TOKEN='' bash "$SUT" --doc "$1" 2>/dev/null | sed -n -E 's/.* fails=([^ ]*).*/\1/p'; }
 frow() { printf '{"v":1,"ts":"%s","leg":"%s","class":"%s","failure":"denied","count":%s,"recovered":%s}\n' "$1" "$2" "$3" "$4" "${5:-null}"; }
 rm -f "$HIMMEL_LEG_FAILURES_LEDGER" "$HIMMEL_EVAL_RUNS_LEDGER" "$HIMMEL_FAILURE_ROUTES_LOG"
-same 'fails=none when no ledger exists yet (HIMMEL-4670)' "$(fails_of "$d4670")" 'none'
+same 'fails= is absent when no ledger exists yet' "$(fails_of "$d4670")" ''
 same 'fails=? when the console lock has no readable start (HIMMEL-4670)' "$(fails_of "$d4670_free")" '?'
 {
     frow 2026-10-07T02:59:59Z N1 denied/old-shift 9
@@ -2045,7 +2078,7 @@ rmdir "$HIMMEL_LEG_FAILURES_LEDGER"
 frow 2026-10-07T03:05:00Z N7 error/Edit 1 > "$HIMMEL_LEG_FAILURES_LEDGER"
 : > "$HIMMEL_FAILURE_ROUTES_LOG"
 f4670="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
-contains 'fails= follows or= (HIMMEL-4670)' "$f4670" ' or=skip fails=1/1@error/Edit*1'
+contains 'fails= remains visible when OpenRouter is skipped' "$f4670" ' fails=1/1@error/Edit*1'
 contains 'vmrun= follows fails= (HIMMEL-5037)' "$f4670" ' fails=1/1@error/Edit*1 vmrun=off'
 case "$f4670" in *' vmrun='*' '*) fail "vmrun= is the last field when spare= is absent (out='$f4670')" ;; *) pass 'vmrun= is the last field when spare= is absent (HIMMEL-5037)' ;; esac
 printf '#!/bin/sh\necho "garbage not a token"\n' > "$W/vmrun-probe-garbage.sh"
@@ -2093,7 +2126,7 @@ same 'flakes= is absent with no ledger (HIMMEL-5131)' "$(flakes_of "$d4670")" ''
 } > "$SUITE_FLAKE_LEDGER"
 same 'flakes= counts this shift, this repo only, with the top suite repeat count (HIMMEL-5131)' "$(flakes_of "$d4670")" '3/2@test-x.sh*2'
 fk_out="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
-case "$fk_out" in *' or=skip fails='*' flakes=3/2@test-x.sh*2') pass 'flakes= follows fails= and is the last field without spare= (HIMMEL-5131)' ;; *) fail "flakes= position (out='$fk_out')" ;; esac
+case "$fk_out" in *' flakes=3/2@test-x.sh*2') pass 'flakes= follows fails= and is the last field without spare= (HIMMEL-5131)' ;; *) fail "flakes= position (out='$fk_out')" ;; esac
 contains 'verbose labels suite flakes (HIMMEL-5131)' "$(TOKEN='' bash "$SUT" --doc "$d4670" --verbose 2>/dev/null)" 'suite flakes: 3/2@test-x.sh*2'
 same 'a doc with no lock start reads no flakes= (HIMMEL-5131)' "$(flakes_of "$d4670_free")" ''
 # A suite name carrying Unicode whitespace plus a key=value must not forge a field:
