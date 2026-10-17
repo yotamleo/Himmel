@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2015  # `[ test ] && [ test ] || { echo >&2; exit N; }` is the file's fail-closed guard shape
 # scripts/handover/console-kit/grant-round.sh - the console grants
 # ONE more /pr-check review round itself, on a persisted judge record, so the
 # operator no longer hand-pastes `printf '2\n' > .git/cr-review-rounds/<b>.round`.
@@ -25,6 +26,17 @@
 # counts as 3, and appends one audit line to cr-review-rounds/grant-round.audit.
 # .head and .delta are left alone: the later delta scope is unchanged.
 #
+#   (e) the console alone never buys a 4th round. The record is a
+#       judge NO-GO, or a record named `operator` (write-verdict.sh --judge
+#       operator, the operator's ruling quoted in its evidence), or the previous
+#       reviewed head (.head) has a standing Critical or Important critic finding
+#       in cr-critic-scores.jsonl (an unsettled, non-deferred, non-disproved row
+#       from a critic model). A judge GO record on a clean, suggestions-only or
+#       unknown head refuses (16). The clean-merge-forward admission past the cap
+#       (D3c) is review-round.sh's, not this script's. The same-uid ceiling below
+#       also means the console can name a record `operator`: the name is a
+#       recorded claim, not an authenticated one.
+#
 # Refused from a console leg (HIMMEL_CONSOLE_LEG) and a console relay
 # (HIMMEL_CONSOLE_RELAY), as write-verdict.sh refuses them: a leg must not buy
 # its own review rounds. The console is not a leg, so it runs this itself.
@@ -36,7 +48,8 @@
 # Exit: 0 granted / 1 bad input / 3 leg or relay caller, or the verdict scope is
 # unresolved / 4 no qualifying signed record / 5 lock or state error / 12 not
 # grantable (fork, not OPEN, below the cap, no .head state) / 13 gh failed /
-# 14 qid already consumed / 15 NEW_HEAD is not the live PR head.
+# 14 qid already consumed / 15 NEW_HEAD is not the live PR head / 16 policy: a
+# judge GO record with no standing Critical/Important finding on the previous head.
 # Seams: GRANT_ROUND_GH (gh), GRANT_ROUND_PRIMARY (the checkout whose git common
 # dir holds the state; default this script's own repo), GRANT_ROUND_LOCK_LIB.
 # Platform guard: POSIX bash 3.2+.
@@ -146,6 +159,7 @@ EOF_SNAP
     [ "$l10" = "pr: $PR" ] || continue
     case "$l11" in 'branch: '*) [ "${l11#branch: }" = "$branch" ] || continue ;; esac
     record="$QID/$name"
+    rword="${word%% *}"
 done
 if [ -z "$record" ]; then
     echo "grant-round: no signed write-verdict.sh record in $QID names head $HEAD_SHA for PR $PR (branch $branch)" >&2
@@ -219,6 +233,32 @@ round="$(cat "$round_f" 2>/dev/null)"
 case "$round" in ''|*[!0-9]*) fail 5 "invalid counter state in $round_f - refusing to rewrite it" ;; esac
 [ "$round" -ge 3 ] || fail 12 "$branch is at round $round, below the cap of 3; there is no round to grant"
 { [ ! -e "$verd_f" ] || { [ -f "$verd_f" ] && [ ! -L "$verd_f" ]; }; } || fail 5 "$verd_f is not a plain file"
+
+# (e) the round-past-3 policy: a recorded operator ruling (a record named `operator`),
+# or an automatic condition - a judge NO-GO, or a standing Critical/Important critic
+# finding on the previous reviewed head (.head). Never after a clean or suggestions-only head.
+if [ "${record#*/}" != operator ] && [ "$rword" != NO-GO ]; then
+    prev="$(cat "$head_f")"
+    standing="$(LEDGER="$common/cr-critic-scores.jsonl" BRANCH="$branch" PREV="$prev" node -e '
+const fs = require("fs"), e = process.env;
+let lines = [];
+try { lines = fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean); } catch { process.exit(0); }
+const at = (h) => { h = String(h || "").toLowerCase(); return h.length >= 7 && e.PREV.startsWith(h); };
+const critic = (m) => m !== "claude" && m !== "claude-floor" && m !== "codex-adv";
+const keyOf = (o) => [String(o.finding_id), o.artifact || "diff", o.perspective || "off"].join("\u001f");
+const sev = new Map(), verdict = new Map();
+for (const line of lines) {
+  let o;
+  try { o = JSON.parse(line); } catch { continue; }
+  if (!o || o.branch !== e.BRANCH) continue;
+  if (o.kind === "finding" && critic(o.model) && at(o.head)) { sev.set(keyOf(o), String(o.severity || "")); verdict.set(keyOf(o), String(o.verdict || "")); }
+  if (o.kind === "amend" && at(o.target_head) && verdict.has(keyOf(o)) && o.set && typeof o.set.verdict === "string") verdict.set(keyOf(o), o.set.verdict);
+}
+const big = new Set(["crit", "critical", "imp", "important"]);
+if ([...sev].some(([k, s]) => big.has(s) && verdict.get(k) !== "deferred" && verdict.get(k) !== "disproved")) process.stdout.write("standing");
+' 2>/dev/null)"  # swallow-ok: a failed ledger read leaves standing empty, which refuses (16)
+    [ "$standing" = standing ] || fail 16 "a judge GO record buys no round past 3 unless the previous head ${prev:-?} has a standing Critical or Important finding (a clean or suggestions-only head gets none); a judge NO-GO record or a recorded operator ruling (a record named 'operator') does"
+fi
 
 # (c) the head again, under the lock: do not mutate against an outdated PR head.
 view2="$(pr_json)" || fail 13 "gh pr view $PR failed"

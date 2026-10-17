@@ -124,6 +124,16 @@ template_version: 3
 > full rule, and how to tell a stop from a hook deny or refusal, is the
 > judge template's "Guard escape tests" block.
 
+> **Convergence argument (a fix that parses shell text to enforce a guard; drop
+> otherwise):** can this approach close the class at all? Text-parsing a shell
+> command to enforce a security guard is the canonical NO: each round finds
+> another alias or subcommand shape (HIMMEL-5170, PR 2353, 6+ judge rounds).
+> State the convergence argument here: why the set of shapes is finite and
+> covered, or why the check does not rest on the text. Without one, the leg
+> lands with a `ponytail:` ceiling and the brief names the filed structural fix
+> (HIMMEL-5233). At the 2nd NO-GO in the same class, ask again: stop the rounds
+> and land with the ceiling.
+
 > **Contract:**
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check. Write
 >    the bullet with `scripts/handover/console-kit/append-results.sh <doc>

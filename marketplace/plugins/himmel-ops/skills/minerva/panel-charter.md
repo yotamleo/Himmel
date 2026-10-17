@@ -13,4 +13,8 @@ rubber-stamp. Check ONLY these dimensions and return findings as a list
 7. Fact overlap: find a fact this design computes in two places, or that an
    existing surface already computes (a delegation counts as two). Grep for
    it; a fact missing from the Fact ownership matrix is a finding.
+8. Rabbit hole: a design that parses shell text to enforce a guard must state its
+   convergence argument (why the shapes are finite and covered, or why the check
+   does not rest on the text), or land with a `ponytail:` ceiling and a filed
+   structural fix. Absent both, that is a finding.
 For each finding: the section + the problem + a concrete fix.

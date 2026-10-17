@@ -16,6 +16,11 @@
 #      recorded in <branch>.verdicts (the file review-round.sh scans), the old
 #      counter is backed up, and one audit line is written
 #   6. the same qid a second time refuses and changes nothing
+#   7. the round-4 policy: a judge GO record buys a round only while
+#      the previous head (.head) has a standing Critical or Important critic
+#      finding; a clean, suggestions-only, deferred or disproved head refuses (16);
+#      a judge NO-GO record or a record named `operator` (the recorded operator
+#      ruling) grants whatever the ledger says
 #
 # Hermetic: a temp git repo holds the review-round state, a stub gh answers the
 # PR lookup, a scratch HANDOVER_DIR and HOME hold the verdict records and key.
@@ -148,7 +153,7 @@ check "record naming another branch refuses" "$rc" 4
 check "bad records change nothing" "$(snap_state)" "$before"
 
 # --- valid records for the rest ---------------------------------------------
-wv qgood GO "$SHA_A" --pr 501 --branch "$BRANCH" --evidence-file "$evd/ev.md" >/dev/null 2>&1 || { echo "FAIL: cannot write qgood"; fails=$((fails+1)); }
+wv qgood NO-GO "$SHA_A" --pr 501 --branch "$BRANCH" --evidence-file "$evd/ev.md" >/dev/null 2>&1 || { echo "FAIL: cannot write qgood"; fails=$((fails+1)); }
 GR_ARGS=(501 "$SHA_A" qgood)
 
 # --- 2. leg / relay callers --------------------------------------------------
@@ -246,6 +251,48 @@ check "second call with the same qid refuses" "$rc" 14
 check "consumed qid leaves the counter alone" "$(cat "$state/$BRANCH.round")" 3
 check "consumed qid adds no consumption line" "$(wc -l < "$state/$BRANCH.verdicts" | tr -d ' ')" 1
 : "$after"
+
+# --- 7. the round-4 policy ------------------------------------------------------
+scores_f="$common/cr-critic-scores.jsonl"
+frow() { # <head> <severity> <verdict> [model]
+    printf '{"kind":"finding","branch":"%s","head":"%s","model":"%s","finding_id":"c-1","severity":"%s","verdict":"%s","artifact":"diff","perspective":"off"}\n' \
+        "$BRANCH" "$1" "${4:-codex}" "$2" "$3" >> "$scores_f"
+}
+arow() { # the critic reviewed <head> and raised nothing
+    printf '{"kind":"avail","branch":"%s","head":"%s","model":"codex","status":"ok"}\n' "$BRANCH" "$1" > "$scores_f"
+}
+policy() { # <label> <qid> <GO|NO-GO> <name> <expected rc>
+    reset_state 3
+    wv "$2" "$3" "$SHA_A" --pr 501 --branch "$BRANCH" --judge "$4" --evidence-file "$evd/ev.md" >/dev/null 2>&1 || { echo "FAIL: cannot write $2"; fails=$((fails+1)); }
+    GR_ARGS=(501 "$SHA_A" "$2")
+    rc=0; out=$(run 2>&1) || rc=$?
+    check "$1" "$rc" "$5"
+    if [ "$5" = 0 ]; then check "$1 drops the round" "$(cat "$state/$BRANCH.round")" 2
+    else check "$1 changes nothing" "$(cat "$state/$BRANCH.round")" 3; fi
+}
+rm -f "$scores_f"
+policy "GO record with no scores_f rows refuses" qpolnone GO judge 16
+arow "$SHA_B"
+policy "GO record after a clean head refuses" qpolclean GO judge 16
+frow "$SHA_B" sug ""
+policy "GO record after a suggestions-only head refuses" qpolsug GO judge 16
+frow "$SHA_B" imp deferred
+policy "GO record after a deferred Important refuses" qpoldef GO judge 16
+frow "$SHA_B" crit disproved claude
+policy "GO record after a session-own critical row refuses" qpolown GO judge 16
+frow "$SHA_A" imp ""
+policy "GO record, Important standing on another head refuses" qpolother GO judge 16
+frow "$SHA_B" imp agreed
+policy "GO record with a standing Important grants" qpolimp GO judge 0
+rm -f "$scores_f"
+frow "$SHA_B" crit ""
+policy "GO record with a standing Critical grants" qpolcrit GO judge 0
+rm -f "$scores_f"
+policy "NO-GO judge record grants with no scores_f rows" qpolnogo NO-GO judge 0
+policy "operator record grants with no scores_f rows" qpolop GO operator 0
+arow "$SHA_B"
+policy "operator record grants after a clean head" qpolop2 GO operator 0
+rm -f "$scores_f"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASS"; exit 0; fi
