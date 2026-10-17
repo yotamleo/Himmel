@@ -571,6 +571,17 @@ repos:
         files: '\.sh$'
         stages: [pre-commit]
 
+      - id: flag-parity
+        name: docs name only flags the cited script has (baseline-first)
+        # HIMMEL-6019. Drift already present sits in scripts/lint/flag-parity-baseline.tsv
+        # (doc, script, flag); only a row not in it fails. Reads the index itself
+        # (--staged), so pass_filenames is off.
+        language: system
+        entry: bash scripts/lint/flag-parity.sh --staged --baseline scripts/lint/flag-parity-baseline.tsv
+        pass_filenames: false
+        files: '\.sh$|^docs/.*\.md$|^\.claude/commands/[^/]+\.md$|^marketplace/plugins/[^/]+/skills/.*SKILL\.md$'
+        stages: [pre-commit]
+
       - id: command-positional-args
         name: no bare $<digit> in a command's fenced code
         # HIMMEL-2051

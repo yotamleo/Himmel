@@ -612,3 +612,5 @@ current head. It never touches a run at the current head, main, a
 schedule run or a branch with no open PR, and any `gh` read error cancels
 nothing and exits 1. Cancels land ~20 s later. Run from a supervisor session only; not yet wired
 into `tick.sh` or the worker session ship flow.
+
+`bash scripts/lint/flag-parity.sh [--staged | --changed A..B] --baseline scripts/lint/flag-parity-baseline.tsv` fails a doc (`docs/`, `.claude/commands/`, skills) that writes a `--flag` after a tracked script name the script lacks; `--advisory` lists usage-header flags no doc mentions. Pre-commit and the CI lint job run it; ~0.3 s on the full tree.

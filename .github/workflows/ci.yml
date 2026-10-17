@@ -519,6 +519,10 @@ jobs:
       - name: shell-lint changed files
         if: github.event_name == 'pull_request'
         run: bash scripts/lint/shell-lint.sh --changed "HEAD^1..HEAD" --baseline scripts/lint/shell-lint-baseline.tsv
+      # HIMMEL-6019: a doc naming a --flag the script it cites lacks; same merge-ref range as above.
+      - name: flag-parity changed files
+        if: github.event_name == 'pull_request'
+        run: bash scripts/lint/flag-parity.sh --changed "HEAD^1..HEAD" --baseline scripts/lint/flag-parity-baseline.tsv
 
   node-suites:
     needs: plan
