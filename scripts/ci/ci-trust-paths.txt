@@ -32,3 +32,16 @@
 # Hook wiring and the pre-commit gate set.
 ^\.claude/settings\.json$
 ^\.pre-commit-config\.yaml$
+
+# Hook denials and allow-list logic (HIMMEL-3832).
+^scripts/hooks/(block|guard|cadence-deny)-
+^scripts/hooks/(auto-approve-safe-bash|permission-allow-gate-shapes|narrow-allow|cadence-approve-engines|require-quiet-run|read-clamp|orchestrator-inline-guard|rtk-hook-guard|hook-integrity|record-hook-integrity|guardrail-|run-hook-with-bash|wire-|mcp-policy|redirect-webfetch-walled-hosts|detect-token-in-output|infra-destroy-verbs)
+# Commit/push gates and CR triggers.
+^scripts/hooks/(check-(cr-|security-reviewed|platforms-tested|push-target|no-force-push|main-ref|merged-branch|pr-mergeable|single-writer|pr-lane|worktree-isolation|hookspath|lockfile|settings-portability|fail-open|trust-suites|guardrail)|trigger-cr-on-|install-(single-writer-floor|main-ref-transaction|cr-pre-push-legacy))
+# Verdict, GO and leg-launch authority in console-kit.
+^scripts/handover/console-kit/(verdict-go|write-verdict|ready-check|ready-go|judge-ladder|himmel-gate|grant-round|leg-pretrust|headed-arm-leg|close-wrapped-leg|wrap-merged|bucket-gitleaks|leg-doc-lock|leg-jira-status|run-suite|launch-cloud|succession-tracker|compacted-check|consult-relay|brief-lint|ack-denial|denial-ack-lib)\.
+# The review gate's verdict writers and deciders.
+^scripts/cr/(write-verdicts|ledger-append|d1-verdict|triviality-gate|known-findings|residue-scan|orphan-check|review-round|base-resolver|install-cr-gate|cr-pending-audit|cr-reset|pr-check-|emit-gate-fail|failure-classify|lane-classify|handover-bridge|claude-floor|critics\.json|file-deferred-issues|live-gate-e2e)
+# Hook config files outside the audited dirs.
+^\.codex/hooks\.json$
+^marketplace/plugins/[^/]+/hooks/hooks\.json$

@@ -297,9 +297,9 @@ want=$(printf 'himmel-verdict-v1|a|b' | openssl dgst -sha256 -mac HMAC -macopt "
 [ "$(pin_mac go_msg_mac himmel-verdict-v1 'a|b')" = "$want" ] || fail "6b: go_msg_mac is not HMAC-SHA256 over <domain>|<msg>"
 # 6c. Domains are separate: a verdict mac never equals a GO mac, whatever the message.
 v=$(pin_mac go_msg_mac himmel-verdict-v1 "o/r|92|$PINSHA")
-[ -n "$v" ] && [ "$v" != "$(pin_mac go_mac 92 "$PINSHA" o/r)" ] || fail "6c: a verdict mac equals a GO mac"
+if ! { [ -n "$v" ] && [ "$v" != "$(pin_mac go_mac 92 "$PINSHA" o/r)" ]; }; then fail "6c: a verdict mac equals a GO mac"; fi
 g=$(pin_mac go_msg_mac himmel-go-v2 "o/r|92|$PINSHA")
-[ "$g" = "$(pin_mac go_mac 92 "$PINSHA" o/r)" ] && [ "$g" != "$v" ] || fail "6c: the GO domain via go_msg_mac does not stay distinct from the verdict domain"
+if ! { [ "$g" = "$(pin_mac go_mac 92 "$PINSHA" o/r)" ] && [ "$g" != "$v" ]; }; then fail "6c: the GO domain via go_msg_mac does not stay distinct from the verdict domain"; fi
 # 6d. Only the verdict domain is accepted for a verdict mac; empty domain or msg refuses; no key fails closed.
 rc=0; pin_mac go_msg_mac '' x >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail "6d: an empty domain was signed"
 rc=0; pin_mac go_msg_mac himmel-verdict-v1 '' >/dev/null 2>&1 || rc=$?; [ "$rc" -ne 0 ] || fail "6d: an empty message was signed"
@@ -582,6 +582,29 @@ done
 printf '{"mergeStateStatus":"CLEAN"}\n' > "$FG_PRVIEW"
 rc=0; out=$(GH="$FG/bin/gh" bash -c '. "$1"; go_fork_ready o/r 5' _ "$GO_GATE_SRC") || rc=$?
 [ "$rc" = 2 ] || fail "10f: an answer with no statusCheckRollup field must refuse (rc=$rc)"
+
+# 11. The real scripts/ci/ci-trust-paths.txt flags a path under each audited guard line and the two hooks.json files, and passes an unlisted file.
+TL="$ROOT/tprepo"; mkdir -p "$TL/scripts/ci"
+lg -C "$TL" init -q -b main
+cp "$HERE/../ci/ci-trust-paths.txt" "$TL/scripts/ci/ci-trust-paths.txt"
+lg -C "$TL" add -A && lg -C "$TL" commit -q -m list
+TLID="local:$(cd "$TL/.git" && pwd -P)"
+n=0
+for tp in scripts/hooks/block-x.sh scripts/hooks/read-clamp.sh scripts/hooks/check-cr-x.sh \
+    scripts/handover/console-kit/verdict-go.sh scripts/cr/write-verdicts.sh \
+    .codex/hooks.json marketplace/plugins/p/hooks/hooks.json; do
+    n=$((n + 1))
+    lg -C "$TL" checkout -q -b "feat/tp$n" main
+    mkdir -p "$TL/$(dirname "$tp")"; printf 'x\n' > "$TL/$tp"
+    lg -C "$TL" add -A && lg -C "$TL" commit -q -m "tp$n"
+    got=$(tpc "$TLID" "br-feat-tp$n" "$(lg -C "$TL" rev-parse HEAD)" "$TL")
+    [ "$got" = "0:hit $tp" ] || fail "11: $tp is not a trust-path hit: $got"
+done
+lg -C "$TL" checkout -q -b feat/tpmiss main
+printf 'x\n' > "$TL/docs-unlisted.md"; mkdir -p "$TL/scripts/hooks"; printf 'x\n' > "$TL/scripts/hooks/test-block-x.sh"
+lg -C "$TL" add -A && lg -C "$TL" commit -q -m miss
+got=$(tpc "$TLID" br-feat-tpmiss "$(lg -C "$TL" rev-parse HEAD)" "$TL")
+[ "$got" = "0:none" ] || fail "11: unlisted files are not none: $got"
 
 if [ "$FAIL" -eq 0 ]; then
     echo "PASS: test-go-gate.sh"
