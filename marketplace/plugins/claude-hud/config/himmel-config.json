@@ -5,6 +5,8 @@
     "externalUsagePath": "/tmp/claude/hud-usage-snapshot.json",
     "sevenDayThreshold": 0,
     "customLineCommand": "bash \"<himmel-path>/scripts/statusline/hud-custom-lines.sh\"",
+    "showEffortLevel": true,
+    "contextValue": "both",
     "showPromptCache": true,
     "promptCacheTtlSeconds": 3600
   }

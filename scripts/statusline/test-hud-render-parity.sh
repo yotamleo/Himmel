@@ -103,6 +103,10 @@ check_exact "$(jq -r '.display.externalUsagePath' "$HUD_CONFIG")" \
   "/tmp/claude/hud-usage-snapshot.json" "externalUsagePath" "config"
 check_exact "$(jq -r '.display.autocompactBuffer' "$HUD_CONFIG")" \
   "disabled" "autocompactBuffer" "config"
+check_exact "$(jq -r '.display.showEffortLevel' "$HUD_CONFIG")" \
+  "true" "showEffortLevel" "config"
+check_exact "$(jq -r '.display.contextValue' "$HUD_CONFIG")" \
+  "both" "contextValue" "config"
 
 echo "== with-ratelimits (Sonnet, ctx 48, 5h 42, 7d 68) =="
 OUT=$(render fixture-with-ratelimits.json)
@@ -138,6 +142,11 @@ check_model  "$OUT" "Claude Haiku" "cold"
 check_ctx    "$(printf '%s' "$OUT" | pct_after Context)" 0 "cold"
 check_absent "$OUT" "Usage"  "5h bank" "cold"
 check_absent "$OUT" "Weekly" "7d bank" "cold"
+
+echo "== window size + effort level shown (with-ratelimits + stdin effort high) =="
+OUT=$(render fixture-effort.json)
+case "$OUT" in *"96k/200k"*) pass "effort: window size 96k/200k";; *) fail "effort: window size '96k/200k' missing in: $OUT";; esac
+case "$OUT" in *"high"*) pass "effort: level high";; *) fail "effort: level 'high' missing in: $OUT";; esac
 
 echo
 if [ "$_failures" -eq 0 ]; then

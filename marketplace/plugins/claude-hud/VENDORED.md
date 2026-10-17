@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        5621429b84ea2503185221244c43a06797bfd05e  # v0.11.3, 4 commits past 02d73c4 (HIMMEL-5929)
 pinned_upstream_tree: a9a2abdf0c93bcfa26b998428ff70656d1d760ac  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   c00b91d7c8246db28956aac733430ae9fff0baffc6c7063ebc5c47a550f0acf5  # sha256 over VENDORED.manifest
+vendored_tree_hash:   de81c033b5611a3589935f7439c4b7408be2878788144b462e575244271c2cad  # sha256 over VENDORED.manifest
 vendored_at:          2026-10-17
 ```
 
@@ -65,6 +65,12 @@ protected: editing it without bumping the pin trips the guard.
 > makes the drift guard protect *more* upstream files, not fewer.
 
 ## Fork delta
+
+- **Display config (HIMMEL-6136):** `config/himmel-config.json` sets
+  `display.showEffortLevel: true` and `display.contextValue: "both"` so the
+  status line shows the effort level and the context window size (`45% (90k/200k)`).
+  Config only, no source change; `plugin.json` version is bumped to 0.11.4 (ahead of upstream 0.11.3;
+  re-sync on the next upstream re-vendor) so `claude plugin update` picks the config up.
 
 - **Re-vendored to upstream v0.11.3 `5621429` (HIMMEL-5929, 2026-10-17, fork-drift
   issue #2809):** +4 commits past `02d73c4`. Upstream work: background agents
