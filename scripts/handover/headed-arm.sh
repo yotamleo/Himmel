@@ -506,6 +506,12 @@ case "$BUS_BIND_SECS" in
     ''|*[!0-9]*) BUS_BIND_SECS=15 ;;
 esac
 unset HEADED_ARM_BUS HEADED_ARM_BUS_CLI HEADED_ARM_BUS_BIND_SECS
+# Headed-arm-leg.sh sets HEADED_ARM_WAKER=1 for every headed leg: once the
+# session is confirmed, bus-idle-waker.sh watches its unread mail and types the
+# one fixed wake line into this konsole. Read once and cleared, like the bus flag.
+WAKER_ARM="${HEADED_ARM_WAKER:-0}"
+WAKER_CMD="${HEADED_ARM_WAKER_CMD:-$(dirname "$0")/bus-idle-waker.sh}"
+unset HEADED_ARM_WAKER HEADED_ARM_WAKER_CMD
 SESSION_PID=""
 # A console session must never inherit a
 # relay marker from whatever armed it -- ROLE_ENV_UNSET is an extra `-u`
@@ -1626,6 +1632,12 @@ if [ "$sv_seen" -eq 1 ]; then
             echo "$(date +%F_%T) WARN: bus bind of $NAME to pid $SESSION_PID failed - session stays unbound: $bus_out" >> "$LOG"
         fi
         [ "$bus_tmp" = /dev/null ] || rm -f "$bus_tmp"
+    fi
+    # konsole --separate owns the D-Bus service org.kde.konsole-<pid>; --pid
+    # stops the waker when this window closes. Best-effort, never the launch result.
+    if [ "$WAKER_ARM" = "1" ] && [ "$KONSOLE_IS_MACOS_SHIM" != "1" ]; then
+        nohup bash "$WAKER_CMD" --name "$NAME" --service "org.kde.konsole-$KPID" --session /Sessions/1 --pid "$KPID" </dev/null >>"$LOG" 2>&1 &
+        echo "$(date +%F_%T) idle waker armed for $NAME on org.kde.konsole-$KPID" >> "$LOG"
     fi
     exit 0
 fi

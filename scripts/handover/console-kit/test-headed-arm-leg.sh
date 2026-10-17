@@ -1534,6 +1534,15 @@ check "full launch --profile: seeded settings grant Edit on the leg's own doc on
 check "full launch --profile: seeded settings do NOT grant a root-wide handover markdown glob" \
   "$(jq --arg d "$HANDOVER_DIR" '(.permissions.allow // []) | any(. == ("Edit(/" + $d + "/**/*.md)"))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
   "false"
+# The leg may run the idle waker itself (relative and absolute spelling), and
+# the classifier is told sendText from it is the reviewed wake path.
+waker_abs="$(cd -P "$HERE/../../.." && pwd -P)/scripts/handover/bus-idle-waker.sh"
+check "full launch --profile: seeded settings allow the idle waker, relative and absolute" \
+  "$(jq --arg a "$waker_abs" '(.permissions.allow // []) | (index("Bash(bash scripts/handover/bus-idle-waker.sh:*)") != null) and (index("Bash(bash " + $a + ":*)") != null)' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "true"
+check "full launch --profile: seeded autoMode environment keeps \$defaults and names the waker's sendText" \
+  "$(jq '(.autoMode.environment // []) | (index("$defaults") != null) and any(contains("bus-idle-waker.sh may type its one fixed wake sentence"))' "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null)" \
+  "true"
 
 # A handover root containing a space must still resolve correctly -
 # HANDOVER_DIR reaches this wrapper's own process as a plain export
@@ -4083,6 +4092,7 @@ cat > "$bus45/headed" <<'HEADED_EOF'
   printf 'LAUNCHER_ENV=%s\n' "${HEADED_ARM_LAUNCHER_ENV:-}"
   printf 'BUS_FLAG=%s\n' "${HEADED_ARM_BUS:-<unset>}"
   printf 'BUS_CLI=%s\n' "${HEADED_ARM_BUS_CLI:-<unset>}"
+  printf 'WAKER=%s\n' "${HEADED_ARM_WAKER:-<unset>}"
   printf 'AMBIENT=%s\n' "${HIMMEL_BUS_NAME:-<unset>}"
   printf 'EXTRA=%s\n' "${HIMMEL_BUS_EXTRA:-<unset>}"
 } > "$(dirname "$0")/seen"
@@ -4174,6 +4184,8 @@ check "45r opted-out with ambient bind flag: launch exits 0" "$rc" "0"
 check "45s opted-out: HEADED_ARM_BUS is absent from the target env" "$(sed -n 's/^BUS_FLAG=//p' "$bus45/seen")" "<unset>"
 check "45u opted-out: an ambient HIMMEL_BUS_EXTRA is dropped" "$(sed -n 's/^EXTRA=//p' "$bus45/seen")" "<unset>"
 check "45v opted-out: no bind flag or HIMMEL_BUS_* in the launched env" "$(sed -n 's/^LAUNCHER_ENV=//p' "$bus45/seen" | tr ' ' '\n' | grep -c '^HIMMEL_BUS_\|^HEADED_ARM_BUS' || true)" "0"
+# Every headed leg, on the bus or not, has headed-arm.sh arm the idle waker.
+check "45w2 headed leg: headed-arm.sh is told to arm the idle waker" "$(sed -n 's/^WAKER=//p' "$bus45/seen")" "1"
 
 # --- leg-vm: the brief must name a registered, non-station test VM.
 vm_json="$tmp/vms-fixture.json"

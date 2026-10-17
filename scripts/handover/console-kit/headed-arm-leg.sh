@@ -643,8 +643,12 @@ if [ "$HEADLESS" -eq 1 ]; then
         exit 2
     fi
     export HEADED_ARM_HEADLESS=1
+    unset HEADED_ARM_WAKER
 else
     unset HEADED_ARM_HEADLESS
+    # Every headed leg gets the idle waker: headed-arm.sh arms
+    # bus-idle-waker.sh on the konsole it launches, so mail reaches an idle leg.
+    export HEADED_ARM_WAKER=1
 fi
 
 if [ "$#" -lt 5 ]; then
@@ -1722,6 +1726,20 @@ if [ -n "$PROFILE" ]; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add the handover-doc Edit allow to settings JSON" >&2
             exit 2
         fi
+    fi
+    # A headed leg may run the idle waker itself (re-arm, live checks), and the
+    # classifier is told its sendText is the reviewed wake path: without the
+    # environment line it reads the keystroke injection as a terminal takeover.
+    # autoMode.environment is honoured from --settings scope, which this file is.
+    if [ "$HEADLESS" -eq 0 ] && [ "$CONSULT" -eq 0 ]; then
+        _waker_abs="$(cd -P "$HERE/../../.." && pwd -P)/scripts/handover/bus-idle-waker.sh"
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg abs "$_waker_abs" \
+            '.permissions.allow = ((.permissions.allow // []) + ["Bash(bash scripts/handover/bus-idle-waker.sh:*)", "Bash(bash " + $abs + ":*)"])
+             | .autoMode.environment = ((.autoMode.environment // ["$defaults"]) + ["Operator-approved 2026-10-17 (HIMMEL-6127): bash scripts/handover/bus-idle-waker.sh may type its one fixed wake sentence into a himmel leg'"'"'s own konsole window through org.kde.konsole.Session.sendText. This is the intended, reviewed wake path for idle legs; the message content is never typed."])')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add the idle-waker allow to settings JSON" >&2
+            exit 2
+        fi
+        unset -v _waker_abs
     fi
     # --consult read-only envelope. The file-edit tools are denied
     # by BARE name, so no path-scoped allow can re-open them (deny wins), and the

@@ -77,6 +77,19 @@ BUS_N=2 BUS_WAKER_QDBUS="$tmp/qdbus-dead" BUS_WAKER_BUS="$tmp/bus" bash "$WAKER"
 rc=$?
 [ "$rc" -eq 1 ] && pass "a dead session ends the waker with rc=1" || fail "dead session: expected rc=1, got rc=$rc"
 
+# A window started before EnableSecuritySensitiveDBusAPI refuses sendText: named, rc=3.
+cat > "$tmp/qdbus-denied" <<'EOF'
+#!/usr/bin/env bash
+printf 'Error: org.freedesktop.DBus.Error.AccessDenied\nSecurity sensitive DBus API is disabled in the settings.\n' >&2
+exit 2
+EOF
+chmod +x "$tmp/qdbus-denied"
+BUS_N=2 BUS_WAKER_QDBUS="$tmp/qdbus-denied" BUS_WAKER_BUS="$tmp/bus" bash "$WAKER" --name legX --service s --session /S --poll 0.2 --grace 0 --rewake 0 --max-polls 50 >/dev/null 2>"$tmp/denied-err"
+rc=$?
+if [ "$rc" -eq 3 ] && grep -qxF 'bus-idle-waker: sendText denied (window predates the konsole D-Bus setting; relaunch it): legX' "$tmp/denied-err" && ! grep -q 'session gone' "$tmp/denied-err"; then
+  pass "an AccessDenied sendText ends with rc=3 and names the denial, not a gone session"
+else fail "denied: expected rc=3, got rc=$rc: $(cat "$tmp/denied-err")"; fi
+
 bash "$WAKER" --name legX --service s --session >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 64 ] && pass "an option with no value is refused (rc=64)" || fail "valueless option: expected rc=64, got rc=$rc"
@@ -97,6 +110,20 @@ printf '08' > "$HANDOVER_DIR/inbox/.cursor/legX"
 printf 'aaaaaaa\nbbb\n' > "$HANDOVER_DIR/inbox/legX.md"
 BUS_N=0 run 8 0.5
 grep -qF 'You have 1 unread himmel messages' "$QLOG" && pass "a zero-padded cursor still counts bytes in decimal" || fail "08 cursor: $(cat "$QLOG")"
+
+# --pid: the waker armed for a launched konsole stops once that konsole is gone.
+sleep 0 & dead=$!; wait "$dead"
+: > "$QLOG"
+BUS_N=0 BUS_WAKER_QDBUS="$tmp/qdbus" BUS_WAKER_BUS="$tmp/bus" bash "$WAKER" --name legX --service s --session /S --pid "$dead" --poll 0.2 --max-polls 50 >/dev/null 2>"$tmp/pid-err"
+rc=$?
+if [ "$rc" -eq 0 ] && grep -qxF "bus-idle-waker: konsole pid $dead gone, stopping: legX" "$tmp/pid-err"; then
+  pass "--pid: a gone konsole ends the waker with rc=0"
+else fail "--pid gone: expected rc=0 and the stop line, got rc=$rc: $(cat "$tmp/pid-err")"; fi
+bash "$WAKER" --name legX --service s --session /S --pid 0 >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 64 ] && pass "--pid 0 is refused (rc=64): kill -0 0 would probe the process group" || fail "--pid 0: expected rc=64, got rc=$rc"
+BUS_N=2 run 3 0 --pid "$$"
+[ "$RUN_RC" -eq 0 ] && grep -qF 'unread himmel messages: read them now.' "$QLOG" && pass "--pid: a live konsole still gets the wake" || fail "--pid live: rc=$RUN_RC, qlog: $(cat "$QLOG")"
 
 echo "== succession doc =="
 if grep -q 'run `bus adopt <new console>` as the leg' "$REPO/docs/handover/leg-sections/succession.md" && grep -q 'no edge to' "$REPO/docs/handover/leg-sections/succession.md"; then pass "succession.md tells the leg to run bus adopt and why"; else fail "succession.md lacks the bus adopt instruction"; fi

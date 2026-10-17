@@ -2356,4 +2356,24 @@ check "bjj SIGTERM-ignoring bind: headed-arm.sh returns within 15s" "$hungbj" "n
 check "bjk SIGTERM-ignoring bind: launch exit 0 (fail-open)" "$rcbj" "0"
 contains "bjl SIGTERM-ignoring bind: timeout warned into the arm log" "$(cat "$dbj/log" 2>/dev/null)" "timed out after 2s"
 
+# --- bw: HEADED_ARM_WAKER=1 arms the idle waker (HEADED_ARM_WAKER_CMD) against
+# the launched konsole's own D-Bus service, bound to its pid; no flag, no waker.
+dbw="$tmp/cbw"; mk_stub "$dbw" 1 alive "HIMMEL-busbw"
+cat > "$dbw/waker" <<'WAKER_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$(dirname "$0")/waker-calls"
+WAKER_EOF
+chmod 755 "$dbw/waker"
+rcbw=0
+HEADED_ARM_WAKER=1 HEADED_ARM_WAKER_CMD="$dbw/waker" run_headed_arm "$dbw" "$REPO" "HIMMEL-busbw" "docbw.md" "$dbw/signal-never" "$PAST" >/dev/null 2>&1 || rcbw=$?
+nbw=0; while [ ! -s "$dbw/waker-calls" ] && [ "$nbw" -lt 40 ]; do sleep 0.05; nbw=$((nbw+1)); done
+check "bwa waker: launch exit 0" "$rcbw" "0"
+check "bwb waker: armed once on the konsole's own service and pid" \
+  "$(grep -cE -- '^--name HIMMEL-busbw --service org\.kde\.konsole-([0-9]+) --session /Sessions/1 --pid \1$' "$dbw/waker-calls" 2>/dev/null)" "1"
+dbwn="$tmp/cbwn"; mk_stub "$dbwn" 1 alive "HIMMEL-busbwn"
+cp "$dbw/waker" "$dbwn/waker"
+HEADED_ARM_WAKER_CMD="$dbwn/waker" run_headed_arm "$dbwn" "$REPO" "HIMMEL-busbwn" "docbw.md" "$dbwn/signal-never" "$PAST" >/dev/null 2>&1 || true
+settle
+check "bwc no flag: the waker is never armed" "$([ -e "$dbwn/waker-calls" ] && echo armed || echo none)" "none"
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }
