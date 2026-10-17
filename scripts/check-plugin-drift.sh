@@ -908,6 +908,121 @@ print("" if h is None else (h.get("reason") or "-")+("" if not r else "; release
   fi
 fi
 
+# Fork defaults are discovered, not registered: a new fork is checked on the
+# next run. Registry fork blocks add pinned branches; explicit holds apply only
+# to the named branch (or the default branch when branch is omitted).
+echo ""
+echo "== fork branches (upstream default-branch comparison) =="
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "  ? python3 not available — fork-behind class UNCHECKED."
+  incomplete=1
+else
+  python3 - "$REGISTRY" "$UPSTREAMS" <<'PY'
+import json, os, re, shlex, subprocess, sys
+from urllib.parse import quote
+
+status = 0
+metadata = {}
+
+def gh(*args):
+    result = subprocess.run(['gh', *args], check=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, timeout=60)
+    return json.loads(result.stdout)
+
+def repo_name(value):
+    value = value.rstrip('/')
+    if value.startswith('https://github.com/'):
+        value = value[len('https://github.com/'):]
+    if value.endswith('.git'):
+        value = value[:-4]
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', value):
+        raise ValueError('invalid fork repository')
+    return value
+
+def info(repo):
+    if repo not in metadata:
+        metadata[repo] = gh('api', 'repos/' + repo)
+    return metadata[repo]
+
+def unchecked(name, reason):
+    global status
+    print(f'  {name}: ? {reason} — fork-behind UNCHECKED')
+    status |= 2
+
+try:
+    configs = []
+    for path in sys.argv[1:]:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            continue
+        with open(path) as f:
+            doc = json.load(f)
+        configs.extend(doc.get('forks', []))
+        entries = doc.get('entries', []) if path == sys.argv[1] else doc.values()
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get('fork'):
+                configs.append(entry['fork'])
+    targets = {}
+    for config in configs:
+        repo = repo_name(config['fork_repo'])
+        branch = config.get('branch') or info(repo)['default_branch']
+        if not isinstance(branch, str) or re.search(r'[\s|()]', branch):
+            raise ValueError('invalid fork branch')
+        reason = config.get('hold-reason', '')
+        if not isinstance(reason, str):
+            raise ValueError('invalid fork hold-reason')
+        key = (repo, branch)
+        # A duplicate registry declaration must not erase an explicit hold.
+        targets[key] = reason.strip() or targets.get(key, '')
+except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+    unchecked('fork registry', 'could not load fork branches / holds')
+    sys.exit(status)
+
+try:
+    forks = gh('repo', 'list', 'yotamleo', '--fork', '--limit', '1000', '--json', 'nameWithOwner')
+    if not isinstance(forks, list):
+        raise ValueError('invalid fork inventory')
+    for fork in forks:
+        repo = repo_name(fork['nameWithOwner'])
+        try:
+            targets.setdefault((repo, info(repo)['default_branch']), '')
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            unchecked(repo, 'fork metadata unavailable')
+    if len(forks) >= 1000:
+        unchecked('fork inventory', 'discovery limit reached; inventory may be incomplete')
+except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+    # Still check explicitly pinned branches if discovery is unavailable.
+    unchecked('fork inventory', 'could not list yotamleo forks')
+
+for (repo, branch), reason in sorted(targets.items()):
+    name = f'{repo}@{branch}'
+    if reason:
+        print(f'  {name}: HELD ({" ".join(reason.split())})')
+        continue
+    try:
+        parent = repo_name(info(repo)['parent']['full_name'])
+        base = info(parent)['default_branch']
+        owner = repo.split('/')[0]
+        comparison = gh('api', f'repos/{parent}/compare/{quote(base, safe="")}...{owner}:{quote(branch, safe="")}')
+        behind, ahead = comparison['behind_by'], comparison['ahead_by']
+        if any(type(n) is not int or n < 0 for n in (behind, ahead)):
+            raise ValueError('invalid comparison counts')
+        detail = f'fork-behind upstream={parent}@{base} behind={behind} ahead={ahead}'
+        if behind:
+            # gh repo sync cannot map differently named source/target branches.
+            action = '/fork-resync' if ahead or branch != base else f'gh repo sync {shlex.quote(repo)} --branch {shlex.quote(branch)}'
+            print(f'  {name}: BEHIND   ({detail} action={action})')
+            status |= 1
+        else:
+            print(f'  {name}: CURRENT  ({detail})')
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        unchecked(name, 'upstream default-branch comparison unavailable')
+sys.exit(status)
+PY
+  fork_rc=$?
+  [ $((fork_rc & 1)) -ne 0 ] && drift=1
+  if [ $((fork_rc & 2)) -ne 0 ] || [ "$fork_rc" -gt 3 ]; then incomplete=1; fi
+fi
+
 # Pinned tools and packages. Not a registry: scripts/upstreams/
 # pin-scan.py DISCOVERS every npm/bun dependency (at its lockfile version), every
 # pre-commit rev, every workflow `uses:`, the gitleaks `ver=` literal and the

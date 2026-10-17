@@ -80,6 +80,7 @@ parse_report() {
   local re_arrow='([^ ]+) -> ([^ )]+)'
   local re_tag='latest tag ([^;]+); (fork synced to|installed) ([^ ]+)'
   local re_latest='latest ([^ )]+)'
+  local re_fork='fork-behind upstream=([^ ]+) behind=([0-9]+) ahead=([0-9]+) action=(.+)\)$'
   : > "$wd/behind.tsv"; : > "$wd/vendored.txt"; : > "$wd/other.txt"
   while IFS= read -r line; do
     case "$line" in
@@ -96,6 +97,14 @@ parse_report() {
       printf -- '- %s\n' "$rest" >> "$wd/vendored.txt"
     elif [[ "$rest" == *": BEHIND"* ]]; then
       detail="${rest#*: BEHIND}"
+      if [[ "$detail" =~ $re_fork ]]; then
+        name="${rest%%: *}"
+        tgt="${BASH_REMATCH[1]}"
+        cur="behind=${BASH_REMATCH[2]} ahead=${BASH_REMATCH[3]}"
+        action="${BASH_REMATCH[4]}"
+        printf '%s|fork-behind|%s|%s|%s\n' "$name" "$cur" "$tgt" "$action" >> "$wd/behind.tsv"
+        continue
+      fi
       cur="?"; tgt="?"
       if [[ "$detail" =~ $re_arrow ]]; then
         cur="${BASH_REMATCH[1]}"; tgt="${BASH_REMATCH[2]}"

@@ -647,6 +647,7 @@ PIN
 cat >"$W5B/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 exit 0
 GH
 chmod +x "$W5B/bin/gh"
@@ -685,6 +686,7 @@ PIN
 cat >"$W5C/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 case "$*" in
   *"repos/owner/hash-pin/contents/file.txt"*) printf '%s\n' 'aGVsbG8K'; exit 0 ;;
 esac
@@ -802,6 +804,7 @@ cat > "$W7/bin/gh" <<'GH'
 #!/usr/bin/env bash
 a="$*"
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 repo=$(printf '%s\n' "$a" | sed -n 's|.*repos/\([^/ ]*/[^/ ]*\)/.*|\1|p')
 case "$a" in
   *"/compare/"*) printf '%s\n' "${FAKE_AHEAD:-5}"; exit 0 ;;
@@ -1015,6 +1018,7 @@ tool_link "$(command -v bash)" "$W8/notimeout/bash"
 cat > "$W8/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 exit 0
 GH
 chmod +x "$W8/bin/gh"
@@ -1055,6 +1059,7 @@ W9="$(mktemp -d)"; mkdir -p "$W9/bin"
 cat > "$W9/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 exit 0
 GH
 chmod +x "$W9/bin/gh"
@@ -1086,6 +1091,7 @@ W10="$(mktemp -d)"; mkdir -p "$W10/bin"
 cat > "$W10/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 exit 0
 GH
 chmod +x "$W10/bin/gh"
@@ -1140,6 +1146,7 @@ W11="$(mktemp -d)"; mkdir -p "$W11/bin"
 cat > "$W11/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 case "$*" in
   *"/releases/latest"*) printf 'v0.9.16\n'; exit 0 ;;
   *"/tags"*) printf 'v1.0.0\nv0.9.16\nv0.9.13\n'; exit 0 ;;
@@ -1167,6 +1174,7 @@ if grepq "$(printf '%s' "$tag_out" | grep 'nonmono-tag')" 'v1.0.0'; then ok "def
 cat > "$W11/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 case "$*" in
   *"/releases/latest"*) exit 1 ;;
 esac
@@ -1181,6 +1189,7 @@ if [ "$unreach_rc" -eq 3 ]; then ok "release-mode unreachable run exits 3 (incom
 cat > "$W11/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 case "$*" in
   *"/tags"*) printf 'v1.0.0\nv0.9.16\n'; exit 0 ;;
 esac
@@ -1219,6 +1228,7 @@ cat > "$W12/bin/gh" <<'GH'
 #!/usr/bin/env bash
 a="$*"
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 repo=$(printf '%s\n' "$a" | sed -n 's|.*repos/\([^/ ]*/[^/ ]*\)/.*|\1|p')
 case "$a" in
   *"/releases/latest"*)
@@ -1344,6 +1354,7 @@ cat >"$W13/bin/gh" <<'GH'
 #!/usr/bin/env bash
 a="$*"
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 repo=$(printf '%s\n' "$a" | sed -n 's|.*repos/\([^/ ]*/[^/ ]*\)/.*|\1|p')
 case "$a" in
   *"/compare/"*) printf '3\n'; exit 0 ;;
@@ -1413,6 +1424,7 @@ W15="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-w15.XXXXXX")" || { echo "mktemp -d fail
 cat > "$W15/bin/gh" <<'GH'
 #!/usr/bin/env bash
 [ "$1" = auth ] && [ "$2" = status ] && exit 0
+[ "$1 $2" = 'repo list' ] && { printf '[]\n'; exit 0; }
 case "$*" in
   *"/releases/latest"*) printf 'bun-v1.4.3\n'; exit 0 ;;
 esac
@@ -1481,6 +1493,89 @@ out16="$( cd "$W16" && git checkout -q -B feat-x "$(git rev-list --max-parents=0
 if [ "$rc16" -eq 1 ] && grepq "$out16" 'was not bumped'; then ok "merge of an unbumped feature branch into another feature branch is still rejected (GH #2205)"; else bad "feature-into-feature merge let an unbumped edit through (rc=$rc16): $out16"; fi
 ( cd "$W16" && git merge --abort >/dev/null 2>&1 )
 rm -rf "$W16"
+
+# 17. Fork discovery must catch default-branch drift even when release pins
+#     are current; carried commits change the repair, and holds suppress it.
+W17="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-w17.XXXXXX")" || exit 1
+mkdir -p "$W17/bin" "$W17/scripts/lib" "$W17/scripts/upstreams"
+cp "$SCRIPT" "$W17/scripts/check-plugin-drift.sh"
+cp "$ROOT/scripts/lib/vm-mode.sh" "$W17/scripts/lib/vm-mode.sh"
+cp "$ROOT/scripts/upstreams/pin-scan.py" "$W17/scripts/upstreams/pin-scan.py"
+cat > "$W17/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1 $2" = 'auth status' ] && exit 0
+case "$*" in
+  'repo list yotamleo --fork '*)
+    [ "${FORK_LIST_FAIL:-0}" = 1 ] && exit 1
+    printf '[{"nameWithOwner":"yotamleo/fast"},{"nameWithOwner":"yotamleo/carried"},{"nameWithOwner":"yotamleo/held"},{"nameWithOwner":"yotamleo/current"},{"nameWithOwner":"yotamleo/renamed"}]\n' ;;
+  'api repos/yotamleo/'*)
+    printf '{"default_branch":"main","parent":{"full_name":"upstream/%s"}}\n' "${2##*/}" ;;
+  'api repos/upstream/'*/compare/*)
+    case "$2" in
+      repos/upstream/fast/compare/main...yotamleo:main)
+        printf '{"behind_by":5,"ahead_by":0}\n' ;;
+      */compare/trunk...yotamleo:main)
+        case "$2" in
+          repos/upstream/renamed/*) printf '{"behind_by":6,"ahead_by":0}\n' ;;
+          repos/upstream/carried/*) printf '{"behind_by":3,"ahead_by":2}\n' ;;
+          repos/upstream/held/*) printf '{"behind_by":9,"ahead_by":0}\n' ;;
+          repos/upstream/current/*) printf '{"behind_by":0,"ahead_by":4}\n' ;;
+          *) exit 1 ;;
+        esac ;;
+      */compare/main...yotamleo:himmel%2Fpin|*/compare/main...yotamleo:himmel%2Fregistry|*/compare/trunk...yotamleo:himmel%2Fpin)
+        [ "${FORK_COMPARE_FAIL:-0}" = 1 ] && exit 1
+        if [ "${FORK_BAD_COUNTS:-0}" = 1 ]; then
+          printf '{"behind_by":"7","ahead_by":1}\n'
+        else
+          printf '{"behind_by":7,"ahead_by":1}\n'
+        fi ;;
+      *) exit 1 ;;
+    esac ;;
+  'api repos/upstream/'*/tags*) printf 'v1.0.0\n' ;;
+  'api repos/upstream/fast') printf '{"default_branch":"main"}\n' ;;
+  'api repos/upstream/'*) printf '{"default_branch":"trunk"}\n' ;;
+  *) exit 1 ;;
+esac
+GH
+chmod +x "$W17/bin/gh"
+printf '{"plugins":[]}' > "$W17/m.json"
+cat > "$W17/u.json" <<'JSON'
+{"candidate":{"fork":{"fork_repo":"yotamleo/offlist","branch":"himmel/pin"}}}
+JSON
+cat > "$W17/reg.json" <<'JSON'
+{"entries":[{"name":"pin-base","kind":"tag_release","mode":"base","tracked_repo":"upstream/fast","synced_base":"1.0.0","fork":{"fork_repo":"https://github.com/yotamleo/fast.git","branch":"himmel/registry"}}],"forks":[
+  {"fork_repo":"yotamleo/fast","branch":"himmel/pin"},
+  {"fork_repo":"yotamleo/held","hold-reason":"reviewed compatibility hold"}
+]}
+JSON
+fork_run() {
+  PATH="$W17/bin:$PATH" DRIFT_MJSON="$W17/m.json" DRIFT_UPSTREAMS="$W17/u.json" \
+    DRIFT_REGISTRY="$W17/reg.json" DRIFT_KNOWN_MARKETPLACES=/dev/null \
+    bash "$W17/scripts/check-plugin-drift.sh" 2>&1
+}
+fork_out="$(fork_run)"; fork_rc=$?
+if grepq "$fork_out" 'yotamleo/fast@main: BEHIND.*fork-behind.*behind=5 ahead=0.*gh repo sync yotamleo/fast'; then ok "fork-behind: five behind and zero ahead recommends gh repo sync"; else bad "fork-behind: missing five-behind fast-forward action; $fork_out"; fi
+if grepq "$fork_out" 'yotamleo/carried@main: BEHIND.*behind=3 ahead=2.*/fork-resync'; then ok "fork-behind: carried commits recommend /fork-resync"; else bad "fork-behind: missing carried-commit action"; fi
+if grepq "$fork_out" 'yotamleo/renamed@main: BEHIND.*upstream=upstream/renamed@trunk behind=6 ahead=0 action=/fork-resync'; then ok "fork-behind: differing branch names require /fork-resync even without carried commits"; else bad "fork-behind: differing branch names offered an unsafe sync action"; fi
+if grepq "$fork_out" 'yotamleo/fast@himmel/pin: BEHIND.*behind=7 ahead=1'; then ok "fork-behind: pinned branch checked separately from default"; else bad "fork-behind: pinned branch was skipped"; fi
+if grepq "$fork_out" 'yotamleo/held@main: BEHIND'; then bad "fork-behind: hold-reason did not suppress drift row"; else ok "fork-behind: hold-reason suppresses drift row"; fi
+if grepq "$fork_out" 'yotamleo/current@main: BEHIND'; then bad "fork-behind: ahead-only fork reported behind"; else ok "fork-behind: ahead-only fork is not behind"; fi
+if [ "$fork_rc" -eq 2 ]; then ok "fork-behind: drift exits 2"; else bad "fork-behind: exit $fork_rc, expected 2"; fi
+if grepq "$fork_out" 'yotamleo/held@main: HELD (reviewed compatibility hold)'; then ok "fork-behind: hold is reported explicitly"; else bad "fork-behind: held fork disappeared from report"; fi
+if grepq "$fork_out" 'yotamleo/current@main: CURRENT.*behind=0 ahead=4'; then ok "fork-behind: ahead-only fork is checked and current"; else bad "fork-behind: ahead-only fork was not checked"; fi
+fork_out="$(FORK_COMPARE_FAIL=1 fork_run)"; fork_rc=$?
+if grepq "$fork_out" 'yotamleo/fast@himmel/pin: .*UNCHECKED'; then ok "fork-behind: failed pinned comparison is unchecked"; else bad "fork-behind: failed pinned comparison not unchecked"; fi
+fork_out="$(FORK_LIST_FAIL=1 fork_run)"; fork_rc=$?
+if [ "$fork_rc" -eq 2 ] && grepq "$fork_out" 'fork inventory: .*UNCHECKED' && grepq "$fork_out" 'fast@himmel/pin: BEHIND'; then ok "fork-behind: pinned drift wins over incomplete inventory"; else bad "fork-behind: pinned drift lost when inventory failed; $fork_out"; fi
+if grepq "$fork_out" 'yotamleo/fast@himmel/registry: BEHIND.*behind=7 ahead=1'; then ok "fork-behind: upstream registry fork block adds its branch"; else bad "fork-behind: registry fork block ignored"; fi
+if grepq "$fork_out" 'yotamleo/offlist@himmel/pin: BEHIND.*behind=7 ahead=1'; then ok "fork-behind: plugin fork block checked outside discovered inventory"; else bad "fork-behind: plugin fork block ignored"; fi
+fork_out="$(FORK_BAD_COUNTS=1 fork_run)"; fork_rc=$?
+if grepq "$fork_out" 'yotamleo/fast@himmel/pin: .*UNCHECKED' && ! grepq "$fork_out" 'yotamleo/fast@himmel/pin: BEHIND'; then ok "fork-behind: malformed counts never claim a comparison"; else bad "fork-behind: malformed counts were trusted"; fi
+printf '{"entries":[]}' > "$W17/reg.json"
+printf '{}' > "$W17/u.json"
+fork_out="$(FORK_LIST_FAIL=1 fork_run)"; fork_rc=$?
+if [ "$fork_rc" -eq 3 ] && grepq "$fork_out" 'fork inventory: .*UNCHECKED'; then ok "fork-behind: failed inventory alone is incomplete, not current"; else bad "fork-behind: failed inventory exit $fork_rc, expected 3"; fi
+rm -rf "$W17"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
