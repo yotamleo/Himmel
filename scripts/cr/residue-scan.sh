@@ -27,6 +27,12 @@ HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # shellcheck source=../lib/git-clean.sh
 # shellcheck disable=SC1091
 . "$HIMMEL_ROOT/scripts/lib/git-clean.sh" 2>/dev/null || { echo "residue-scan: git-clean.sh missing, skipped."; exit 0; }
+# shellcheck source=../lib/prim.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$HIMMEL_ROOT/scripts/lib/prim.sh" ] && . "$HIMMEL_ROOT/scripts/lib/prim.sh"; } 2>/dev/null; then
+    echo "residue-scan: prim.sh missing, skipped."
+    exit 0
+fi
 
 diff_file=""
 while [ $# -gt 0 ]; do
@@ -36,7 +42,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/residue-scan.XXXXXX")" || exit 0
+tmp="$(tmpdir)" || exit 0
 trap 'rm -rf "$tmp"' EXIT
 
 if [ -z "$diff_file" ]; then

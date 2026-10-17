@@ -6,6 +6,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCAN="$HERE/residue-scan.sh"
 FX="$HERE/testdata/residue-scan"
 fails=0
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/residue-scan-test.XXXXXX")" || exit 1
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/home" "$tmp/scratch space" || exit 1
+export HOME="$tmp/home"
 
 check() {
     if [ "$2" = "$3" ]; then echo "ok - $1"; else
@@ -44,5 +48,23 @@ check "finding names file:line" "$(printf '%s\n' "$out" | grep -c 'scripts/lanes
 
 out="$(bash "$SCAN" --diff-file "$FX/does-not-exist.diff")"; rc=$?
 check "unreadable diff: exit 0" "$rc" "0"
+
+out="$(TMPDIR="$tmp/scratch space///" scan clean.diff)"; rc=$?
+check "spaced TMPDIR with trailing slashes: exit 0" "$rc" "0"
+check "spaced TMPDIR: scan still reports its summary" "$out" "$summary0"
+check "scan removes its scratch directory" "$(find "$tmp/scratch space" -mindepth 1 -print | wc -l | tr -d ' ')" "0"
+
+out="$(TMPDIR="$tmp/no/such/dir" scan clean.diff 2>/dev/null)"; rc=$?
+check "allocation failure: advisory remains exit 0" "$rc" "0"
+check "allocation failure: no misleading findings" "$out" ""
+
+# A partial installation must skip this advisory, not abort the calling shell
+# or report a clean scan without having run it. Keep the other dependency real.
+mkdir -p "$tmp/checkout/scripts/cr" "$tmp/checkout/scripts/lib" || exit 1
+cp "$SCAN" "$tmp/checkout/scripts/cr/" || exit 1
+cp "$HERE/../lib/git-clean.sh" "$tmp/checkout/scripts/lib/" || exit 1
+out="$(bash "$tmp/checkout/scripts/cr/residue-scan.sh" --diff-file "$FX/clean.diff")"; rc=$?
+check "missing primitives library: advisory remains exit 0" "$rc" "0"
+check "missing primitives library: reports skipped, not clean" "$out" "residue-scan: prim.sh missing, skipped."
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi
