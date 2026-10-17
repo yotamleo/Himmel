@@ -7,6 +7,8 @@
 // Headings are matched by their words, not their level, so the same check runs
 // on markdown (`## Impact`) and on a pre-built ADF doc (heading nodes).
 
+import { SECTORS } from './commands/sector.js';
+
 export const PLAIN_SECTIONS = ['Impact', 'What', 'Why', 'Plan', 'DoD', 'Agent detail'] as const;
 
 /** Sections that must hold at least one bullet or numbered line beyond the template hint. */
@@ -137,4 +139,29 @@ export function plainBlockVerdict(type: string, found: string[]): PlainVerdict {
       `Start the body with this shape (docs/internals/jira-plugin.md, "Ticket shape"):\n\n` +
       PLAIN_BLOCK_TEMPLATE,
   };
+}
+
+export const STANDALONE_LABEL = 'standalone';
+
+/**
+ * The home rule: a ticket carries a Sector and either a parent epic or the
+ * `standalone` label. Epic and Subtask only warn, as in plainBlockVerdict.
+ */
+export function homeVerdict(
+  type: string,
+  home: { sector?: string; parent?: string; labels?: string[] },
+): PlainVerdict {
+  const missing: string[] = [];
+  if (!home.sector) missing.push(`no Sector (pass --sector "<${SECTORS.join(' | ')}>")`);
+  const standalone = (home.labels ?? []).includes(STANDALONE_LABEL);
+  if (!home.parent && !standalone)
+    missing.push(
+      `neither a parent epic nor the ${STANDALONE_LABEL} label (pass --parent <EPIC-KEY> or --labels ${STANDALONE_LABEL})`,
+    );
+  if (missing.length === 0) return { action: 'ok', message: '' };
+  const why = `ticket has no home: ${missing.join('; ')}`;
+  if (WARN_ONLY_TYPES.has(type.trim().toLowerCase())) {
+    return { action: 'warn', message: `jira: warning: ${why} (${type} is exempt, filing anyway)` };
+  }
+  return { action: 'refuse', message: `jira: refused: ${why}.` };
 }

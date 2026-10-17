@@ -82,7 +82,7 @@ replacement_for() {
     case "${service}:${verb}" in
         jira:get)        echo 'node scripts/jira/dist/index.js get HIMMEL-N' ;;
         jira:list)       echo 'node scripts/jira/dist/index.js list --jql "<your JQL>"' ;;
-        jira:create)     echo 'node scripts/jira/dist/index.js create --project HIMMEL --type Story --title "..." --desc-file <file> (body: Impact, What, Why, Plan, DoD, Agent detail headings)' ;;
+        jira:create)     echo 'node scripts/jira/dist/index.js create --project HIMMEL --type Story --title "..." --sector "<Sector>" --parent <EPIC-KEY> --desc-file <file> (body: Impact, What, Why, Plan, DoD, Agent detail headings; --labels standalone instead of --parent)' ;;
         jira:edit)       echo 'node scripts/jira/dist/index.js edit HIMMEL-N --title "..." --desc "..."' ;;
         jira:comment)    echo 'node scripts/jira/dist/index.js comment HIMMEL-N "<text>"' ;;
         jira:transition) echo 'node scripts/jira/dist/index.js transition HIMMEL-N <Status Name>' ;;

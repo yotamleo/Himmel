@@ -3,6 +3,7 @@ import {
   lintPlainBlock,
   lintPlainBlockAdf,
   plainBlockVerdict,
+  homeVerdict,
   PLAIN_BLOCK_TEMPLATE,
 } from './plain-block.js';
 
@@ -143,5 +144,36 @@ describe('plainBlockVerdict', () => {
     );
     expect(plainBlockVerdict('Task', found).message).toMatch(/missing "## Plan"; missing "## DoD"/);
     expect(plainBlockVerdict('Epic', found).action).toBe('warn');
+  });
+});
+
+describe('homeVerdict (HIMMEL-6223)', () => {
+  const home = { sector: 'Ship loop', parent: 'HIMMEL-1', labels: [] as string[] };
+
+  it('refuses a Task, Story or Bug with no Sector, naming the field and the fix', () => {
+    for (const t of ['Task', 'Story', 'bug']) {
+      const v = homeVerdict(t, { ...home, sector: undefined });
+      expect(v.action).toBe('refuse');
+      expect(v.message).toMatch(/no Sector.*--sector/s);
+    }
+  });
+
+  it('refuses a Sector with neither a parent nor the standalone label, naming the marker', () => {
+    const v = homeVerdict('Task', { sector: 'Ship loop', labels: ['x'] });
+    expect(v.action).toBe('refuse');
+    expect(v.message).toMatch(/--parent.*--labels standalone/s);
+  });
+
+  it('passes with a Sector and a parent, or with a Sector and the standalone label', () => {
+    expect(homeVerdict('Task', home).action).toBe('ok');
+    expect(homeVerdict('Task', { sector: 'Ship loop', labels: ['a', 'standalone'] }).action).toBe('ok');
+    // Jira labels are case-sensitive, so a differently cased label is a different label.
+    expect(homeVerdict('Task', { sector: 'Ship loop', labels: ['Standalone'] }).action).toBe('refuse');
+  });
+
+  it('only warns for an Epic or Subtask with neither', () => {
+    expect(homeVerdict('Epic', { labels: [] }).action).toBe('warn');
+    expect(homeVerdict('Subtask', { labels: [] }).action).toBe('warn');
+    expect(homeVerdict('Epic', home).action).toBe('ok');
   });
 });

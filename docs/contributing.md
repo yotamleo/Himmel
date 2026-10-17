@@ -140,8 +140,12 @@ mapping).
 
 ```bash
 node scripts/jira/dist/index.js create --project HIMMEL --type Task \
-  --title "Short subject" --desc "Spec body with acceptance criteria"
+  --title "Short subject" --desc "Spec body with acceptance criteria" \
+  --sector "Ship loop" --parent HIMMEL-NNN
 ```
+
+A Task, Story or Bug needs `--sector` and either `--parent <epic>` or
+`--labels standalone`; `create` refuses it otherwise (HIMMEL-6223).
 
 ## Reporting issues
 

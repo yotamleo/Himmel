@@ -681,7 +681,7 @@ judge_scope_record() (
     # or not - a NO-GO only narrows), blocks the scope round: a GO beside it is
     # not the judges' last word.
     for nf in "$dir"/*/*.md; do
-        [ -f "$nf" ] && [ ! -L "$nf" ] || continue
+        if [ ! -f "$nf" ] || [ -L "$nf" ]; then continue; fi
         # A record that cannot be read whole may be a NO-GO: it vetoes, never skips.
         if ! go_verdict_snapshot "$nf"; then
             echo "review-round: ${nf#"$dir"/} cannot be read whole (unreadable, empty or NUL) - the scope round is refused (HIMMEL-4984)" >&2
@@ -1616,7 +1616,7 @@ if [ "$pending_count" -gt 0 ] && ! printf '%s' "$defer_to" | grep -qE '^[A-Z][A-
         [ -n "$resolved_primary" ] && primary_root="$resolved_primary"
     fi
     echo "review-round: $round_label has deferrable findings only, but no valid defer ticket was supplied." >&2
-    printf "node '%s/scripts/jira/dist/index.js' create --type Task --title 'Track deferred /pr-check round 4+ suggestions' --desc-file '%s/scripts/cr/deferred-ticket-body.md'\n" "$primary_root" "$primary_root" >&2
+    printf "node '%s/scripts/jira/dist/index.js' create --type Task --title 'Track deferred /pr-check round 4+ suggestions' --sector 'Ship loop' --labels standalone --desc-file '%s/scripts/cr/deferred-ticket-body.md'\n" "$primary_root" "$primary_root" >&2
     printf "Then resume without rerunning the panel:\nCR_DEFER_TO=HIMMEL-NNNN bash '%s/review-round.sh' defer --head '%s' --branch '%s'\n" "$SCRIPT_DIR" "$full_head" "$branch" >&2
     exit 6
 fi

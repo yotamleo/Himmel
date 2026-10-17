@@ -11,9 +11,10 @@ PR introducing this file).
 
 ## Usage
 
-- Default project (HIMMEL): `jira list`, `jira create --type Story --title "..."`
+- Default project (HIMMEL): `jira list`, `jira create --type Story --title "..." --sector "Ship loop" --labels standalone`
 - Non-default project: pass `--project <KEY>` to any subcommand. Example:
-  `jira create --project LUNA --type Story --title "..."`
+  `jira create --project LUNA --type Story --title "..." --sector "Planning & tracking" --labels standalone`
+- A Task, Story or Bug needs `--sector` and either `--parent <epic>` or `--labels standalone` (HIMMEL-6223).
 - Refresh this catalog: run `jira projects` and update the table above.
 
 ## Conventions

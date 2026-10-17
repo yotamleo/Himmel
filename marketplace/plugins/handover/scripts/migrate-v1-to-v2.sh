@@ -234,13 +234,13 @@ The v2 handover layout names every item after its Jira key.
 Created by migrate-v1-to-v2.sh from $dir. No further work is expected beyond the rename.
 BODY
         if [ -n "$parent" ]; then
-          out="$(jira create --type "$jtype" --parent "$parent" --title "$slug" --desc-file "$body" 2>&1)" || {
+          out="$(jira create --type "$jtype" --parent "$parent" --sector "Planning & tracking" --title "$slug" --desc-file "$body" 2>&1)" || {
             rm -f "$body"
             echo "ERR: jira create failed for $dir: $out" >&2
             return 2
           }
         else
-          out="$(jira create --type "$jtype" --title "$slug" --desc-file "$body" 2>&1)" || {
+          out="$(jira create --type "$jtype" --sector "Planning & tracking" --labels standalone --title "$slug" --desc-file "$body" 2>&1)" || {
             rm -f "$body"
             echo "ERR: jira create failed for $dir: $out" >&2
             return 2

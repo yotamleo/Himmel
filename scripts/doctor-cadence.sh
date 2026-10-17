@@ -104,7 +104,7 @@ $(grep -A1 -E "^WARN +$id:" "$log" | head -2)"
         if [ -n "$found" ]; then
             JIRA_PROJECT_KEY="$proj" "${J[@]}" comment "$found" "$desc" >/dev/null 2>&1 || continue
         else
-            JIRA_PROJECT_KEY="$proj" "${J[@]}" create --type Task --title "[doctor] $id persists" --desc "$desc" --labels doctor >/dev/null 2>&1 || continue
+            JIRA_PROJECT_KEY="$proj" "${J[@]}" create --type Task --title "[doctor] $id persists" --desc "$desc" --labels doctor,standalone --sector Visibility >/dev/null 2>&1 || continue
         fi
         printf '%s\n' "$id" >> "$tf"
     done <<< "$keys"

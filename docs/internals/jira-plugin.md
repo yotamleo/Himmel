@@ -219,6 +219,15 @@ The sync reads reachability from the tags of the clone it runs in, so it must
 run from a clone of the repo whose releases it lists (`--repo` must match), and
 `--apply` refuses when a published tag is missing locally (`git fetch --tags`).
 
+**Ticket home (HIMMEL-6223).** `create` refuses a Task, Story or Bug with no
+`--sector` (one of the nine Sector options, matched case-insensitively), or with
+neither `--parent <epic>` nor `--labels standalone`; the refusal names the
+missing field and the flag that fixes it. An Epic or Subtask only warns. The
+MCP `create` takes the same `sector` argument. The check is `homeVerdict` in
+`scripts/jira/src/plain-block.ts`. Rollout: the rule goes live on a station when
+`himmel-update` rebuilds `scripts/jira/dist`; until then a stale `dist/` still
+files without a Sector.
+
 **Bug default fixVersion.** `create --type Bug` without
 `--fix-version` sets the earliest unreleased, unarchived version from the project's
 versions and prints one stderr line saying so; an explicit `--fix-version` always

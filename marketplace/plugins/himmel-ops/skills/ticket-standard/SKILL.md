@@ -79,8 +79,14 @@ Use the Jira CLI by absolute path from the primary checkout, with the draft as
 the description file; see `docs/internals/jira-plugin.md` for the ops.
 
 ```bash
-JIRA_PROJECT_KEY=HIMMEL node <repo-root>/scripts/jira/dist/index.js create --type Task --title "<title>" --desc-file draft.md
+JIRA_PROJECT_KEY=HIMMEL node <repo-root>/scripts/jira/dist/index.js create --type Task --title "<title>" --sector "<Sector>" --parent <EPIC-KEY> --desc-file draft.md
 ```
+
+`create` also refuses a Task, Story or Bug with no `--sector`, or with neither
+`--parent <EPIC-KEY>` nor `--labels standalone` (HIMMEL-6223); an Epic or Subtask
+only warns. Sectors: Fleet orchestration, Ship loop, Safety & enforcement, Cost &
+efficiency, Visibility, Quality & proof, Deployment, Knowledge & steering,
+Planning & tracking.
 
 HIMMEL-5643 enforces Plan and DoD inside `jira create` as well; this skill is the
 earlier step that also checks the named Proof and keeps what it refuses.

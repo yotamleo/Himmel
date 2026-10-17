@@ -12,7 +12,8 @@ import { formatTransitions } from './commands/transitions.js';
 import { buildEditFields } from './commands/edit.js';
 import { parseLabels } from './commands/labels.js';
 import { uploadAll } from './commands/attach-helper.js';
-import { lintPlainBlock, lintPlainBlockAdf, plainBlockVerdict } from './plain-block.js';
+import { homeVerdict, lintPlainBlock, lintPlainBlockAdf, plainBlockVerdict } from './plain-block.js';
+import { SECTOR_FIELD, resolveSector } from './commands/sector.js';
 import type {
   JiraIssue,
   JiraSearchResult,
@@ -113,7 +114,8 @@ export function createTools(): JiraTool[] {
           descFile: str('Read the markdown description from a file (overrides desc)'),
           adfFile: str('Path to pre-built ADF JSON document (overrides desc)'),
           parent: str('Parent issue key'),
-          labels: str('Comma-separated labels to set (e.g. a,b)'),
+          labels: str('Comma-separated labels to set (e.g. a,b); `standalone` marks a ticket with no parent epic'),
+          sector: str('Sector (required for a Task, Story or Bug)'),
           project: str('Project key (default: JIRA_PROJECT_KEY env var)'),
           attach: {
             type: 'array',
@@ -148,15 +150,19 @@ export function createTools(): JiraTool[] {
         // Same plain Impact/What/Why rule as the CLI create.
         const verdict = plainBlockVerdict(args.type as string, found);
         if (verdict.action === 'refuse') throw new Error(verdict.message);
+        const sector = args.sector !== undefined ? resolveSector(args.sector as string) : undefined;
+        const labels = args.labels !== undefined ? parseLabels(args.labels as string) : undefined;
+        const home = homeVerdict(args.type as string, { sector, parent: args.parent as string | undefined, labels });
+        if (home.action === 'refuse') throw new Error(home.message);
         if (args.parent) fields['parent'] = { key: args.parent };
-        if (args.labels !== undefined) {
-          fields['labels'] = parseLabels(args.labels as string);
-        }
+        if (labels) fields['labels'] = labels;
+        if (sector) fields[SECTOR_FIELD] = { value: sector };
 
         const result = await deps.request<CreateIssueResponse>('POST', '/issue', {
           fields,
         });
         let out = `Created ${result.key}`;
+        if (home.action === 'warn') out += `\n  ${home.message}`;
 
         const attachments = (args.attach as string[] | undefined) ?? [];
         if (attachments.length > 0) {

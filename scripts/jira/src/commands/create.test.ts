@@ -19,6 +19,9 @@ const PLAIN = PLAIN_BLOCK_TEMPLATE.replace(/<[^>\n]*>/g, 'filled');
 
 const mockRequest = request as unknown as ReturnType<typeof vi.fn>;
 
+// A Sector and a parent epic: the home a Task, Story or Bug needs to be filed.
+const HOME = ['--sector', 'Ship loop', '--parent', 'HIMMEL-9'];
+
 describe('create — resolveTitle (HIMMEL-1188)', () => {
   it('accepts --title', () => {
     expect(resolveTitle({ title: 'From title' })).toBe('From title');
@@ -65,6 +68,7 @@ describe('create — command wiring (--summary → POST /issue payload)', () => 
       'Task',
       '--summary',
       'From CLI summary',
+      ...HOME,
     ]);
     expect(mockRequest).toHaveBeenCalledTimes(1);
     const [method, path, body] = mockRequest.mock.calls[0] as [
@@ -94,6 +98,7 @@ describe('create — command wiring (--summary → POST /issue payload)', () => 
       'summary loses',
       '--title',
       'title wins',
+      ...HOME,
     ]);
     expect(mockRequest).toHaveBeenCalledTimes(1);
     const [, , body] = mockRequest.mock.calls.find((c) => c[0] === 'POST') as [
@@ -118,7 +123,7 @@ describe('create — Bug default fixVersion wiring', () => {
     const p = new Command();
     p.exitOverride();
     registerCreate(p);
-    await p.parseAsync(['node', 'jira', 'create', '--title', 't', '--desc', PLAIN, ...args]);
+    await p.parseAsync(['node', 'jira', 'create', '--title', 't', '--desc', PLAIN, ...HOME, ...args]);
     const [, , body] = mockRequest.mock.calls.find((c) => c[0] === 'POST') as [
       string,
       string,
@@ -209,6 +214,7 @@ describe('create --fix-version (HIMMEL-3713)', () => {
       't',
       '--fix-version',
       'v1.0.0',
+      ...HOME,
     ]);
     const postCall = mockRequest.mock.calls.find((c) => c[0] === 'POST');
     expect((postCall?.[2] as { fields: { fixVersions?: unknown } }).fields.fixVersions).toEqual([
@@ -238,6 +244,7 @@ describe('create --fix-version (HIMMEL-3713)', () => {
         't',
         '--fix-version',
         'v9.9.9',
+        ...HOME,
       ]),
     ).rejects.toThrow(/no version named "v9\.9\.9" in project HIMMEL/);
     expect(mockRequest.mock.calls.some((c) => c[0] === 'POST')).toBe(false);
@@ -299,7 +306,7 @@ describe('create — plain block rule (HIMMEL-5226)', () => {
   });
 
   it('accepts a body that carries the full block', async () => {
-    await run(['--type', 'Task', '--desc', PLAIN]);
+    await run(['--type', 'Task', '--desc', PLAIN, ...HOME]);
     expect(posted()).toBe(true);
   });
 
@@ -336,5 +343,64 @@ describe('create — plain block rule (HIMMEL-5226)', () => {
     );
     await expect(run(['--type', 'Task', '--adf-file', f])).rejects.toThrow(/exit 1/);
     expect(posted()).toBe(false);
+  });
+});
+
+// create refuses a ticket with no Sector and no epic / standalone marker.
+describe('create — Sector and home rule (HIMMEL-6223)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(process, 'exit').mockImplementation(((c?: number) => {
+      throw new Error(`exit ${c}`);
+    }) as never);
+    mockRequest.mockResolvedValue({ key: 'HIMMEL-1' });
+  });
+
+  async function run(args: string[]) {
+    const p = new Command();
+    p.exitOverride();
+    registerCreate(p);
+    await p.parseAsync(['node', 'jira', 'create', '--title', 't', '--desc', PLAIN, ...args]);
+  }
+  const posted = () => mockRequest.mock.calls.find((c) => c[0] === 'POST');
+  const errText = () => (console.error as unknown as ReturnType<typeof vi.fn>).mock.calls.flat().join('\n');
+
+  it('refuses a Task with no Sector and names the missing field', async () => {
+    await expect(run(['--type', 'Task', '--parent', 'HIMMEL-9'])).rejects.toThrow(/exit 1/);
+    expect(posted()).toBeUndefined();
+    expect(errText()).toMatch(/no Sector.*--sector/s);
+  });
+
+  it('refuses a Task with a Sector but neither --parent nor the standalone label', async () => {
+    await expect(run(['--type', 'Task', '--sector', 'Ship loop'])).rejects.toThrow(/exit 1/);
+    expect(posted()).toBeUndefined();
+    expect(errText()).toMatch(/--parent.*--labels standalone/s);
+  });
+
+  it('creates with a Sector and --parent, writing the Sector field', async () => {
+    await run(['--type', 'Task', '--sector', 'ship loop', '--parent', 'HIMMEL-9']);
+    const body = posted()![2] as { fields: Record<string, unknown> };
+    expect(body.fields['customfield_10212']).toEqual({ value: 'Ship loop' });
+    expect(body.fields['parent']).toEqual({ key: 'HIMMEL-9' });
+  });
+
+  it('creates with a Sector and the standalone label', async () => {
+    await run(['--type', 'Task', '--sector', 'Ship loop', '--labels', 'standalone']);
+    expect(posted()).toBeDefined();
+  });
+
+  it('only warns for an Epic with neither, and still files it', async () => {
+    await run(['--type', 'Epic']);
+    expect(posted()).toBeDefined();
+    expect(errText()).toMatch(/warning.*Sector.*Epic is exempt/s);
+  });
+
+  it('refuses an unknown --sector before posting', async () => {
+    await expect(run(['--type', 'Task', '--sector', 'Bogus', '--parent', 'HIMMEL-9'])).rejects.toThrow(
+      /Unknown sector 'Bogus'/,
+    );
+    expect(posted()).toBeUndefined();
   });
 });

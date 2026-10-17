@@ -951,7 +951,7 @@ assert_eq "$rc7" "0" "delta-round missing-ticket producer run completes"
 assert_has "$out7" "pr-check: delta round 4 on capped" "missing-ticket run still reports its round"
 (cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$capped_head" --branch capped >"$tmp/defer7.out" 2>"$tmp/defer7.err"); defer7_rc=$?
 if [ "$defer7_rc" -ne 0 ]; then pass "delta-round suggestions fail disposition without a defer ticket"; else fail "delta-round suggestions fail disposition without a defer ticket"; fi
-expected_jira="node '$fx/scripts/jira/dist/index.js' create --type Task --title 'Track deferred /pr-check round 4+ suggestions' --desc-file '$fx/scripts/cr/deferred-ticket-body.md'"
+expected_jira="node '$fx/scripts/jira/dist/index.js' create --type Task --title 'Track deferred /pr-check round 4+ suggestions' --sector 'Ship loop' --labels standalone --desc-file '$fx/scripts/cr/deferred-ticket-body.md'"
 assert_has "$(cat "$tmp/defer7.err")" "$expected_jira" "missing ticket prints the exact non-executed Jira command"
 after_missing_calls="$(wc -l < "$PANEL_CALLS" | tr -d ' ')"
 assert_eq "$after_missing_calls" "$((before_missing_calls + 1))" "missing-ticket flow invokes the panel exactly once"

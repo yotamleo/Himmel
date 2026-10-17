@@ -405,7 +405,7 @@ if [ "$TRACKER_MODE" = jira ]; then
 
     jira_err_file=$(mktemp -t fdi-jira.err.XXXXXX) || exit 1
     create_rc=0
-    created=$(jira_run create --type Task --title "$jira_title" --labels "$LABEL" \
+    created=$(jira_run create --type Task --title "$jira_title" --labels "$LABEL,standalone" --sector 'Ship loop' \
         --project "$JIRA_PROJECT_KEY" --desc-file "$jira_body_file" 2>"$jira_err_file") || create_rc=$?
     create_err=$(cat "$jira_err_file" 2>/dev/null || true)
     rm -f "$jira_err_file" "$jira_body_file"
