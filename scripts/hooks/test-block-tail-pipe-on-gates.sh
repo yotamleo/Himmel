@@ -1219,6 +1219,17 @@ else
     fail "2082 10 KB chains scan in linear time: rc=$perf_rc/$perf_gate_rc after ${perf_secs}s"
 fi
 
+# 6015: a command that executes no gate (lib-cmdpos-clean.sh) only mentions one.
+allow "6015 mention in a commit message" 'git commit -m "never run bash scripts/check-ci.sh 1 | tail"'
+allow "6015 mention in a quoted heredoc body" 'cat <<'"'"'EOF'"'"'
+bash scripts/check-ci.sh 1 | tail -3
+EOF'
+deny "6015 control: a direct gate piped to tail still denies" 'bash scripts/check-ci.sh 1 | tail -5'
+# shellcheck disable=SC2016 # the $( is the literal command text under test
+deny "6015 control: a gate in an unquoted heredoc substitution still denies" 'cat <<EOF
+$(bash scripts/check-ci.sh 1 | tail -5)
+EOF'
+
 if [ "$FAILED" -eq 0 ]; then
     echo "OK block-tail-pipe-on-gates: all cases passed"
     exit 0

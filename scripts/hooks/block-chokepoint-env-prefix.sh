@@ -3214,6 +3214,27 @@ while IFS=$'\t' read -r _reg_path _reg_vars; do
     ALL_SEAM_VARS="$ALL_SEAM_VARS $_reg_vars"
 done <<<"$REG_LINES"
 
+# Command position: the rule is about how a chokepoint is EXECUTED, so a Bash
+# command that executes no script but the himmel-gate dispatcher (lib-cmdpos-clean.sh)
+# only mentions one - a commit message, grep, sed -n, a quoted heredoc body -
+# and the text scans below do not judge it. A helper that cannot load relieves
+# nothing.
+# shellcheck disable=SC2329 # called by cmdpos_clean_for as its <names-fn>
+cp_names_chokepoint() { # cp_names_chokepoint <word> - names a registered chokepoint, in any case
+    local p rc=1
+    shopt -s nocasematch
+    while IFS=$'\t' read -r p _; do
+        case "$1" in *"${p##*/}"*) rc=0 ;; esac
+    done <<<"$REG_LINES"
+    shopt -u nocasematch
+    return "$rc"
+}
+if [ "$tool" = Bash ] \
+    && { [ -r "$SCRIPT_DIR/lib-cmdpos-clean.sh" ] && . "$SCRIPT_DIR/lib-cmdpos-clean.sh"; } 2>/dev/null \
+    && cmdpos_clean_for cp_names_chokepoint "$raw_cmd"; then
+    exit 0
+fi
+
 # Backstop, on the untouched command. It runs BEFORE scan_text
 # so a nounset abort or a hook timeout inside the parser cannot skip it
 # (console X ruling at 64bc44b1); where both would deny, the backstop's

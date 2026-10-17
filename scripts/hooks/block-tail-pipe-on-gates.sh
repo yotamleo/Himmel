@@ -238,6 +238,17 @@ C_SEMI=$'\004'
 # GATE_RE without its anchors: a cheap in-process pre-filter for "mentions a gate".
 GATE_ANY=${GATE_RE#'(^|/)'}
 GATE_ANY=${GATE_ANY%'$'}
+
+# Command position: a command that executes no script but the himmel-gate
+# dispatcher (lib-cmdpos-clean.sh), which refuses a piped stdout itself, runs no
+# gate whose rc a pipe or later segment could hide. A helper that cannot load
+# relieves nothing.
+# shellcheck disable=SC2329 # called by cmdpos_clean_for as its <names-fn>
+tp_names_gate() { [[ $1 =~ $GATE_ANY ]]; } # tp_names_gate <word> - names a registered gate
+if { [ -r "$SCRIPT_DIR/lib-cmdpos-clean.sh" ] && . "$SCRIPT_DIR/lib-cmdpos-clean.sh"; } 2>/dev/null \
+    && cmdpos_clean_for tp_names_gate "$cmd"; then
+    exit 0
+fi
 IP=''           # invoked_program_v's result
 SG=0            # stmt_gate_flag's result
 SURF_VAR=''     # status_surfaced's result

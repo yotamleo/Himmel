@@ -364,7 +364,7 @@ assert_deny  "eval with a quoted command string"   "$(j "eval \"${MOG_VAR}=1 bas
 assert_deny  "exec wrapper"                        "$(j "${MOG_VAR}=1 exec bash $MERGE_ON_GREEN")"
 assert_deny  "bash -c string carrying the invocation" "$(j "${MOG_VAR}=1 bash -c 'bash $MERGE_ON_GREEN'")"
 assert_deny "1813 backstop over-deny (console X ruling 07:05): bash -c: path in \$0 position is not invoked" "$(j "${MOG_VAR}=1 bash -c 'echo hi' $MERGE_ON_GREEN")"
-assert_deny "1813 backstop over-deny (console X ruling 07:05): double-quoted literal text is not an invocation" "$(j "echo \"${MOG_VAR}=1 bash $MERGE_ON_GREEN\"")"
+assert_allow "6015 command position, no execution (was deny): 1813 backstop over-deny (console X ruling 07:05): double-quoted literal text is not an invocation" "$(j "echo \"${MOG_VAR}=1 bash $MERGE_ON_GREEN\"")"
 
 # --- The env -S split-string seam. `env -S 'VAR=x cmd'`
 # re-tokenizes the operand into the whole command line (GNU env's documented
@@ -560,9 +560,9 @@ assert_deny "1813: source /dev/stdin reads a heredoc"         "$(j "source /dev/
 assert_deny "1813: a reader's herestring piped to a shell"     "$(j "cat <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\" | bash")"
 assert_deny "1813: a reader's herestring in a substitution"   "$(j "bash -c \"\$(cat <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\")\"")"
 assert_deny "1813: a reader's herestring via <(...)"          "$(j "source <(cat <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\")")"
-assert_deny "1813 backstop over-deny (console X ruling 07:05): 1813: cat of a herestring is data"              "$(j "cat <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\"")"
+assert_allow "6015 command position, no execution (was deny): 1813 backstop over-deny (console X ruling 07:05): 1813: cat of a herestring is data"              "$(j "cat <<< \"env -S '${SW_VAR}=1 bash $STOP_WORKER\\c'\"")"
 assert_allow "1813: a redirect before a plain env command"    "$(j "env >/dev/null FOO=1 ls")"
-assert_deny "1813 backstop over-deny (console X ruling 07:05): 1813: herestring fed to a non-shell is data"     "$(j "grep x <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
+assert_allow "6015 command position, no execution (was deny): 1813 backstop over-deny (console X ruling 07:05): 1813: herestring fed to a non-shell is data"     "$(j "grep x <<< \"env -S '${MOG_VAR}=1 bash $MERGE_ON_GREEN\\c'\"")"
 assert_allow "1813: 2>&1 after a plain command stays allowed"  "$(j "bash $MERGE_ON_GREEN 2>&1")"
 assert_deny "1813: an escaped > before & still separates"     "$(j "echo \\>& ${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
 assert_allow "1813: unresolvable -S not mentioning a chokepoint" "$(j "env -S '${MOG_VAR}=1 bash scripts/not-registered.sh\\c'")"
@@ -1084,7 +1084,7 @@ assert_allow "3921 C1 IFS=ANSI-C tab in a read loop"         "$(j 'while IFS=$'"
 assert_allow "3921 C1 cut -d ANSI-C tab then export"          "$(j 'cut -d$'"'"'\t'"'"' -f1 f; export LC_ALL=C')"
 # r11 (console ruling): the prefix compare is gone, so a scripts/ glob beside a
 # write verb now denies even when unrelated to a chokepoint (over-deny).
-assert_deny "3921 r11 (was C1 allow) printf over a scripts glob"  "$(j "printf '%s\\n' scripts/hooks/*.sh")"
+assert_allow "6015 command position, no execution (was deny): 3921 r11 (was C1 allow) printf over a scripts glob"  "$(j "printf '%s\\n' scripts/hooks/*.sh")"
 assert_allow "3921 r11 (was C1 allow) grep env over a scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
 assert_deny "3921 r11 (was C1 allow) git log glob then read"       "$(j "git log -- scripts/hooks/*.sh; read -r x")"
 # 3921 judge I1: clear spellings the first arm missed, beside a chokepoint word.
@@ -1189,18 +1189,17 @@ assert_deny "4572 eval after a separator still counts" "$(j "true;eval bash scri
 assert_allow "4933 grep -l export over a scripts glob" "$(j "grep -l export scripts/hooks/*.sh | sort")"
 assert_allow "4933 git grep read over a scripts glob" "$(j "git grep -n read -- 'scripts/*/x.sh'")"
 assert_allow "4933 cat piped to grep eval over a scripts glob" "$(j "cat scripts/hooks/g*.sh | grep eval")"
-# sed keeps the deny: its own options (-i, e) can act on the glob.
-# ponytail: sed over-denies here, the relief for it needs the HIMMEL-3930 structural parse
-assert_deny "4933 control: sed beside a scripts glob keeps the deny" "$(j "sed 1d scripts/hooks/g*.sh | grep eval")"
+# A plain sed script executes nothing (lib-cmdpos-clean.sh).
+assert_allow "6015 command position, no execution (was deny): 4933 sed beside a scripts glob" "$(j "sed 1d scripts/hooks/g*.sh | grep eval")"
 assert_allow "4933 grep printf over a scripts glob" "$(j "grep printf scripts/hooks/*.sh | sort")"
 assert_deny "4933 control: real env prefix, quoted glob path" "$(j "BASH_ENV=x bash 'scripts/hooks/g*.sh'")"
 assert_deny "4933 control: real env prefix, ./ glob path" "$(j "BASH_ENV=x bash ./scripts/hooks/g*.sh")"
 assert_deny "4933 control: real env prefix, absolute glob path" "$(j "BASH_ENV=x bash /home/u/h/scripts/hooks/g*.sh")"
 assert_deny "4933 control: export heading a stage beside a scripts glob" "$(j "export FOO=1; ls scripts/hooks/*.sh")"
-assert_deny "4933 control: printf heading a stage beside a scripts glob" "$(j "ls scripts/hooks/*.sh | printf x")"
+assert_allow "6015 command position, no execution (was deny): 4933 printf heading a stage beside a scripts glob" "$(j "ls scripts/hooks/*.sh | printf x")"
 # shellcheck disable=SC2016 # the $D is the literal command text under test
-assert_deny "4933 control: a hard \$var path word keeps the deny" "$(j 'grep env scripts/$D/x.sh')"
-assert_deny "4933 control: a // path word keeps the deny" "$(j "grep env scripts//hooks/x.sh")"
+assert_allow "6015 command position, no execution (was deny): 4933 a hard \$var path word" "$(j 'grep env scripts/$D/x.sh')"
+assert_allow "6015 command position, no execution (was deny): 4933 a // path word" "$(j "grep env scripts//hooks/x.sh")"
 assert_deny "4933 control: a grouped path word keeps the deny" "$(j "grep env scripts/(a|b)/x.sh")"
 assert_deny "4933 control: env -u clear beside a glob keeps the deny" "$(j "grep x scripts/hooks/*.sh; env -u BASH_ENV true")"
 # vcmd must see a verb that heads a stage after a newline or a
@@ -1377,8 +1376,8 @@ assert_deny "4130 scripts/./ beside a write verb"     "$(j "printf x; bash scrip
 assert_deny "4130 scripts/../ beside a write verb"    "$(j "printf x; bash scripts/../x.sh")"
 assert_deny "4130 scripts// beside a write verb"      "$(j "printf x; bash scripts//x.sh")"
 assert_deny "4130 scripts/a/../b beside a write verb" "$(j "printf x; bash scripts/a/../b.sh")"
-assert_deny "4130 scripts/ trailing /. beside a write verb"  "$(j "printf x; ls scripts/a/.")"
-assert_deny "4130 scripts/ trailing /.. beside a write verb" "$(j "printf x; ls scripts/a/..")"
+assert_allow "6015 command position, no execution (was deny): 4130 scripts/ trailing /. beside a write verb"  "$(j "printf x; ls scripts/a/.")"
+assert_allow "6015 command position, no execution (was deny): 4130 scripts/ trailing /.. beside a write verb" "$(j "printf x; ls scripts/a/..")"
 assert_deny "4130 worktree path with a /../ segment"  "$(j "printf x; bash $WT/scripts/a/../x.sh")"
 assert_deny "4130 /.claude/../ is a traversal"        "$(j "printf x; bash /r/.claude/../scripts/x.sh")"
 assert_deny "4130 /. then a quote can join to /./"    "$(j "printf x; bash scripts/.'/'x.sh")"
@@ -2459,6 +2458,23 @@ mut_row "5210 mutant: rg shape glob clause dropped" \
     "/'~'/s/rc=0; break/:/" \
     "rg '-'-hostname-bi[n] '$OBF' x ."
 rm -rf "$MUT5210"
+
+# 6015: the rule is about how a chokepoint is executed. A command that executes
+# no script (lib-cmdpos-clean.sh) only mentions one; a real execution still denies.
+assert_allow "6015 mention in a commit message" "$(j "git commit -m \"fix: drop the ${SW_VAR}=0 prefix on bash $STOP_WORKER\"")"
+assert_allow "6015 mention in a grep pattern" "$(j "grep -n 'unset HIMMEL_REPO' $MERGE_ON_GREEN")"
+assert_allow "6015 mention in a quoted heredoc body" "$(j "cat <<'EOF'"$'\n'"HIMMEL_REPO=/tmp bash $MERGE_ON_GREEN"$'\n'"EOF")"
+assert_allow "6015 mention under sed -n" "$(j "sed -n '1,40p' $STOP_WORKER | grep -n $SW_VAR")"
+assert_deny "6015 control: a real env prefix still denies" "$(j "${SW_VAR}=0 bash $STOP_WORKER x")"
+assert_deny "6015 control: unset before the chokepoint still denies" "$(j "unset HIMMEL_REPO; bash $MERGE_ON_GREEN")"
+assert_deny "6015 control: git submodule foreach running it still denies" "$(j "git submodule foreach '${SW_VAR}=0 bash $STOP_WORKER'")"
+assert_deny "6015 control: an unquoted heredoc substitution still denies" "$(j "cat <<EOF"$'\n'"\$(${SW_VAR}=0 bash $STOP_WORKER)"$'\n'"EOF")"
+assert_deny "6015 control: printf %n assigns a variable, so no relief" "$(j "printf '%n' PATH; grep -n 'unset HIMMEL_REPO' $MERGE_ON_GREEN")"
+assert_deny "6015 control: printf %5n assigns a variable too" "$(j "printf -- '%5n' PATH; grep -n 'unset HIMMEL_REPO' $MERGE_ON_GREEN")"
+assert_deny "6015 control: an expanded printf format can carry %n" "$(j "printf \"\$F\" PATH; grep -n 'unset HIMMEL_REPO' $MERGE_ON_GREEN")"
+assert_deny "6015 control: a globbed printf format can carry %n" "$(j "printf %[n] PATH; grep -n 'unset HIMMEL_REPO' $MERGE_ON_GREEN")"
+assert_allow "6015 printf %%n prints a literal %n and keeps the relief" "$(j "printf '%%n' PATH; grep -n 'unset HIMMEL_REPO' $MERGE_ON_GREEN")"
+assert_allow "6015 printf with no %n conversion keeps the relief" "$(j "printf '%s\n' x; grep -n 'unset HIMMEL_REPO' $MERGE_ON_GREEN")"
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
