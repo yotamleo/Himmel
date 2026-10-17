@@ -5,7 +5,7 @@ launches instead of N hand-written briefs. It NEVER launches: it prints one
 `fleet-manifest.sh add` line per leg and writes launcher scripts the console
 runs itself. Ported from the BX/BY session-scratchpad generators.
 
-  gen-briefs.py <legs.json> --base <sha> --console <session> --bucket <dir>
+  gen-briefs.py <legs.json> --base <sha> --console <session> --bucket <name|dir>
                 [--date YYYY-MM-DD] [--repo <primary checkout>] [--letter BY]
                 [--handover-root <dir>] [--work-dir <dir>] [--deadline <epoch>]
                 [--manifest <fleet.json>] [--no-worktree] [--also-live <text>]
@@ -39,7 +39,11 @@ leg preface and are not repeated.
 
 Worktrees: `scripts/clean-garden.sh <branch> --no-prune` from --repo
 (GEN_BRIEFS_WORKTREE_CMD replaces it, called as `$CMD <branch>`, tests;
---no-worktree skips it). Output files, in --bucket: the brief
+--no-worktree skips it, but refuses a leg whose worktree does not exist yet and prints the
+clean-garden line to run; it never creates one, HIMMEL-5517).
+--bucket: a bare name (no slash, e.g. `himmel`) resolves to <handover-root>/<user>/<name>, like
+console.sh --bucket; a path is made absolute. A bucket inside a git checkout that is not under
+the handover root is refused (HIMMEL-5517). Output files, in the bucket: the brief
 `<KEY>-<label>-<slug>-<date>.md`, the launcher `launch-<label>.sh`, and
 `<input>.out` (the input plus each leg's nonce and doc stem). With --manifest,
 each launcher's sha256 is appended to `<manifest stem>.launchers.sha256` beside
@@ -92,6 +96,36 @@ def tier_gate(model):
     # Same MODEL-PREFIX match as headed-arm-leg.sh's Tier-line gate.
     m = re.match(r'^(?:anthropic/)?claude-(opus|fable)-', model or '')
     return m.group(1) if m else None
+
+
+def resolve_bucket(bucket, hroot, repo):
+    # A bare name lands under <handover-root>/<user>/<name> (console.sh's slugify), never cwd-relative.
+    if '/' not in bucket and bucket not in ('.', '..') and not bucket.startswith('~'):
+        slug = os.environ.get('USER_SLUG')
+        if not slug:
+            r = subprocess.run(['bash', '-c', '. scripts/lib/user-slug.sh && user_slug'], cwd=repo, capture_output=True, text=True)
+            slug = r.stdout.strip() if r.returncode == 0 else ''
+        if not slug:
+            die('cannot resolve the user slug for bare --bucket %r; set USER_SLUG or pass a path' % bucket, 2)
+        name = re.sub(r'[^a-z0-9]+', '-', bucket.lower()).strip('-')
+        if not name:
+            die('--bucket %r has no alphanumeric character' % bucket, 2)
+        return os.path.join(os.path.abspath(hroot), slug, name)
+    return os.path.abspath(os.path.expanduser(bucket))
+
+
+def refuse_git_bucket(bucket, hroot):
+    # The handover root is itself a git repo (the state repo), so only a checkout outside it is a stray.
+    root = os.path.realpath(hroot)
+    bucket = os.path.realpath(bucket)
+    if bucket == root or bucket.startswith(root.rstrip('/') + '/'):
+        return
+    anc = bucket
+    while not os.path.isdir(anc):
+        anc = os.path.dirname(anc)
+    r = subprocess.run(['git', '-C', anc, 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+    if r.returncode == 0:
+        die('--bucket %s is inside a git checkout (%s) outside the handover root; pass a bucket under %s' % (bucket, r.stdout.strip(), root))
 
 
 def validate(leg, i):
@@ -293,6 +327,8 @@ def main():
     deadline = a.deadline or str(int(datetime.now().timestamp()) + 43200)
     ctx = dict(repo=a.repo, base=a.base, console=a.console, date=a.date, hroot=a.handover_root, work_dir=work_dir,
                deadline=deadline, legs=legs, also_live=a.also_live)
+    a.bucket = resolve_bucket(a.bucket, a.handover_root, a.repo)
+    refuse_git_bucket(a.bucket, a.handover_root)
     os.makedirs(a.bucket, exist_ok=True)
 
     # Validate and reserve names for every leg before touching a worktree.
@@ -308,6 +344,11 @@ def main():
             die('%s already exists in the bucket; refusing to overwrite a live leg doc' % (l['stem'] + '.md'))
         if os.path.exists(os.path.join(a.bucket, 'launch-%s.sh' % l['label'])):
             die('launch-%s.sh already exists in the bucket; refusing to overwrite a launcher' % l['label'])
+        if a.no_worktree and not os.environ.get('GEN_BRIEFS_NO_WT_CHECK'):
+            # headed-arm-leg.sh refuses a resume_cwd that is not a git worktree; never create it here.
+            top = subprocess.run(['git', '-C', l['wt'], 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+            if top.returncode != 0 or os.path.realpath(top.stdout.strip()) != os.path.realpath(l['wt']):
+                die('--no-worktree but %s is not an existing git worktree; no brief written for %s or the legs after it. Create it from %s first: bash scripts/clean-garden.sh %s --no-prune' % (l['wt'], l['label'], a.repo, l['branch']))
 
     wt_cmd = os.environ.get('GEN_BRIEFS_WORKTREE_CMD')
     for l in legs:
