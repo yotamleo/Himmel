@@ -837,45 +837,21 @@ case ",$TIER_FILTER," in
                 # silently substitute the registry default 'free' - honor the
                 # operator's profile.
                 #
-                # degrading to claude-only here DEADLOCKS a trivial
-                # diff when CR_REQUIRE_CROSS_MODEL=1, because clear-cr-marker
-                # gate 3b then refuses the claude-only floor (exit 14). Two
-                # individually-correct mechanisms, jointly unsatisfiable - and
-                # the cheaper the change, the harder it became to ship. Observed
-                # twice live (2026-08-15; a one-line plugin.json bump 2026-08-19),
-                # each time worked around by forcing the FULL panel, i.e. paying
-                # MORE for a one-liner than for a normal diff.
+                # Degrading to claude-only here DEADLOCKS a trivial diff: the
+                # claude-only path writes no `avail ok` row, so clear-cr-marker
+                # refuses no-responders (exit 14) and claude-floor-review.sh is
+                # not eligible when CR_REQUIRE_CROSS_MODEL is unset. With the
+                # cross-model floor required it is the gate 3b refusal instead.
+                # Either way the trivial path is unshippable and only an
+                # operator CR_TRIVIALITY_OVERRIDE=full relaunch recovers.
                 #
-                # So when the cross-model floor is REQUIRED, keep exactly ONE
-                # external critic rather than zero (keep the cheapest external critic,
-                # do not weaken the floor).
-                # A gate that saves a call by making the branch unshippable
-                # saves nothing.
-                _tg_xm="${CR_REQUIRE_CROSS_MODEL:-}"
-                if [ -z "$_tg_xm" ]; then
-                    if ! command -v load_dotenv >/dev/null 2>&1; then
-                        # shellcheck source=../lib/load-dotenv.sh
-                        # shellcheck disable=SC1091
-                        . "$SCRIPT_DIR/../lib/load-dotenv.sh" 2>/dev/null || true
-                    fi
-                    if command -v load_dotenv >/dev/null 2>&1; then
-                        load_dotenv --root "$(_load_dotenv_primary_for "$SCRIPT_DIR/../..")" CR_REQUIRE_CROSS_MODEL 2>/dev/null || true
-                        _tg_xm="${CR_REQUIRE_CROSS_MODEL:-}"
-                    fi
-                fi
-                # The SAME truthy rule clear-cr-marker.sh gate 3b uses
-                # (1/true/on/yes, case-insensitive, whitespace-trimmed). The two
-                # must agree about the policy or the deadlock simply moves.
-                case "$(printf '%s' "$_tg_xm" | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" in
-                    1|true|on|yes)
-                        _tg_keep_one=1
-                        echo "critic-panel.sh: triviality-gate verdict=trivial ($_tg_reason) would have stripped the ONLY requested tier (paid), but CR_REQUIRE_CROSS_MODEL is set and the claude-only floor cannot clear the marker without a non-Claude responder - keeping exactly ONE external critic so a trivial diff stays shippable (HIMMEL-1950). One cheap call by design; CR_TRIVIALITY_OVERRIDE=full runs the whole panel." >&2
-                        ;;
-                    *)
-                        echo "critic-panel.sh: triviality-gate verdict=trivial ($_tg_reason) stripped the ONLY requested tier (paid) - skipping panel, claude-only (CR_TRIVIALITY_OVERRIDE=full to force). The claude-only floor clears the marker here because CR_REQUIRE_CROSS_MODEL is NOT set; with it set, this path keeps one critic instead (HIMMEL-1950)." >&2
-                        exit 1
-                        ;;
-                esac
+                # So keep exactly ONE external critic rather than zero (the first
+                # registry row, enforced below on the resolved rows): a trivial
+                # delta still gets one real review row and the floor is not
+                # weakened. A gate that saves a call by making the branch
+                # unshippable saves nothing.
+                _tg_keep_one=1
+                echo "critic-panel.sh: triviality-gate verdict=trivial ($_tg_reason) would have stripped the ONLY requested tier (paid), and a claude-only run leaves clear-cr-marker no responder row - keeping exactly ONE external critic so a trivial diff stays shippable (HIMMEL-1950, HIMMEL-6262). One cheap call by design; CR_TRIVIALITY_OVERRIDE=full runs the whole panel." >&2
             else
                 TIER_FILTER="$_new_filter"
                 echo "critic-panel.sh: triviality-gate verdict=trivial ($_tg_reason) - paid tier skipped (CR_TRIVIALITY_OVERRIDE=full to force)" >&2

@@ -184,25 +184,25 @@ else
 fi
 
 # ===========================================================================
-# Case 5 (CR round): paid is the ONLY requested tier and the diff is trivial ->
-# the panel must NOT silently substitute the registry-default free tier; it
-# exits 1 (the caller's documented claude-only fail-open) with a loud stderr
-# line, and NO member is invoked.
+# Case 5: paid is the ONLY requested tier, the diff is trivial, and
+# CR_REQUIRE_CROSS_MODEL is NOT set. The panel must NOT silently
+# substitute the registry-default free tier, and must NOT strip to zero
+# responders either: a claude-only run writes no `avail ok` row, so
+# clear-cr-marker refuses no-responders and nothing can produce the floor. It
+# keeps exactly ONE critic, which writes the row the marker needs.
 # ===========================================================================
 PAID_ONLY_JSON="$tmp/critics-paidonly.json"
 printf '{"panel":[{"slug":"paidcrit","model":"%s","provider":"test","tier":"paid"}]}' \
     "$PAID_MODEL" > "$PAID_ONLY_JSON"
 : > "$tmp/cap5"
-# CR_REQUIRE_CROSS_MODEL=0 is load-bearing here: this is the
-# adopter WITHOUT the cross-model floor, where dropping the last tier is
-# right because the claude-only floor clears the marker on its own.
 printf '%s' "$TRIVIAL_DIFF" | CR_PROFILE=paid CR_REQUIRE_CROSS_MODEL=0 CRITICS_JSON="$PAID_ONLY_JSON" \
     CRITIC_FIRST_PASS="$STUB" TG_CAPTURE="$tmp/cap5" bash "$PANEL" >"$tmp/out5" 2>"$tmp/err5"
 rc5=$?
 err5="$(cat "$tmp/err5")"
-check "5: paid-only + trivial -> exit 1" "$rc5" "1"
-check "5: NO member invoked" "$(grep -c . "$tmp/cap5")" "0"
-check_contains "5: loud only-tier-stripped stderr line" "$err5" "stripped the ONLY requested tier"
+check "5: paid-only + trivial, cross-model unset -> exit 0" "$rc5" "0"
+check "5: exactly ONE member invoked" "$(grep -c . "$tmp/cap5")" "1"
+check_contains "5: says why it kept a critic" "$err5" "keeping exactly ONE external critic"
+check_contains "5: the surviving critic answered" "$(cat "$tmp/out5")" "(1/1 critics responded)"
 check "5: NO paid-tier-skipped line (the strip is total, not partial)" \
     "$(printf '%s\n' "$err5" | grep -cF 'paid tier skipped')" "0"
 
@@ -286,17 +286,13 @@ check "6c: paidcrit2 row is unavailable" "$(printf '%s\n' "$ledger6_summary" | s
 check "6c: paidcrit2 reason is keep-one-skipped (NOT an exhaustion class)" \
     "$(printf '%s\n' "$ledger6_summary" | sed -n 's/^p2-reason=//p')" "keep-one-skipped"
 
-# 7: same shape WITHOUT the cross-model floor -> the old cheap path is intact.
-# The claude-only floor clears the marker on its own there, so spending a paid
-# call would be the regression.
+# 7: same shape WITHOUT the cross-model floor keeps ONE critic too
+# (the claude-only path left no responder row to clear on).
 CR_PROFILE="paid" CR_REQUIRE_CROSS_MODEL=0 \
     run_case2 "$TRIVIAL_DIFF" "$tmp/out7" "$tmp/err7" "$tmp/cap7"
 rc7=$?
-err7="$(cat "$tmp/err7")"
-check "7: still degrades to claude-only (rc 1)" "$rc7" "1"
-check "7: no critic was spent" "$(grep -c . "$tmp/cap7")" "0"
-check_contains "7: the refusal explains the interaction" "$err7" \
-    "CR_REQUIRE_CROSS_MODEL is NOT set"
+check "7: cross-model unset keeps one critic (rc 0)" "$rc7" "0"
+check "7: exactly one critic was spent" "$(grep -c . "$tmp/cap7")" "1"
 
 # 8: a NONTRIVIAL diff with the floor set is untouched — both paid rows run.
 # The cap must apply to the trivial path only, never narrow a real review.
