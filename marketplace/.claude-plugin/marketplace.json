@@ -181,6 +181,21 @@
       ]
     },
     {
+      "name": "domain-modeling",
+      "source": "./plugins/domain-modeling",
+      "description": "[himmel vendor] One skill from mattpocock/skills, pinned at 49dd158d1076134a641b33efb035946536778336 (domain-modeling: keep docs/glossary.md to one definition per term). No hooks, agents or scripts. On in the design profile only; one-step disable. See marketplace/plugins/domain-modeling/README.md.",
+      "author": {
+        "name": "Matt Pocock (upstream) / yotamleo (vendor)"
+      },
+      "license": "MIT",
+      "keywords": [
+        "himmel",
+        "vendored",
+        "domain-modeling",
+        "glossary"
+      ]
+    },
+    {
       "name": "claude-obsidian",
       "source": {
         "source": "url",

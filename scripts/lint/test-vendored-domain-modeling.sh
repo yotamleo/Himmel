@@ -9,7 +9,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-DIR="$ROOT/.claude/skills/domain-modeling"
+PLUGIN="$ROOT/marketplace/plugins/domain-modeling"
+DIR="$PLUGIN/skills/domain-modeling"
 PIN=49dd158d1076134a641b33efb035946536778336
 
 PASS=0
@@ -20,16 +21,17 @@ check() { # name, command...
   else FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$name"; fi
 }
 
-for f in SKILL.md GLOSSARY-FORMAT.md LICENSE; do
+for f in SKILL.md GLOSSARY-FORMAT.md; do
   check "$f exists" test -f "$DIR/$f"
 done
+check "LICENSE exists" test -f "$PLUGIN/LICENSE"
 for f in SKILL.md GLOSSARY-FORMAT.md; do
   check "$f carries the pin sha" grep -q "$PIN" "$DIR/$f"
   check "$f names docs/glossary.md" grep -q 'docs/glossary\.md' "$DIR/$f"
   # shellcheck disable=SC2016
   check "$f body no longer targets a root GLOSSARY.md" bash -c 'sed "1,/^# /d" "$1" | grep -E "(^|[^/A-Za-z-])GLOSSARY\.md" && exit 1; exit 0' _ "$DIR/$f"
 done
-check "LICENSE is MIT" grep -q '^MIT License' "$DIR/LICENSE"
+check "LICENSE is MIT" grep -q '^MIT License' "$PLUGIN/LICENSE"
 
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

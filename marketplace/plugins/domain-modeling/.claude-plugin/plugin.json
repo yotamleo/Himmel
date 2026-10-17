@@ -1,0 +1,10 @@
+{
+  "name": "domain-modeling",
+  "version": "0.1.0",
+  "description": "[himmel vendor] One skill from mattpocock/skills pinned at 49dd158d: domain-modeling keeps docs/glossary.md sharp (one definition per term, aliases point at the canonical term). No hooks, agents or scripts.",
+  "author": {
+    "name": "Matt Pocock (upstream) / yotamleo (vendor)"
+  },
+  "license": "MIT",
+  "keywords": ["himmel", "vendored", "domain-modeling", "glossary"]
+}

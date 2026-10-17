@@ -624,7 +624,7 @@ test('obsidian-second-brain@himmel is enabled exactly in the vault profiles (HIM
 // `--profile design`.
 const DESIGN_CORE = ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
   'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel', 'builder-visual@himmel',
-  'context7@claude-plugins-official'];
+  'context7@claude-plugins-official', 'domain-modeling@himmel'];
 const DESIGN_ADDONS = {
   'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
     'lottie-motion-design@himmel', 'motion-lexicon@himmel', 'playground@claude-plugins-official'],
@@ -637,7 +637,7 @@ const DESIGN_ADDONS = {
   'design-trial': ['hallmark@himmel'],
 };
 
-test('design profile enables exactly the 8-member core on top of base (HIMMEL-4012 PR2b)', () => {
+test('design profile enables exactly the 9-member core on top of base (HIMMEL-4012 PR2b)', () => {
   assert.deepEqual([...REG.profiles.design.enable].sort(), [...DESIGN_CORE].sort());
 });
 

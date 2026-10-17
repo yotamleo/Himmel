@@ -16,6 +16,7 @@
     "enabled": [
       "builder-visual@himmel",
       "context7@claude-plugins-official",
+      "domain-modeling@himmel",
       "frontend-design@claude-plugins-official",
       "handover@himmel",
       "himmel-ops@himmel",

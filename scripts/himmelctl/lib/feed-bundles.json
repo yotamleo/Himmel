@@ -81,7 +81,7 @@
         "plugin:builder-visual@himmel", "plugin:frontend-slides@himmel", "plugin:design-dna@himmel",
         "plugin:anydesign@himmel", "plugin:anthropic-design-skills@himmel", "plugin:hallmark@himmel",
         "plugin:shadcn-mcp@himmel", "plugin:emilkowalski-skills@himmel", "plugin:himmel-bus@himmel", "plugin:himmel-guard@himmel",
-        "plugin:humanizer@himmel",
+        "plugin:humanizer@himmel", "plugin:domain-modeling@himmel",
         "doctor:C2-obsidian", "doctor:C6-mcp", "doctor:C15-plugins", "doctor:C15-plugins-ondemand",
         "doctor:C17-dep-readiness", "doctor:C37-vendored-skill-dupes",
         "doctor:C46-plugin-enabled-missing"
