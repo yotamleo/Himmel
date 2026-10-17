@@ -273,23 +273,9 @@ fi
 # every bullet under a Non-blocking / Follow-ups / Residuals heading names a
 # HIMMEL-<n> ticket or carries `no-ticket: <reason>`; an unticketed residual is
 # refused so it cannot live only as verdict prose.
-unfiled=$(awk '
-    { sub(/\r$/, "") }
-    function lead(s) { gsub(/^[ \t]*(#+[ \t]+)?(\*\*)?/, "", s); gsub(/(\*\*)?[ \t]*:?(\*\*)?[ \t]*$/, "", s); return tolower(s) }
-    tolower($0) ~ /^[ \t]*([-*+][ \t]+)?residuals?:[ \t]*[^ \t]/ {
-        if ($0 !~ /HIMMEL-[0-9]+/ && $0 !~ /no-ticket:[ \t]*[^ \t]/) print
-        next
-    }
-    /^#+[ \t]/ || /^\*\*.*\*\*:?[ \t]*$/ || /^[A-Za-z-]+:[ \t]*$/ {
-        l = lead($0); sec = (l ~ /^(non-blocking|follow-ups?|residuals?)$/); items = 0; next
-    }
-    sec && /^[ \t]*$/ { next }
-    sec && /^[ \t]*([-*+]|[0-9]+[.)])[ \t]+/ {
-        items = 1
-        if ($0 !~ /HIMMEL-[0-9]+/ && $0 !~ /no-ticket:[ \t]*[^ \t]/) print
-        next
-    }
-    sec && items && /^[^ \t]/ { sec = 0 }' "$EVIDENCE")
+# shellcheck source=scripts/handover/console-kit/residual-lines.sh
+. "$(dirname "$0")/residual-lines.sh"
+unfiled=$(unfiled_residual_section_lines "$EVIDENCE")
 if [ -n "$unfiled" ]; then
     while IFS= read -r unfiled_line; do
         echo "write-verdict: unfiled residual: $unfiled_line" >&2

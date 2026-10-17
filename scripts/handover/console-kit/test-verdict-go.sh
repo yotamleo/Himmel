@@ -13,6 +13,7 @@
 #   5. board render failure is non-fatal: exit 0, warning printed
 #   6. write-verdict refusal: exit code passes through, go.sh never runs
 #   7. usage: bad answer / missing --pr / short head -> exit 2, nothing runs
+#   8. a residual line with no HIMMEL key or no-ticket reason -> exit 2, nothing runs
 #
 # Hermetic: temp dir only. Platform guard: POSIX bash 3.2+.
 set -uo pipefail
@@ -31,6 +32,7 @@ lacks()    { case "$2" in *"$3"*) echo "FAIL - $1: output contains [$3]"; fails=
 # A sandbox kit: the script under test beside four stubs that log their argv.
 KIT="$tmp/kit"; LOG="$tmp/log"; mkdir -p "$KIT"
 cp "$SCRIPT" "$KIT/verdict-go.sh" 2>/dev/null || true
+cp "$HERE/residual-lines.sh" "$KIT/residual-lines.sh" 2>/dev/null || true
 for s in write-verdict go append-results; do
     cat > "$KIT/$s.sh" <<EOF
 #!/usr/bin/env bash
@@ -135,5 +137,24 @@ check "7: missing --pr ran nothing" "$(cat "$LOG")" ""
 run q7 GO abc123 --pr 77 --evidence-file "$EV" --doc "$DOC"
 check "7: short head rc 2" "$rc" 2
 check "7: short head ran nothing" "$(cat "$LOG")" ""
+
+# --- 8. residual lines must name a ticket or a no-ticket reason ---
+EVR="$tmp/ev-residual.md"
+printf '## Non-blocking\n\n- tighten the regex\n' > "$EVR"
+run q8a GO "$HEAD40" --pr 77 --evidence-file "$EVR" --doc "$DOC"
+check "8a: an unkeyed Non-blocking bullet rc 2" "$rc" 2
+contains "8a: the offending line is printed" "$out" "unfiled residual: - tighten the regex"
+contains "8a: the hint names no-ticket" "$out" "no-ticket: <reason>"
+check "8a: nothing ran" "$(cat "$LOG")" ""  # read-sink-ok: the test's own sandbox log
+printf 'Evidence read.\n\nresidual: x\n' > "$EVR"
+run q8b NO-GO "$HEAD40" --pr 77 --evidence-file "$EVR"
+check "8b: an unkeyed residual: line on a NO-GO rc 2" "$rc" 2
+check "8b: nothing ran" "$(cat "$LOG")" ""  # read-sink-ok: the test's own sandbox log
+printf '## Follow-ups\n\n- keyed HIMMEL-123 item\n- other item, no-ticket: operator accepted\n' > "$EVR"
+run q8c GO "$HEAD40" --pr 77 --evidence-file "$EVR"
+check "8c: keyed and no-ticket residuals rc 0" "$rc" 0
+contains "8c: write-verdict ran" "$log" "write-verdict"
+run q8d GO "$HEAD40" --pr 77 --evidence-file "$tmp/no-such-evidence.md"
+contains "8d: an unreadable evidence file is left to write-verdict" "$log" "write-verdict"
 
 [ "$fails" -eq 0 ] && echo "all ok" || { echo "$fails failure(s)"; exit 1; }

@@ -9,6 +9,9 @@
 #   MERGED / WRAPPED  -> wrap-merged.sh --doc <doc> --fleet <manifest> <leg doc> [--pr <n>]
 #                        The leg doc is the manifest entry whose name carries the
 #                        message's N<k> label; <n> is the PR in a `MERGED #<n>` line.
+#                        A WRAPPED line that mentions deferred, follow-up or residual with
+#                        no HIMMEL-<n> key or `no-ticket: <reason>` (residual-lines.sh)
+#                        is ESCALATE unfiled-residual: <line>, before wrap-merged runs.
 #   anything else     -> ESCALATE (READY and FINDING need a judge or the console)
 #
 #   after a MERGED with a PR, station-sync.sh --pr <n> runs detached to bring the
@@ -22,7 +25,7 @@
 #
 # Output: one line. `HANDLED wrap-merged <label>[ station=pending log=<file>][ live-state=failed <why>]` (rc 0) or
 # `ESCALATE <reason>` (rc 10), the reason being no-label, not-in-manifest,
-# marker-<X>, or wrap-merged-failed rc=<n> with wrap-merged's stderr after it.
+# marker-<X>, unfiled-residual: <line>, or wrap-merged-failed rc=<n> with wrap-merged's stderr after it.
 # Usage errors exit 2 before anything runs.
 #
 # Test seams (env): LE_WRAP LE_LIST LE_LIVE LE_STATION LE_STATION_LOG.
@@ -30,6 +33,8 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/handover/console-kit/residual-lines.sh
+. "$HERE/residual-lines.sh"
 if [ -n "${LE_WRAP:-}" ]; then WRAP=("$LE_WRAP"); else WRAP=(bash "$HERE/wrap-merged.sh"); fi
 if [ -n "${LE_STATION:-}" ]; then STATION=("$LE_STATION"); else STATION=(bash "$HERE/station-sync.sh"); fi
 if [ -n "${LE_LIVE:-}" ]; then LIVE=("$LE_LIVE"); else LIVE=(bash "$HERE/live-state.sh"); fi
@@ -49,7 +54,7 @@ while [ "$#" -gt 0 ]; do
         *) [ -z "$MSG" ] || usage; MSG="$1"; shift ;;
     esac
 done
-[ -n "$DOC" ] && [ -n "$FLEET" ] && [ -n "$MSG" ] || usage
+if [ -z "$DOC" ] || [ -z "$FLEET" ] || [ -z "$MSG" ]; then usage; fi
 
 if [ "$MSG" = "-" ]; then body="$(cat)"; else body="$(cat "$MSG")" || usage; fi
 line="$(printf '%s\n' "$body" | grep -m1 -E '[^[:space:]]')" || line=""
@@ -62,6 +67,16 @@ case "$marker" in
     MERGED|WRAPPED) ;;
     *) escalate "marker-${marker:-none}" ;;
 esac
+
+if [ "$marker" = WRAPPED ]; then
+    mf="$(mktemp "${TMPDIR:-/tmp}/leg-event-msg.XXXXXX")" || escalate "wrap-merged-failed rc=1 mktemp"
+    printf '%s\n' "$body" > "$mf"
+    unfiled="$(unfiled_residual_mention_lines "$mf")"
+    rm -f "$mf"
+    if [ -n "$unfiled" ]; then
+        escalate "unfiled-residual: $(printf '%s' "$unfiled" | tr '\n' ' ')"
+    fi
+fi
 
 # the leg is named by its N<k> label, or failing that by its session name (the
 # leg doc's stem, which a wrap message may quote without any N<k>)

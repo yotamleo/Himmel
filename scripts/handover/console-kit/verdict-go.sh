@@ -19,6 +19,8 @@
 #      is quoted by the console in that message.
 #
 # A NO-GO runs steps 1 and 3 only. Without --doc steps 3 and 4 are skipped.
+# An evidence line that leaves a residual unfiled (residual-lines.sh) is refused
+# before step 1, exit 2, exactly as write-verdict.sh refuses it.
 # Each step runs as a subprocess from this directory; none is modified here.
 # The script stops at the first failure, names the step on stderr and exits
 # with that step's own exit code (go.sh's 3, 4, 5 and write-verdict.sh's 2 to 5
@@ -60,6 +62,19 @@ case "$HEAD_SHA" in *[!0123456789abcdef]*) HEAD_OK=0 ;; *) HEAD_OK=1 ;; esac
 if [ "$HEAD_OK" -ne 1 ] || [ "${#HEAD_SHA}" -ne 40 ]; then
     echo "verdict-go: head must be the full 40-char lowercase hex sha (got '$HEAD_SHA')" >&2
     usage
+fi
+
+# shellcheck source=scripts/handover/console-kit/residual-lines.sh
+. "$HERE/residual-lines.sh"
+if [ -r "$EVIDENCE" ]; then
+    unfiled="$(unfiled_residual_section_lines "$EVIDENCE")"
+    if [ -n "$unfiled" ]; then
+        while IFS= read -r unfiled_line; do
+            echo "verdict-go: unfiled residual: $unfiled_line" >&2
+        done <<< "$unfiled"
+        echo "verdict-go: file each residual (HIMMEL-<n> on the line) or mark it 'no-ticket: <reason>' - nothing ran" >&2
+        exit 2
+    fi
 fi
 
 step_fail() { # step_fail <script> <rc>
