@@ -2105,6 +2105,35 @@ if [ -n "$PROFILE" ]; then
         fi
         chmod 600 "$PROFILE_CONTRACT" 2>/dev/null || true
     fi
+    # LEG_REPO_MAP=1 (launching shell, default off): put a token-capped
+    # PageRank repo map of the leg's repo (its primary checkout's
+    # graphify-out/graph.json) at the HEAD of the preface, so the preface's
+    # turn-ending section stays last. LEG_REPO_MAP_TOKENS sets the cap (default
+    # 2000). Advisory: no graph, a generator failure or a generator still
+    # running after LEG_REPO_MAP_TIMEOUT seconds (default 30) launches without
+    # it; so does a host with no GNU timeout, since the generator never runs unbounded.
+    if [ "${LEG_REPO_MAP:-0}" = 1 ]; then
+        REPO_MAP_CMD="${HEADED_ARM_LEG_REPO_MAP:-$HERE/../../graphify/repo-map.py}"
+        _rm_timeout="${LEG_REPO_MAP_TIMEOUT:-30}"
+        # shellcheck source=scripts/lib/timeout-bin.sh
+        . "$HERE/../../lib/timeout-bin.sh" 2>/dev/null
+        _rm_graph="<no git repo>"
+        if [ -n "${_TIMEOUT_BIN:-}" ] \
+            && _rm_common="$(git -C "${HEADED_ARM_REPO:-$HERE/../../..}" rev-parse --path-format=absolute --git-common-dir)" \
+            && _rm_graph="$(dirname "$_rm_common")/graphify-out/graph.json" \
+            && _rm_map="$("$_TIMEOUT_BIN" -k 5 "$_rm_timeout" "$REPO_MAP_CMD" --graph "$_rm_graph" --max-tokens "${LEG_REPO_MAP_TOKENS:-2000}")" \
+            && { printf '%s\n\n' "$_rm_map"; cat "$LEG_PROFILE_PREFACE"; } > "$LEG_PROFILE_PREFACE.map" \
+            && mv "$LEG_PROFILE_PREFACE.map" "$LEG_PROFILE_PREFACE"; then
+            echo "$(date +%F_%T) headed-arm-leg: repo-map=on graph=$_rm_graph tokens=${LEG_REPO_MAP_TOKENS:-2000}" >> "$LOG"
+        else
+            _rm_rc=$?
+            _rm_why="rc=$_rm_rc"
+            [ "$_rm_rc" = 124 ] && _rm_why="timed out after ${_rm_timeout}s"
+            [ -n "${_TIMEOUT_BIN:-}" ] || _rm_why="no GNU timeout to bound the generator"
+            rm -f "$LEG_PROFILE_PREFACE.map"
+            echo "$(date +%F_%T) headed-arm-leg: WARN repo-map not injected (graph=$_rm_graph, $_rm_why); launching without it" >> "$LOG"
+        fi
+    fi
     if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
         if ! printf '%s\n' "$MCP_CONFIG_JSON" > "$LEG_PROFILE_MCP_CONFIG"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot write mcp config to $LEG_PROFILE_MCP_CONFIG" >&2

@@ -124,7 +124,7 @@ unset HIMMEL_CONSOLE_DOC 2>/dev/null || true
 . "$HERE/../../lib/timeout-bin.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset CADENCE_BANK_LANE LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_PROFILE_NO_SETTING_SOURCES LEG_SESSION_ID LEG_HEADLESS LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE CLAUDE_CODE_EFFORT_LEVEL HIMMEL_LEG_CONTEXT_MODE HIMMEL_LEG_AUTOCOMPACT 2>/dev/null || true
+unset CADENCE_BANK_LANE LEG_LANE LEG_CONTEXT LEG_REPO LEG_REPO_MAP LEG_REPO_MAP_TOKENS LEG_REPO_MAP_TIMEOUT LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_PROFILE_NO_SETTING_SOURCES LEG_SESSION_ID LEG_HEADLESS LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE CLAUDE_CODE_EFFORT_LEVEL HIMMEL_LEG_CONTEXT_MODE HIMMEL_LEG_AUTOCOMPACT 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 # The launcher resolves every path it writes physically; macOS's TMPDIR sits
@@ -1413,6 +1413,85 @@ process.stdout.write(hit?.hooks?.[0]?.command ?? "");
 ' "$settings17b4")"
 exec17b4="$(bash -c "$cmd17b4" 2>/dev/null || true)"
 check "compact-hook exec: executing the generated command outputs the real contract content" "$exec17b4" "$contractcontent17b4"
+
+# --- 17b-5. LEG_REPO_MAP=1 puts the repo map at the HEAD of the per-leg
+# preface (the turn-ending section stays last), built from the leg repo's
+# primary graphify-out/graph.json with the LEG_REPO_MAP_TOKENS cap; a failing
+# generator launches without it and says so in the launch log. Off by default:
+# 17b's preface starts with the leg-preface heading.
+check "repo-map off by default: the preface starts with the leg-preface heading" \
+  "$(head -1 "$preface17b" 2>/dev/null)" "$(head -1 "$HERE/../../../docs/handover/leg-preface.md")"
+d17b5="$tmp/c17b5"; mk_launch_stubs "$d17b5" "HIMMEL-9999-map"; git init -q "$tmp/repo17b5"
+cat > "$d17b5/repo-map" <<STUB_EOF
+#!/bin/sh
+printf '%s\n' "\$*" > "$d17b5/map-args"
+echo "# Repo map STUB"
+STUB_EOF
+chmod +x "$d17b5/repo-map"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" HEADED_ARM_LEG_REPO_MAP="$d17b5/repo-map" \
+LEG_REPO_MAP=1 LEG_REPO_MAP_TOKENS=777 \
+KONSOLE_CMD="$d17b5/konsole" PGREP_CMD="$d17b5/pgrep" \
+LEG_REPO="$tmp/repo17b5" HEADED_ARM_LOCK_DIR="$d17b5/locks" HEADED_ARM_PROC="$d17b5/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-map" "$fixture17b" "$d17b5/signal-never" "$PAST" "$d17b5/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b5" || true
+check "repo-map: full launch exit 0" "$rc" "0"
+preface17b5="$d17b5/HIMMEL-9999-map.leg-preface.md"
+check "repo-map: the map is the preface's first line" "$(head -1 "$preface17b5" 2>/dev/null)" "# Repo map STUB"
+check "repo-map: the turn-ending section stays last" \
+  "$(grep '^## ' "$preface17b5" 2>/dev/null | tail -1)" "## How your turns end"
+check "repo-map: built from the leg repo's graph with the LEG_REPO_MAP_TOKENS cap" \
+  "$(cat "$d17b5/map-args" 2>/dev/null)" "--graph $tmp/repo17b5/graphify-out/graph.json --max-tokens 777"
+printf '#!/bin/sh\necho "repo-map: no graph" >&2\nexit 2\n' > "$d17b5/repo-map"
+d17b6="$tmp/c17b6"; mk_launch_stubs "$d17b6" "HIMMEL-9999-nomap"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" HEADED_ARM_LEG_REPO_MAP="$d17b5/repo-map" LEG_REPO_MAP=1 \
+KONSOLE_CMD="$d17b6/konsole" PGREP_CMD="$d17b6/pgrep" \
+LEG_REPO="$tmp/repo17b5" HEADED_ARM_LOCK_DIR="$d17b6/locks" HEADED_ARM_PROC="$d17b6/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-nomap" "$fixture17b" "$d17b6/signal-never" "$PAST" "$d17b6/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b6" || true
+check "repo-map: a failing generator still launches" "$rc" "0"
+check "repo-map: a failing generator leaves the preface unchanged" \
+  "$(head -1 "$d17b6/HIMMEL-9999-nomap.leg-preface.md" 2>/dev/null)" "$(head -1 "$HERE/../../../docs/handover/leg-preface.md")"
+contains "repo-map: a failing generator is named in the launch log" "$(cat "$d17b6/log" 2>/dev/null)" "WARN repo-map not injected"
+# A generator that hangs past LEG_REPO_MAP_TIMEOUT is killed and the leg
+# launches without the map. Hang-guard: with no GNU timeout the row SKIPs.
+if [ -n "$_TIMEOUT_BIN" ]; then
+    printf '#!/bin/sh\nsleep 60\necho "# Repo map LATE"\n' > "$d17b5/repo-map"
+    d17b7="$tmp/c17b7"; mk_launch_stubs "$d17b7" "HIMMEL-9999-slowmap"
+    rc=0
+    HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+    HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" HEADED_ARM_LEG_REPO_MAP="$d17b5/repo-map" \
+    LEG_REPO_MAP=1 LEG_REPO_MAP_TIMEOUT=2 \
+    KONSOLE_CMD="$d17b7/konsole" PGREP_CMD="$d17b7/pgrep" \
+    LEG_REPO="$tmp/repo17b5" HEADED_ARM_LOCK_DIR="$d17b7/locks" HEADED_ARM_PROC="$d17b7/proc" \
+      "$_TIMEOUT_BIN" 25 bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-slowmap" "$fixture17b" "$d17b7/signal-never" "$PAST" "$d17b7/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+    wait_record "$d17b7" || true
+    check "repo-map: a hung generator still launches" "$rc" "0"
+    check "repo-map: a hung generator leaves the preface unchanged" \
+      "$(head -1 "$d17b7/HIMMEL-9999-slowmap.leg-preface.md" 2>/dev/null)" "$(head -1 "$HERE/../../../docs/handover/leg-preface.md")"
+    contains "repo-map: a hung generator is named in the launch log" "$(cat "$d17b7/log" 2>/dev/null)" "WARN repo-map not injected (graph=$tmp/repo17b5/graphify-out/graph.json, timed out after 2s)"
+else
+    echo "SKIP - repo-map: hung generator (hang-guard row needs GNU timeout/gtimeout)"
+fi
+# Off by default: with LEG_REPO_MAP unset the generator never runs.
+printf '#!/bin/sh\n: > "%s"\necho "# Repo map OFF"\n' "$tmp/c17b8-ran" > "$d17b5/repo-map"
+d17b8="$tmp/c17b8"; mk_launch_stubs "$d17b8" "HIMMEL-9999-offmap"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" HEADED_ARM_LEG_REPO_MAP="$d17b5/repo-map" \
+KONSOLE_CMD="$d17b8/konsole" PGREP_CMD="$d17b8/pgrep" \
+LEG_REPO="$tmp/repo17b5" HEADED_ARM_LOCK_DIR="$d17b8/locks" HEADED_ARM_PROC="$d17b8/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-offmap" "$fixture17b" "$d17b8/signal-never" "$PAST" "$d17b8/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b8" || true
+check "repo-map off by default: full launch exit 0" "$rc" "0"
+if [ -e "$tmp/c17b8-ran" ]; then
+  echo "FAIL - repo-map off by default: the generator ran with LEG_REPO_MAP unset"; fails=$((fails+1))
+else
+  echo "ok - repo-map off by default: the generator never runs with LEG_REPO_MAP unset"
+fi
 
 # 17c. Omitting --profile changes nothing: no shim, no lean flag, and a
 # dry-run report byte-identical to the earlier three-line form. This

@@ -207,6 +207,17 @@ unchanged in every respect, including its argv, so the worker system prompt rule
 pasted into the brief. Detail:
 [`../internals/lane-calibration.md`](../internals/lane-calibration.md).
 
+**Repo map (off by default).** Set `LEG_REPO_MAP=1` in the launching shell and
+a profiled worker session's system prompt starts with a repo map: the files of
+the leg's repo ranked by PageRank over its primary checkout's
+`graphify-out/graph.json`, each with its most-referenced symbols, capped at
+`LEG_REPO_MAP_TOKENS` (default 2000) tokens. It is built by
+`scripts/graphify/repo-map.py`; with no graph, or a generator still running after
+`LEG_REPO_MAP_TIMEOUT` (default 30) seconds, or on a host with no GNU `timeout` to bound
+it, the worker session launches without it and the launch log says so. It stays off because the A/B on the K7 questions
+(HIMMEL-6142) showed no gain: 15/15 answers found with and without it, at the
+same token cost.
+
 `headed-arm-leg.sh` exports `HIMMEL_CONSOLE_LEG=1`, which
 `block-leg-askuserquestion.sh` uses to structurally deny
 `AskUserQuestion` on the worker session, rather than relying on the brief's prose NEVER.
