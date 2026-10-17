@@ -5,6 +5,11 @@
 # and wrap.
 #
 #   live-state.sh <console doc> [--print] [--nonce <label>=<nonce>]... [--pid <label>=<pid>]...
+#   live-state.sh <console doc> --digest
+#
+# --digest is read-only, needs no manifest, and prints status, head, legs,
+# queue, lock and open ruling titles (at most 55 lines, never ruling bodies).
+# Open rulings are ### headings or unchecked top-level checklist entries.
 #
 # An entry is `<label>:<nonce>:<lock-token>:<pid>` (console-template.md). Where
 # each field comes from:
@@ -40,17 +45,18 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
-    echo "usage: live-state.sh <console doc> [--print] [--nonce <label>=<nonce>]... [--pid <label>=<pid>]..." >&2
+    echo "usage: live-state.sh <console doc> [--digest | [--print] [--nonce <label>=<nonce>]... [--pid <label>=<pid>]...]" >&2
 }
 
 [ "$#" -ge 1 ] || { usage; exit 2; }
 doc="$1"; shift
-print_only=0
+print_only=0; digest=0
 nonces=""
 pids=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --print) print_only=1; shift ;;
+        --digest) digest=1; shift ;;
         --nonce|--pid)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             case "$2" in
@@ -64,19 +70,57 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+if [ "$digest" -eq 1 ] && { [ "$print_only" -ne 0 ] || [ -n "$nonces$pids" ]; }; then usage; exit 2; fi
 [ -f "$doc" ] || { echo "live-state: no such console doc: $doc" >&2; exit 1; }
+
+# Rendering and digest share tick.sh's section and wrapped-legs boundaries.
+block_awk='
+    digest && !status && tolower($0) ~ /^(status:|\*\*status:\*\*)/ { status = $0 }
+    digest && /^## / { rulings = (tolower($0) == "## open rulings") }
+    digest && rulings && (/^### / || /^[-*+] \[ \] /) {
+        title = $0
+        sub(/^(###[[:space:]]+|[-*+][[:space:]]+)/, "", title)
+        if (title !~ /^\[[xX]\]/) {
+            sub(/^\[ \][[:space:]]*/, "", title)
+            if (title != "" && tolower(title) != "none") {
+                count++
+                if (count <= 48) titles[count] = title
+            }
+        }
+    }
+    $0 == "## Live state" { s = 1; seen = 1; next }
+    s && /^## / { s = 0 }
+    digest && s && /^head:/ && !head { head = $0 }
+    digest && s && /^queue:/ && !queue { queue = $0 }
+    digest && s && /^lock:/ && !lock { lock = $0 }
+    s && /^legs:/ { f = 1; if (digest) legs = $0; else print; next }
+    f && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z ]*:/ || /^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]/ || /^[[:space:]]*[>#]/) { f = 0 }
+    f {
+        if (digest) { line = $0; sub(/^[[:space:]]+/, "", line); legs = legs " " line }
+        else print
+    }
+    END {
+        if (digest) {
+            if (!seen) exit 1
+            print (status ? status : "status: unavailable")
+            print (head ? head : "head: unavailable")
+            print (legs ? legs : "legs: unavailable")
+            print (queue ? queue : "queue: unavailable")
+            print (lock ? lock : "lock: unavailable")
+            print "open rulings: " count + 0
+            for (i = 1; i <= count && i <= 48; i++) print "- " titles[i]
+            if (count > 48) print "additional ruling titles omitted: " count - 48
+        }
+    }'
+if [ "$digest" -eq 1 ]; then
+    awk -v digest=1 "$block_awk" "$doc"
+    exit $?
+fi
+
 manifest="${doc%.md}.fleet.json"
 [ -f "$manifest" ] || { echo "live-state: no fleet manifest: $manifest" >&2; exit 1; }
 rows="$(jq -r '.legs[] | [.label, .doc, ((.lane // "") | if . == "" then "unknown" else . end), ((.lockless == true) | tostring)] | @tsv' "$manifest" 2>/dev/null)" \
     || { echo "live-state: unreadable fleet manifest: $manifest" >&2; exit 1; }
-
-# The block tick.sh reads: the same awk, over the same section.
-block_awk='
-    $0 == "## Live state" { s = 1; next }
-    s && /^## / { s = 0 }
-    s && /^legs:/ { f = 1; print; next }
-    f && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z ]*:/ || /^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]/ || /^[[:space:]]*[>#]/) { f = 0 }
-    f { print }'
 old_block="$(awk "$block_awk" "$doc")"
 [ -n "$old_block" ] || { echo "live-state: no legs: line under '## Live state' in $doc" >&2; exit 1; }
 

@@ -16,7 +16,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT="$HERE/live-state.sh"
+SCRIPT="${LIVE_STATE:-$HERE/live-state.sh}"
 LOCK="$HERE/../queue-lock.sh"
 FM="$HERE/fleet-manifest.sh"
 
@@ -204,6 +204,62 @@ lk2_err="$(bash "$SCRIPT" "$lk2" 2>&1 >/dev/null)"
 check '16. an empty lane is listed as unknown' "lockless: N91 (unknown) $lk2d" "$(grep '^lockless:' "$lk2")"
 case "$lk2_err" in *'N92 holds no lock'*) r=visible ;; *) r="[$lk2_err]" ;; esac
 check '16. a string "true" lockless row is not hidden as lockless' visible "$r"
+
+# --digest reads the existing state without a manifest or queue-lock access.
+digest_doc="$tmp/digest.md"
+cat > "$digest_doc" <<'DOC'
+---
+status: LIVE
+---
+# console
+## Live state
+head: abc123
+legs: `N61:nonce:held-lock:13`
+  `N62:nonce-two:held-two:14`
+queue: held.md
+lock: own-lock
+
+## Open rulings
+- [ ] Next slice
+  PRIVATE body
+- [x] Resolved slice
+### Lane choice
+PRIVATE body
+- PRIVATE body list
+* PRIVATE second body list
++ PRIVATE third body list
+1. PRIVATE numbered body list
+
+## Results
+legs: `N99:not:a:leg`
+PRIVATE history
+DOC
+before_digest="$(cat "$digest_doc")"
+digest_out="$(bash "$SCRIPT" "$digest_doc" --digest 2>/dev/null)"; rc=$?
+check '17. digest works without a manifest' 0 "$rc"
+want_digest='status: LIVE
+head: abc123
+legs: `N61:nonce:held-lock:13` `N62:nonce-two:held-two:14`
+queue: held.md
+lock: own-lock
+open rulings: 2
+- Next slice
+- Lane choice'
+check '17. digest keeps wrapped legs and only open ruling titles' "$want_digest" "$digest_out"
+check '17. digest does not write the document' "$before_digest" "$(cat "$digest_doc")"
+check '17. digest creates no sibling files' 1 "$(find "$tmp" -name 'digest*' | wc -l | tr -d ' ')"
+awk '/^## Results$/ {for (i=1;i<=200;i++) print "- [ ] Ruling " i} {print}' "$digest_doc" > "$tmp/long.md"
+long_digest="$(bash "$SCRIPT" "$tmp/long.md" --digest 2>/dev/null)"
+case "$long_digest" in *'open rulings: 202'*'additional ruling titles omitted'*) r=yes ;; *) r=no ;; esac
+check '18. digest counts all rulings but bounds displayed titles' yes "$r"
+check '18. digest stays under 60 lines' yes "$([ "$(printf '%s\n' "$long_digest" | wc -l)" -lt 60 ] && echo yes || echo no)"
+printf '# console\n## Results\n' > "$tmp/no-state.md"
+bash "$SCRIPT" "$tmp/no-state.md" --digest >/dev/null 2>&1; rc=$?
+check '19. digest refuses a missing Live state block' 1 "$rc"
+bash "$SCRIPT" "$tmp/absent.md" --digest >/dev/null 2>&1; rc=$?
+check '19. digest refuses a missing document' 1 "$rc"
+bash "$SCRIPT" "$digest_doc" --digest --nonce N61=changed >/dev/null 2>&1; rc=$?
+check '19. digest cannot mix with render-only arguments' 2 "$rc"
 
 [ "$t1" = tok-one ] || { echo "FAIL - setup: lock token [$t1]"; fails=$((fails+1)); }
 [ "$fails" -eq 0 ] && echo "PASS" || { echo "$fails FAILED"; exit 1; }

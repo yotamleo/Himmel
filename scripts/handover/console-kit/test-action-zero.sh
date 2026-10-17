@@ -102,4 +102,51 @@ bash "$AZ" --doc "$LCON" --root "$ROOT" --render-legs >/dev/null 2>&1; rc11=$?
 check "a render that fails exits nonzero" "1" "$rc11"
 rm -f "${LCON%.md}.fleet.json"
 
+# DOC is a digest of the supplied doc, not its instructions or result history.
+DDOC="$ROOT/digest-console.md"
+cat > "$DDOC" <<'DOC'
+# console
+**Status:** LIVE
+
+## Live state
+head: abc123
+legs: `N61:nonce:lock:7`
+  `N62:nonce-two:lock-two:8`
+queue: held-doc.md
+lock: console-lock
+
+## Open rulings
+- [ ] Approve the next slice
+  PRIVATE ruling body
+- [x] Closed decision
+### Choose a lane
+PRIVATE heading body
+- PRIVATE ruling body list
+
+## Results
+PRIVATE result history
+DOC
+before_digest="$(cat "$DDOC")"
+dout="$(bash "$AZ" --doc "$DDOC" --root "$ROOT" 2>&1)"
+digest="$(printf '%s\n' "$dout" | awk '/^== DOC$/ {s=1; next} /^== / {s=0} s')"
+# shellcheck disable=SC2016  # backticks are literal leg span markers
+expected_digest='**Status:** LIVE
+head: abc123
+legs: `N61:nonce:lock:7` `N62:nonce-two:lock-two:8`
+queue: held-doc.md
+lock: console-lock
+open rulings: 2
+- Approve the next slice
+- Choose a lane'
+check "DOC digest contains state and open ruling titles only" "$expected_digest" "$digest"
+check "DOC digest leaves the supplied document untouched" "$before_digest" "$(cat "$DDOC")"
+awk '/^## Results$/ {for (i=1;i<=200;i++) print "- [ ] Decision " i} {print} END {for (i=1;i<=1000;i++) print "PRIVATE history " i}' "$DDOC" > "$ROOT/long-console.md"
+long_out="$(bash "$AZ" --doc "$ROOT/long-console.md" --root "$ROOT" 2>&1)"
+long_digest="$(printf '%s\n' "$long_out" | awk '/^== DOC$/ {s=1; next} /^== / {s=0} s')"
+long_lines="$(printf '%s\n' "$long_digest" | wc -l | tr -d ' ')"
+case "$long_digest" in *'open rulings: 202'*'additional ruling titles omitted'*) present=1 ;; *) present=0 ;; esac
+check "DOC digest remains present and under 60 lines for a long document" 1 "$([ "$present" -eq 1 ] && [ "$long_lines" -lt 60 ] && echo 1 || echo 0)"
+missing_out="$(bash "$AZ" --doc "$DOC" --root "$ROOT" 2>&1)"
+check "missing Live state prints DOC unavailable and later sections still run" 2 "$(printf '%s\n' "$missing_out" | grep -cE '^DOC unavailable$|^== LOCK \(this document\)$')"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

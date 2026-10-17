@@ -12,6 +12,8 @@
 #   PROCS   the leg processes (pgrep -af 'claude .*-n <prefix>-')
 #   C29     himmel-doctor.sh --only C29 (a session that inherited CHILD_SESSION=1)
 #   LOAD    uptime
+#   DOC     read-only Live state digest via live-state.sh --digest (under 60 lines),
+#           status and open ruling titles only, never the full document body
 #   LOCK    this document's lock state; with --acquire and state `free`, acquires
 #           it and prints the release token. `held` is never taken over.
 #   LEGS    only with --render-legs: rewrites the doc's `## Live state` legs: line
@@ -110,6 +112,13 @@ if [ "$render" -eq 1 ]; then
     else
         render_rc=1; echo "unavailable (no fleet manifest next to the doc)"
     fi
+fi
+
+echo "== DOC"
+if digest_out="$(bash "$HERE/live-state.sh" "$doc" --digest)"; then
+    printf '%s\n' "$digest_out"
+else
+    echo "DOC unavailable"
 fi
 
 echo "== LOCK (this document)"
