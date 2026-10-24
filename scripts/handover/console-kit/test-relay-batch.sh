@@ -61,18 +61,14 @@ check "relay-batch succeeds for native and claudex relays" "0" "$rc"
 check "a native leg also gets a bus record from the outgoing console" "send DEMO-1-N7-alpha" "$(grep -x 'send DEMO-1-N7-alpha' "$WORK/bus.log" 2>/dev/null)"
 check "a claudex leg gets a bus record too, under its doc stem" "send DEMO-2-N8-beta" "$(grep -x 'send DEMO-2-N8-beta' "$WORK/bus.log" 2>/dev/null)"
 check "the claudex bus send is reported" "1" "$(printf '%s\n' "$out" | grep -c '^BUS-RELAY N8 ok$')"
-check "the bus record names the successor as a whole word, once per relayed leg" "2" "$(grep -c 'your console is now DEMO-nextleg-2026-10-08B-console ' "$WORK/bus.body" 2>/dev/null)"
+check "the bus record names the successor as a whole word, once per relayed leg" "2" "$(grep -cE 'your console is now DEMO-nextleg-2026-10-08B-console[. ]' "$WORK/bus.body" 2>/dev/null)"
 check "the bus record carries no token" "0" "$(grep -c 'tok-' "$WORK/bus.body" 2>/dev/null)"
 check "the bus send is reported" "1" "$(printf '%s\n' "$out" | grep -c '^BUS-RELAY N7 ok$')"
-check "native leg gets a printed SendMessage payload" "1" "$(printf '%s\n' "$out" | grep -c '^SENDMESSAGE to=DEMO-1-N7-alpha ::')"
-check "the payload names the successor" "1" "$(printf '%s\n' "$out" | grep '^SENDMESSAGE' | grep -c 'your console is now DEMO-nextleg-2026-10-08B-console')"
-check "the payload quotes the leg's current token" "1" "$(printf '%s\n' "$out" | grep '^SENDMESSAGE' | grep -c 'tok-seven')"
-check "native relay gives the exact acknowledgement with no trailing text" "1" "$(printf '%s\n' "$out" | grep '^SENDMESSAGE' | grep -c 'SUCCESSION accepted: DEMO-nextleg-2026-10-08B-console replaces DEMO-nextleg-2026-10-08A-console$')"
-check "the payload no longer asks the leg to verify the relay" "0" "$(printf '%s\n' "$out" | grep '^SENDMESSAGE' | grep -cF 'Verify this relay')"
-check "the payload names itself an S1 relay" "1" "$(printf '%s\n' "$out" | grep '^SENDMESSAGE' | grep -cF 'S1 relay')"
-# shellcheck disable=SC2016  # literal backticks in the pattern
-check "the payload quotes only the leg's current token" "\`tok-seven\`" "$(printf '%s\n' "$out" | grep '^SENDMESSAGE' | grep -o '`[^`]*`' | tr -d '\n')"
-check "native relay forbids anything after the acknowledgement on its line" "1" "$(printf '%s\n' "$out" | grep '^SENDMESSAGE' | grep -cF 'nothing after it on that line')"
+check "a native leg whose bus record lands gets no SendMessage" "0" "$(printf '%s\n' "$out" | grep -c '^SENDMESSAGE to=DEMO-1-N7-alpha ::')"
+check "the native bus record is the relay: it names itself an S1 relay" "1" "$(grep -cF 'is an S1 relay' "$WORK/bus.body")"
+check "the native bus record gives the exact acknowledgement with no trailing text" "1" "$(grep -c 'SUCCESSION accepted: DEMO-nextleg-2026-10-08B-console replaces DEMO-nextleg-2026-10-08A-console$' "$WORK/bus.body")"
+check "the native bus record forbids anything after the acknowledgement on its line" "1" "$(grep -cF 'nothing after it on that line' "$WORK/bus.body")"
+check "a bus-relayed leg counts as relayed" "1" "$(printf '%s\n' "$out" | grep -c '^RELAYED 2 of 2$')"
 check "claudex relay gives the same exact acknowledgement before the send flags" "1" "$(grep -cF 'SUCCESSION accepted: DEMO-nextleg-2026-10-08B-console replaces DEMO-nextleg-2026-10-08A-console --token tok-eight' "$WORK/send.log")"
 check "claudex relay forbids anything after the acknowledgement on its line" "1" "$(grep -cF 'nothing after it on that line' "$WORK/send.log")"
 check "claudex leg goes through inbox-send" "1" "$(printf '%s\n' "$out" | grep -c '^SENT-INBOX N8')"
@@ -82,6 +78,9 @@ check "a leg with no manifest row is skipped, not guessed" "1" "$(printf '%s\n' 
 # shellcheck disable=SC2016  # the backticks are literal token delimiters
 check "no token other than the held ones appears (nothing minted)" "0" "$(printf '%s\n' "$out" | grep -o '`[^`]*`' | grep -vc 'tok-seven\|tok-eight')"
 check "the relay never sends LIVE" "0" "$(printf '%s\n' "$out" | grep -c ' LIVE')"
+: > "$WORK/bus.body"
+bash "$RB" "$DOC" --successor "$WORK/DEMO-nextleg-2026-10-08B-console.md" --claudex N8 >/dev/null 2>&1
+check "a successor given as its doc path is relayed as its session name" "1" "$(grep -c 'SUCCESSION accepted: DEMO-nextleg-2026-10-08B-console replaces DEMO-nextleg-2026-10-08A-console$' "$WORK/bus.body")"
 check "usage without --successor exits 2" "2" "$(bash "$RB" "$DOC" >/dev/null 2>&1; echo $?)"
 # shellcheck disable=SC2016  # $2 expands in the stub, not here
 printf '#!/usr/bin/env bash\necho "bus: no edge to $2" >&2; exit 1\n' > "$BUS"
@@ -112,7 +111,7 @@ check "four stalled bus sends share one deadline (the run is not killed)" "0" "$
 check "four stalled bus sends: every SENDMESSAGE is printed" "4" "$(printf '%s\n' "$out4" | grep -c '^SENDMESSAGE to=DEMO-5[0-3]-N5[0-3]-four ::')"
 check "four stalled bus sends: the tally is printed" "1" "$(printf '%s\n' "$out4" | grep -c '^RELAYED 4 of 4$')"
 check "four stalled bus sends: each is reported timed out" "4" "$(printf '%s\n' "$out4" | grep -c '^BUS-RELAY-FAIL N5[0-3] (timed out after 2s)$')"
-check "every SENDMESSAGE precedes the first bus send" "4" "$(printf '%s\n' "$out4" | awk '/^BUS-RELAY/ { exit } /^SENDMESSAGE/ { n++ } END { print n + 0 }')"
+check "a fallback SendMessage follows the bus sends" "0" "$(printf '%s\n' "$out4" | awk '/^BUS-RELAY/ { exit } /^SENDMESSAGE/ { n++ } END { print n + 0 }')"
 census DEMO-1-N7-alpha DEMO-2-N8-beta
 printf '%s\n' "$LOGBUS" > "$BUS"
 : > "$WORK/bus.log"
@@ -120,6 +119,16 @@ outn="$(HIMMEL_BUS_NAME='' bash "$RB" "$DOC" --successor DEMO-nextleg-2026-10-08
 check "a console with no bus identity sends no bus record" "" "$(cat "$WORK/bus.log")"
 check "a console with no bus identity prints no BUS-RELAY line" "0" "$(printf '%s\n' "$outn" | grep -c '^BUS-RELAY')"
 check "a console with no bus identity still prints the SendMessage" "1" "$(printf '%s\n' "$outn" | grep -c '^SENDMESSAGE to=DEMO-1-N7-alpha ::')"
+check "the payload names the successor" "1" "$(printf '%s\n' "$outn" | grep '^SENDMESSAGE' | grep -c 'your console is now DEMO-nextleg-2026-10-08B-console')"
+check "the payload quotes the leg's current token" "1" "$(printf '%s\n' "$outn" | grep '^SENDMESSAGE' | grep -c 'tok-seven')"
+check "native relay gives the exact acknowledgement with no trailing text" "1" "$(printf '%s\n' "$outn" | grep '^SENDMESSAGE' | grep -c 'SUCCESSION accepted: DEMO-nextleg-2026-10-08B-console replaces DEMO-nextleg-2026-10-08A-console$')"
+check "the payload no longer asks the leg to verify the relay" "0" "$(printf '%s\n' "$outn" | grep '^SENDMESSAGE' | grep -cF 'Verify this relay')"
+check "the payload names itself an S1 relay" "1" "$(printf '%s\n' "$outn" | grep '^SENDMESSAGE' | grep -cF 'S1 relay')"
+# shellcheck disable=SC2016  # literal backticks in the pattern
+check "the payload quotes only the leg's current token" "\`tok-seven\`" "$(printf '%s\n' "$outn" | grep '^SENDMESSAGE' | grep -o '`[^`]*`' | tr -d '\n')"
+check "native relay forbids anything after the acknowledgement on its line" "1" "$(printf '%s\n' "$outn" | grep '^SENDMESSAGE' | grep -cF 'nothing after it on that line')"
+# The rows below exercise the SendMessage path: no bus identity from here on.
+export HIMMEL_BUS_NAME=
 # Each leg's session is resolved from the LIVE process census, never guessed: the full
 # doc stem first, then leg_identity's names; exactly one live match or UNRESOLVED.
 LEG3="$WORK/DEMO-3-N10-gamma-2026-10-08.md"
@@ -276,5 +285,37 @@ census DEMO-9-N21-nat-2026-10-09
 out16="$(bash "$RB" "$DOC4" --successor S4 2>&1)"; rc16=$?
 check "the relay with an undeliverable leg exits 0" "0" "$rc16"
 check "legs the relay could not deliver count in m but not n" "1" "$(printf '%s\n' "$out16" | grep -c '^RELAYED 2 of 3$')"
+
+# --- a bus relay needs no token, so a manifest leg missing from Live state is relayed too.
+DOC10="$WORK/DEMO-nextleg-2026-10-24A-console.md"
+LEGA="$WORK/DEMO-15-N60-in-2026-10-24.md"; LEGB="$WORK/DEMO-16-N61-off-2026-10-24.md"; LEGG="$WORK/DEMO-17-N62-gone-2026-10-24.md"
+: > "$LEGA"; : > "$LEGB"; : > "$LEGG"
+# shellcheck disable=SC2016  # the backticks are literal Live state markers
+printf '# console\n\n## Live state\n\nlegs: `N60:tok-sixty:lock60:1`\nqueue: none\n\n## Results\n' > "$DOC10"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N60","lane":"native"},{"doc":"%s","label":"N61","lane":"native"},{"doc":"%s","label":"N62","lane":"native"}]}\n' "$LEGA" "$LEGB" "$LEGG" > "${DOC10%.md}.fleet.json"
+census DEMO-15-N60-in-2026-10-24 DEMO-16-N61-off-2026-10-24
+printf '%s\n' "$LOGBUS" > "$BUS"
+: > "$WORK/bus.log"; : > "$WORK/bus.body"
+out17="$(HIMMEL_BUS_NAME=DEMO-nextleg-2026-10-24A-console bash "$RB" "$DOC10" --successor DEMO-nextleg-2026-10-24B-console 2>&1)"; rc17=$?
+check "bus relay of an off-Live-state leg exits 0" "0" "$rc17"
+check "a Live-state leg is relayed by bus" "1" "$(grep -cx 'send DEMO-15-N60-in-2026-10-24' "$WORK/bus.log")"
+check "a manifest leg missing from Live state is relayed by bus" "1" "$(grep -cx 'send DEMO-16-N61-off-2026-10-24' "$WORK/bus.log")"
+check "the off-Live-state bus record carries no token" "0" "$(grep -c 'tok-' "$WORK/bus.body")"
+check "no SendMessage is printed when every bus record lands" "0" "$(printf '%s\n' "$out17" | grep -c '^SENDMESSAGE')"
+check "a bus-relayed off-Live-state leg is not reported for a hand relay" "0" "$(printf '%s\n' "$out17" | grep -c '^NOT-IN-LIVE-STATE N61 ')"
+check "an off-Live-state leg with no live session is left for a hand relay" "1" "$(printf '%s\n' "$out17" | grep -c '^NOT-IN-LIVE-STATE N62 ')"
+check "the tally counts both bus relays" "1" "$(printf '%s\n' "$out17" | grep -c '^RELAYED 2 of 3$')"
+# shellcheck disable=SC2016  # $2 expands in the stub, not here
+printf '#!/usr/bin/env bash\necho "bus: no edge to $2" >&2; exit 1\n' > "$BUS"
+out18="$(HIMMEL_BUS_NAME=DEMO-nextleg-2026-10-24A-console bash "$RB" "$DOC10" --successor DEMO-nextleg-2026-10-24B-console 2>&1)"
+check "a refused bus record falls back to the SendMessage for a Live-state leg" "1" "$(printf '%s\n' "$out18" | grep -c '^SENDMESSAGE to=DEMO-15-N60-in-2026-10-24 :: .*tok-sixty')"
+check "a refused bus record leaves an off-Live-state leg for a hand relay" "1" "$(printf '%s\n' "$out18" | grep -c '^NOT-IN-LIVE-STATE N61 ')"
+check "an off-Live-state leg is never printed a token-less SendMessage" "0" "$(printf '%s\n' "$out18" | grep -c '^SENDMESSAGE to=DEMO-16-')"
+check "the fallback tally counts only the printed relay" "1" "$(printf '%s\n' "$out18" | grep -c '^RELAYED 1 of 3$')"
+# a manifest row with no lane keeps its doc in the doc field (tab-separated empty fields do not collapse)
+LEGL="$WORK/DEMO-18-N63-nolane-2026-10-24.md"; : > "$LEGL"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N60","lane":"native"},{"doc":"%s","label":"N63"}]}\n' "$LEGA" "$LEGL" > "${DOC10%.md}.fleet.json"
+out19="$(HIMMEL_BUS_NAME=DEMO-nextleg-2026-10-24A-console bash "$RB" "$DOC10" --successor DEMO-nextleg-2026-10-24B-console 2>&1)"
+check "a lane-less off-Live-state leg is reported with its own doc" "1" "$(printf '%s\n' "$out19" | grep -cF "NOT-IN-LIVE-STATE N63 ($LEGL)")"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

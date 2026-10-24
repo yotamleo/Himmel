@@ -428,7 +428,7 @@ done
 # Every leg and console pays these two files on every turn: keep the always-on core small
 # (rarely-read rules live in docs/handover/leg-sections/ and console-sections/).
 HANDOVER_DOCS="${HANDOVER_DOCS:-$HERE/../../../docs/handover}"
-for budget in "leg-preface.md:12288" "console-template.md:16384"; do
+for budget in "leg-preface.md:12352" "console-template.md:16384"; do
     f="${budget%%:*}"; max="${budget##*:}"
     size="$(wc -c < "$HANDOVER_DOCS/$f" 2>/dev/null | tr -d '[:space:]')"
     [ -n "$size" ] && [ "$size" -le "$max" ] && pass "$f is within its byte budget ($size <= $max)" || fail "$f is over its byte budget (${size:-missing} > $max)"

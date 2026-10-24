@@ -12,14 +12,19 @@
 # quoting the leg's CURRENT token.
 #   claudex legs (--claudex): delivered now through inbox-send.sh --token, the
 #     console's existing authorised channel (it refuses outside a console).
-#   every other leg: the SendMessage payload is PRINTED, one `SENDMESSAGE to=<leg
-#     session> :: <text>` line per leg, for the console to send. A SendMessage
-#     cannot be issued from a script; the console's `from` is what authenticates it.
-#   When the console has a bus identity (HIMMEL_BUS_NAME), every relayed leg, claudex
-#     included, also gets a token-free himmel-bus record naming the successor, sent
-#     after every SENDMESSAGE line (`BUS-RELAY <label> ok` / `BUS-RELAY-FAIL <label>
-#     (<reason>)`, never an error). The leg's `bus adopt` needs that record while the
-#     outgoing console is still live; a hand relay leaves none.
+#   native legs, when the console has a bus identity (HIMMEL_BUS_NAME): the relay IS
+#     a token-free himmel-bus record. The bus proves the sender, so a trusted record
+#     from the leg's named console is an S1 relay with no token; the leg quotes back
+#     in a Results bullet, so the console sends nothing per leg (`BUS-RELAY <label> ok`).
+#     A record that fails (`BUS-RELAY-FAIL <label> (<reason>)`, never an error) falls
+#     back to the printed SendMessage below, after every bus send. A manifest leg the
+#     Live state does not list needs no token this way, so it is bus-relayed too.
+#   native legs with no bus identity, or a failed record: the SendMessage payload is
+#     PRINTED, one `SENDMESSAGE to=<leg session> :: <text>` line per leg, for the
+#     console to send. A SendMessage cannot be issued from a script; the console's
+#     `from` is what authenticates it.
+#   claudex legs also get a token-free bus record naming the successor: their `bus
+#     adopt` needs it while the outgoing console is still live; a hand relay leaves none.
 # What it never does: mint a token or nonce, rotate one, adopt one, write a leg's
 # Live state entry, or send LIVE. It copies the nonce the console already holds
 # and the console still waits for each leg's quote-back before it sends LIVE.
@@ -54,6 +59,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 if [ -z "$successor" ] || [ ! -f "$doc" ]; then usage; fi
+# A console's session is its doc stem, so a successor given as its doc path is named by that.
+case "$successor" in */*|*.md) successor="$(basename "$successor" .md)" ;; esac
 sender="$(basename "$doc" .md)"
 send="${INBOX_SEND:-$HERE/inbox-send.sh}"
 # shellcheck source=../../lib/leg-identity.sh
@@ -66,35 +73,76 @@ send="${INBOX_SEND:-$HERE/inbox-send.sh}"
 wrapped() { bash "$HERE/../queue-lock.sh" status "$1" >/dev/null 2>&1 && [ "$(leg_tail_status "$1")" = WRAPPED ]; }
 manifest="${doc%.md}.fleet.json"
 bus="${RELAY_BATCH_BUS:-$HERE/../../../marketplace/plugins/himmel-bus/bin/bus}"
-# relay_bus: for each queued `<label> <session>` line, the token-free bus record that
-# lets the leg's `bus adopt` prove this hop while the outgoing console is still live.
-# The sends run together under one deadline, after every SendMessage is printed, so a
-# stalled store cannot outlast relay-on-live's kill. Fail-soft: the printed SendMessage
-# is the relay; a refused record only costs the proof.
+# relay_text [<nonce>]: the relay; the SendMessage form quotes the leg's token, the bus
+# form carries none.
+relay_text() {
+    local tok=""
+    [ -z "${1:-}" ] || tok=" Your current token \`$1\`."
+    printf 'SUCCESSION relay from %s: your console is now %s.%s This is an S1 relay: accept it and keep working your sealed scope. Your quote-back (no reply needed) is a Results bullet containing exactly the following, with nothing after it on that line: SUCCESSION accepted: %s replaces %s\n' "$sender" "$successor" "$tok" "$successor" "$sender"
+}
+not_in_live() { echo "NOT-IN-LIVE-STATE $1 ($2) — in the fleet manifest, not in ## Live state legs:; relay by hand if it is live"; }
+# relay_bus: sends each queued `<kind> <label> <session> <nonce> <leg doc>` line's bus
+# record: kind relay (a Live-state native leg) and offlive (a native leg missing from
+# Live state) get the relay itself; notice (a claudex leg, already relayed by inbox)
+# gets the record its `bus adopt` needs. The sends run together under one deadline, so
+# a stalled store cannot outlast relay-on-live's kill. Fail-soft: a failed relay record
+# prints the SendMessage fallback; a failed offlive record is left for a hand relay.
 relay_bus() {
-    local dir label session i=0 n wait_for="" limit="${RELAY_BATCH_BUS_TIMEOUT:-15}"
+    local dir="" kind label session nonce ldoc res i=0 n=0 wait_for="" limit="${RELAY_BATCH_BUS_TIMEOUT:-15}"
     [ -n "$bus_queue" ] || return 0
     command -v timeout >/dev/null 2>&1 && wait_for="timeout $limit"
-    dir="$(tmpdir)" || { echo "BUS-RELAY-FAIL all (mktemp failed)"; return 0; }
-    printf 'SUCCESSION bus record from %s: your console is now %s (no token here; the S1 relay quoting your token is the instruction).\n' "$sender" "$successor" > "$dir/body"
-    while read -r label session; do
+    if dir="$(tmpdir)"; then
+        relay_text "" > "$dir/relay"; cp "$dir/relay" "$dir/offlive"
+        printf 'SUCCESSION bus record from %s: your console is now %s (no token here; the S1 relay quoting your token is the instruction).\n' "$sender" "$successor" > "$dir/notice"
+        while read -r kind label session nonce ldoc; do
+            [ -n "$label" ] || continue
+            i=$((i + 1))
+            (
+                if err="$($wait_for "$bus" send "$session" "$dir/$kind" 2>&1 >/dev/null)"; then
+                    echo "BUS-RELAY $label ok"
+                else
+                    [ "$?" -eq 124 ] && [ -n "$wait_for" ] && err="timed out after ${limit}s"
+                    echo "BUS-RELAY-FAIL $label (${err%%$'\n'*})"
+                fi
+            ) > "$dir/$i" &
+        done <<EOB
+$bus_queue
+EOB
+        wait
+    else
+        dir=""; echo "BUS-RELAY-FAIL all (mktemp failed)"
+    fi
+    while read -r kind label session nonce ldoc; do
         [ -n "$label" ] || continue
-        i=$((i + 1))
-        (
-            if err="$($wait_for "$bus" send "$session" "$dir/body" 2>&1 >/dev/null)"; then
-                echo "BUS-RELAY $label ok"
-            else
-                [ "$?" -eq 124 ] && [ -n "$wait_for" ] && err="timed out after ${limit}s"
-                echo "BUS-RELAY-FAIL $label (${err%%$'\n'*})"
-            fi
-        ) > "$dir/$i" &
+        n=$((n + 1)); res=""
+        [ -z "$dir" ] || res="$(cat "$dir/$n")"
+        [ -z "$res" ] || echo "$res"
+        case "$res:$kind" in
+            "BUS-RELAY $label ok:relay" | "BUS-RELAY $label ok:offlive") sent=$((sent + 1)) ;;
+            *:relay) printf 'SENDMESSAGE to=%s :: %s\n' "$session" "$(relay_text "$nonce")"; sent=$((sent + 1)) ;;
+            *:offlive) not_in_live "$label" "$ldoc" ;;
+        esac
     done <<EOB
 $bus_queue
 EOB
-    wait
-    n=1
-    while [ "$n" -le "$i" ]; do cat "$dir/$n"; n=$((n + 1)); done
-    rm -rf "$dir"
+    [ -z "$dir" ] || rm -rf "$dir"
+}
+# resolve_session <leg doc>: the session name is read from the live census, never
+# guessed: a leg launches under its full doc stem (dated, even -RESUME) or an undated
+# name. Candidates: the full stem first, then leg_identity's names; exactly one live
+# match (hits=1) is the session.
+resolve_session() {
+    local lnames
+    lstem="$(basename "$1" .md)"
+    lnames="$(leg_identity "$1")"; lnames="${lnames#*$'\t'}"
+    cands=",$lstem,$lnames,"
+    hits=0; lsession=""
+    while IFS=$'\t' read -r _cpid cname _rest; do
+        [ -n "$cname" ] || continue
+        case "$cands" in *",$cname,"*) hits=$((hits + 1)); lsession="$cname" ;; esac
+    done <<EOC
+$census_lines
+EOC
 }
 bus_queue=""
 # The live process census (pid<TAB>name<TAB>model<TAB>autocompact), taken once.
@@ -172,60 +220,57 @@ EOR
             echo "UNRESOLVED-LANE $label (lane $lane has no relay path, nothing sent) — relay by hand"
             continue ;;
     esac
-    # The session name is read from the live census, never guessed: a leg launches under
-    # its full doc stem (dated, even -RESUME) or an undated name. Candidates: the full
-    # stem first, then leg_identity's names; exactly one live match is the session.
-    lstem="$(basename "$ldoc" .md)"
-    lnames="$(leg_identity "$ldoc")"; lnames="${lnames#*$'\t'}"
-    cands=",$lstem,$lnames,"
-    hits=0; lsession=""
     if [ "$lane" = claudex ]; then
         # A claudex leg is not a `claude -n` process, so the census cannot resolve it:
         # its inbox is named for its doc stem.
-        hits=1; lsession="$lstem"
+        lstem="$(basename "$ldoc" .md)"; hits=1; lsession="$lstem"
     else
-        while IFS=$'\t' read -r _cpid cname _rest; do
-            [ -n "$cname" ] || continue
-            case "$cands" in *",$cname,"*) hits=$((hits + 1)); lsession="$cname" ;; esac
-        done <<EOC
-$census_lines
-EOC
+        resolve_session "$ldoc"
     fi
     if [ "$hits" -ne 1 ]; then
         echo "UNRESOLVED $label (candidates: ${cands#,}; $hits live match(es), nothing sent) — relay by hand"
         continue
     fi
-    text="SUCCESSION relay from $sender: your console is now $successor. Your current token \`$nonce\`. This is an S1 relay: accept it and keep working your sealed scope. Your quote-back (no reply needed) is a Results bullet containing exactly the following, with nothing after it on that line: SUCCESSION accepted: $successor replaces $sender"
     case "$lane" in
         claudex)
-            if bash "$send" "$lsession" "$text" --token "$nonce" --doc "$ldoc" >/dev/null; then
+            if bash "$send" "$lsession" "$(relay_text "$nonce")" --token "$nonce" --doc "$ldoc" >/dev/null; then
                 echo "SENT-INBOX $label ($lsession)"; sent=$((sent + 1))
-                [ -n "${HIMMEL_BUS_NAME:-}" ] && bus_queue="$bus_queue$label $lsession"$'\n'
+                [ -n "${HIMMEL_BUS_NAME:-}" ] && bus_queue="${bus_queue}notice $label $lsession - $ldoc"$'\n'
             else
                 echo "FAILED-INBOX $label ($lsession)"; rc=1
             fi ;;
-        *) printf 'SENDMESSAGE to=%s :: %s\n' "$lsession" "$text"; sent=$((sent + 1))
-           [ -n "${HIMMEL_BUS_NAME:-}" ] && bus_queue="$bus_queue$label $lsession"$'\n' ;;
+        *) if [ -n "${HIMMEL_BUS_NAME:-}" ]; then
+               bus_queue="${bus_queue}relay $label $lsession $nonce $ldoc"$'\n'
+           else
+               printf 'SENDMESSAGE to=%s :: %s\n' "$lsession" "$(relay_text "$nonce")"; sent=$((sent + 1))
+           fi ;;
     esac
 done <<EOF
 $entries
 EOF
-relay_bus
-# A manifest leg the Live state does not list is reported, never silently dropped.
+# A manifest leg the Live state does not list is bus-relayed when it is a live native
+# leg and the console has a bus identity, else reported, never silently dropped.
 total="$(printf '%s\n' "$entries" | awk 'NF' | wc -l | tr -d ' ')"
 if [ -f "$manifest" ]; then
     total=0
-    mrows="$(jq -r '.legs[] | select(.lockless == true | not) | "\(.label) \(.doc)"' "$manifest" 2>/dev/null)"
-    while read -r mlabel mdoc; do
+    mrows="$(jq -r '.legs[] | select(.lockless == true | not) | [.label, ((.lane // "") | if . == "" then "unknown" else . end), .doc] | @tsv' "$manifest" 2>/dev/null)"
+    while IFS=$'\t' read -r mlabel mlane mdoc; do
         [ -n "$mlabel" ] || continue
         if wrapped "$mdoc"; then continue; fi
         total=$((total + 1))
         if ! printf '%s\n' "$entries" | cut -d: -f1 | grep -Fxq -- "$mlabel"; then
-            echo "NOT-IN-LIVE-STATE $mlabel ($mdoc) — in the fleet manifest, not in ## Live state legs:; relay by hand if it is live"
+            if [ -n "${HIMMEL_BUS_NAME:-}" ] && [ "$mlane" = native ] && resolve_session "$mdoc" && [ "$hits" -eq 1 ]; then
+                bus_queue="${bus_queue}offlive $mlabel $lsession - $mdoc"$'\n'
+            else
+                not_in_live "$mlabel" "$mdoc"
+            fi
         fi
     done <<EOF3
 $mrows
 EOF3
+fi
+relay_bus
+if [ -f "$manifest" ]; then
     # lockless watched rows hold no queue lock and no token, so there is
     # nothing to relay; they are listed so the successor watches them by mechanism.
     lrows="$(jq -r '.legs[] | select(.lockless == true) | "LOCKLESS \(.label) lane=\((.lane // "") | if . == "" then "unknown" else . end) doc=\(.doc)"' "$manifest" 2>/dev/null)"

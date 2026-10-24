@@ -57,7 +57,7 @@ Run these, in order, and write the result as the first bullet under
 9. **Re-brief every inherited leg BEFORE you announce yourself**: each leg's brief
    names the predecessor (the one it last accepted), and until it verifies the succession it can only refuse
    you. Per leg, ask the predecessor to re-brief that leg **from its own socket**,
-   naming you (your session name) and quoting the leg's current token. That relay
+   naming you (your session name), by bus record or quoting the worker's token. That relay
    is complete on its own: it MAY also carry a fresh `{{LETTER}}-<leg>-<hex>`
    token you mint, but rotation is not a precondition of succession. If the
    predecessor is gone, send the chain form yourself — **both** the leg's current
@@ -238,8 +238,8 @@ At **{{FILL_PERCENT}} % fill, 90 k input in one turn, or `WAKE handover-budget`*
 3. `touch` the signal path from step 1 and hand your live legs to the successor.
 4. **Re-brief every live worker before you release, never by hand.** On
    `WAKE relay-on-live` (set by `next` for a bus chief) or by running
-   `relay-batch.sh <this doc> --successor <it>`: it sends each worker's `bus adopt`
-   record plus the claudex relays and prints one `SENDMESSAGE` per native worker
+   `relay-batch.sh <this doc> --successor <it>`: a bus record relays each worker,
+   plus the claudex relays; a failed or absent one prints a `SENDMESSAGE`
    (successor, worker's token): send each from **your own session**. That run is the
    relay; never re-run it (a retry resends claudex inbox relays). It carries no fresh
    token: a rotating successor adds it by hand to a native line (claudex workers are

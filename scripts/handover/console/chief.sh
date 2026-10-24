@@ -1687,13 +1687,38 @@ report_handoff_placeholders() {
     printf '%s\n' "$left" | sed 's/^/  /' >&2
 }
 
+# A decisions: line over CHIEF_DECISIONS_SPILL_BYTES (default 4096) is written
+# byte for byte to a fresh specs/decisions/console-decisions-<date>[-N].md under
+# <dir>, and a one-line pointer naming it, and every decisions file the line
+# names, is printed instead, so the successor's handover still finds each ruling
+# verbatim (decisions_kept_verbatim). A failed write prints the line unchanged.
+# Args: decisions line, dir, predecessor name.
+spill_decisions() {
+    local line="$1" dir="$2" from="$3" base rel n=1 bytes names
+    bytes="$(printf '%s' "$line" | wc -c | tr -d ' ')"
+    [ "$bytes" -gt "${CHIEF_DECISIONS_SPILL_BYTES:-4096}" ] || { printf '%s\n' "$line"; return 0; }
+    base="specs/decisions/console-decisions-$(date +%F)"
+    rel="$base.md"
+    while [ -e "$dir/$rel" ]; do n=$((n + 1)); rel="$base-$n.md"; done
+    if mkdir -p "$dir/specs/decisions" && (set -C; printf '%s\n' "$line" > "$dir/$rel") 2>/dev/null; then
+        names="$(printf '%s\n' "$line" | grep -o 'specs/decisions/console-decisions-[0-9-]*\.md' | sort -u | tr '\n' ' ')"
+        printf 'decisions: carried verbatim in %s (%s bytes from %s; read it before ruling)%s\n' "$rel" "$bytes" "$from" "${names:+; it names ${names% }}"
+    else
+        err "warning: could not spill the decisions: line to $dir/$rel; carried it unchanged"
+        printf '%s\n' "$line"
+    fi
+}
+
 # The shift-spanning Live-state lines `next` copies verbatim into the
-# successor doc; `epics:` and `decisions:` fall back to `none`.
+# successor doc; `epics:` and `decisions:` fall back to `none`, and an
+# oversize `decisions:` line is spilled (spill_decisions).
+# Args: live state, successor doc dir, predecessor name.
 carried_live_state() {
     local live="$1" field line
     for field in epics decisions priority versions tracker-plan release rm focus-version focus-plan; do
         line="$(printf '%s\n' "$live" | grep -m 1 "^$field:")" || line=""
         case "$field" in epics|decisions) [ -n "$line" ] || line="$field: none" ;; esac
+        [ "$field" != decisions ] || line="$(spill_decisions "$line" "$2" "$3")"
         [ -z "$line" ] || printf '%s\n' "$line"
     done
 }
@@ -1940,7 +1965,7 @@ cmd_next() {
         RELEASE_TOKEN "none yet — acquire your own at ACTION ZERO and record it here" \
         BOARD_URL "$predecessor_board" \
         TRACKER_URL "$predecessor_tracker" \
-        CARRIED_LIVE_STATE "$(carried_live_state "$predecessor_live_state")" \
+        CARRIED_LIVE_STATE "$(carried_live_state "$predecessor_live_state" "$(dirname "$doc")" "$predecessor_base")" \
         CARRIED_DIRECTION "$predecessor_direction" \
         MODEL "$model" \
         PROJECT "$project_doc_value"
