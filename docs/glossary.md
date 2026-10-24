@@ -16,14 +16,18 @@ Each headword is the plain name people read in the docs and UI. The repo's own
 name, the one that ids, env vars, file names, flags and command names use, is
 the alias in brackets. Keep repo identifiers in code spans (`/console`,
 `HIMMEL_CONSOLE_LEG`, `headed-arm-leg.sh`, `go.sh`). Repo identifiers are being
-renamed to the plain names (HIMMEL-5689); every old name stays a read-both alias
-for one release, listed in [Identifier aliases](#identifier-aliases).
+renamed to the plain names (HIMMEL-5689). That migration is a known breaking
+change: the old names stop working when their rename PR lands, with no alias
+(the four slices that merged before that ruling keep aliases until HIMMEL-6647 removes them).
+They are listed in [Renamed identifiers](migration/renamed-identifiers.md), a
+temporary side doc that is removed once the rename is done; the plan is in
+[Identifier renames](#identifier-renames).
 In prose, say the plain name, and the old name once in brackets the first time.
 
 | Term | Meaning |
 |---|---|
 | **Automated review** [CR, code review] | The pre-PR review gate and everything named for it: the review-owed marker (CR marker), the CR ledger, the critic panel, `/pr-check` (ruled 2026-09-24, operator). A human read of the PR is "human review". CodeRabbit is one best-effort CI reviewer inside that gate and is always spelled out, never abbreviated CR. |
-| **Chief** [supervisor session, console] | The operator's chief of staff: a persistent, operator-facing session that owns the shift. It holds the queue lock on its own document, the GO authority and the token (nonce) mint. It dispatches workers, watches the fleet, acts on rulings and merges on GO, and does no implementation itself. `/console new` starts one today; `/chief` becomes the canonical command in slice V5, and `/supervisor-session` stays as a permanent alias. In prose say "the chief"; never "chief session" and never a bare "supervisor": `scripts/telegram/supervisor.ts` is a process keeper. |
+| **Chief** [supervisor session, console] | The operator's chief of staff: a persistent, operator-facing session that owns the shift. It holds the queue lock on its own document, the GO authority and the token (nonce) mint. It dispatches workers, watches the fleet, acts on rulings and merges on GO, and does no implementation itself. `/chief new` starts one; `/supervisor-session` stays as a permanent alias. In prose say "the chief"; never "chief session" and never a bare "supervisor": `scripts/telegram/supervisor.ts` is a process keeper. |
 | **Judge session** / **judge subagent** [judge, judge call] | A clean session, headed or headless, spawned for one question, sometimes on a deliberately thin brief. **Advisory: it rules, the chief acts.** Several may run in parallel on one question with different scopes. A judge session is a worker of the judge kind; a judge subagent is an in-process child. See [Judge: call and session](#judge-call-and-session). A judge verdict stays "judge verdict". |
 | **Consolidator** | Combines several judges' outputs into one reconciled answer, so the chief does not absorb N judgments. A lexicon term only: nothing in the repo implements it yet. |
 | **Relay** [communicator] | Transport. Receives and moves messages and owns the machine wakes. Also called the *communicator* in the design spec; the code name is `relay`. It is launched as a worker of the chief (`headed-arm-leg.sh --relay`), never as a chief. |
@@ -46,14 +50,14 @@ The terms above are defined once, in the lexicon. This is an alias index for
 the harness terms, which are defined in the
 [harness wiring lexicon](#harness-wiring-lexicon) under their repo names:
 ids, env vars, file names, flags and command names carry those names until
-their HIMMEL-5689 slice lands (see [Identifier aliases](#identifier-aliases)). In prose for people, use
+their HIMMEL-5689 slice lands (see [Identifier renames](#identifier-renames)). In prose for people, use
 the plain name, and say the old name once, the first time, in brackets.
 
 | Plain name | Old name (alias) | Notes |
 |---|---|---|
 | **auto-ship step** | leg (initiative sense) | A step `HIMMEL_INITIATIVE` takes by itself, such as prcheck or merge. |
-| **usage** | bank | `PARKED-BANK` and the `CADENCE_BANK_*` variables are renamed by HIMMEL-5689 slice V1; old names work until the removal release. |
-| **weekly limit override** | bank lift | Renamed by slice V1. |
+| **usage** | bank | `PARKED-BANK` and the `CADENCE_BANK_*` variables were renamed by HIMMEL-5689 slice V1; the old names still work until HIMMEL-6647. |
+| **weekly limit override** | bank lift | Renamed by slice V1; the old names still work until HIMMEL-6647. |
 | **review-owed marker** | CR marker | |
 | **finding status** | verdict (of a CR finding) | A judge verdict stays "judge verdict". |
 | **variant sweep** | class sweep | Replaces the 10-17 interim name "sibling sweep". Named for CodeQL's "variant analysis". The `SWEEP` ledger keyword is unchanged. |
@@ -64,7 +68,7 @@ the plain name, and say the old name once, the first time, in brackets.
 | **warn-only** | advisory | |
 | **worker system prompt** | preface | There are five prefaces (worker, worker claudex, worker openrouter, judge, consult). |
 | **usage-cap auto-relaunch** | watchdog | Only where the README, getting-started and why-himmel mean the auto-arm hooks. A wall-clock killer is a "run timeout". |
-| **AFK (unattended) mode** | overnight mode | `/overnight-shift` and `overnight-mode.md` are renamed by slice V3 to `/afk-shift` and `afk-mode.md`; the old names are an alias command and a redirect stub until the removal release. |
+| **AFK (unattended) mode** | overnight mode | `/overnight-shift` and `overnight-mode.md` were renamed by slice V3 to `/afk-shift` and `afk-mode.md`; the old ones are aliases until HIMMEL-6647. |
 | **soft block (speed bump)** | speed bump | Stops only the accidental form. |
 | **revision** | RETASK | The `RETASK` block keyword stays: code parses it. |
 | **token** | nonce | "Nonce" stays an alias here; ids keep it. |
@@ -76,38 +80,42 @@ the word; "handoff" already has four senses), attestation trailer ("trailer" is
 git's own term), floor, anchor, lane, queue lock. The identifiers that stay are
 listed under [Do not rename](#do-not-rename).
 
-## Identifier aliases
+## Identifier renames
 
 Rename plan: HIMMEL-5689. Names ruled 2026-10-20 (operator): chief, worker, dependency chain, parallel wave.
-The rest follow the HIMMEL-5689 plan. A row is a plan until its slice merges: until then only the old name
-exists. Each old name keeps working through the
-alias mechanism below until the removal release, the release after v1.1.3.
-Mechanisms: **env** = read-both via `scripts/lib/env-alias.sh` (`alias_env NEW OLD`;
-writers export both; a guard keyed on an identity marker uses `env_alias_any`
-and denies when either name is set); **wrapper** = a script at the old path that
-`exec`s the new one; **symlink** = the old directory links to the new one;
-**command alias** = a slash-command file forwarding to the new one.
+The rest follow the HIMMEL-5689 plan. Slices V3, V1, V2 and V5 merged before the ruling below, with
+aliases: their new names work and their old names still work through a forwarder at the old path, a
+command alias or a read-both env name. V4a-1 did the same for the worker env names and hooks.
+HIMMEL-6647 removes those leftovers first. Every other row is a plan until its slice merges: until then
+only the old name exists. **This migration is a known breaking change** (operator ruling 2026-10-24): from
+the ruling on, an old name does not keep working after its rename PR merges, so there is no read-both env
+alias, no wrapper at the old path, no redirect stub and no alias-pin test. Every old name, its new name and
+each place the code uses it are listed in [Renamed identifiers](migration/renamed-identifiers.md), with
+the order of the rename PRs and the file names the table below does not name, which need a ruling. That
+side doc is temporary: HIMMEL-6647 deletes it once `git grep` finds no old name outside it, the changelog
+and the handover records (`handovers/`, which keep the spelling they were written with). The release
+changelog (HIMMEL-7006) names the breaking change.
 
-| Family | Old name | New name | Slice | Alias mechanism | Removed in |
-|---|---|---|---|---|---|
-| F1 | `HIMMEL_CONSOLE_LEG`, `_RELAY`, `_JUDGE` | kept (OD-1): historical prefix, set only by launchers; the chief and its workers carry it | — | none | n/a |
-| F1b | `HIMMEL_CONSOLE_{DOC,NAME,WORKDIR,RUNDIR}`, `HIMMEL_CONSOLE_JUDGE_{DOC,QID,EFFORT}` | kept (OD-1) | — | none | n/a |
-| F1c | operator-typed `CONSOLE_*` (`CONSOLE_FG_OK`, `CONSOLE_DISPATCH_OK`, `CONSOLE_DISPATCH_DISABLE`, `CONSOLE_CONTEXT`, …) | `CHIEF_*` | V5 | env | release after v1.1.3 |
-| F2 | `HIMMEL_LEG_*`, `HIMMEL_LEAN_LEG`, `LEG_*`, `HEADED_ARM_LEG_*` | `HIMMEL_WORKER_SESSION_*`, `HIMMEL_LEAN_WORKER_SESSION`, `WORKER_SESSION_*`, `HEADED_ARM_WORKER_*` (never `HIMMEL_WORKER_*`) | V4a | env | release after v1.1.3 |
-| F3 | `CADENCE_BANK_*`, `BANK_LIFT_*`, `CODEX_BANK_*`, `CLAUDEX_BANK_*`, `PARKED-BANK` | `CADENCE_USAGE_*`, `USAGE_LIFT_*`, `CODEX_USAGE_*`, `CLAUDEX_USAGE_*`, `PARKED-USAGE` (usage, not budget) | V1 | env; the marker token is accepted in both spellings, the old one is emitted until the removal release | release after v1.1.3 |
-| F4 | `bank-preflight.sh`, `bank-lift.sh` (+ `bank-lift.json`), `bank-monitor.sh`, `bank-attribution.sh`, `bank-status` | `usage-*` | V1 | wrapper | release after v1.1.3 |
-| F5 | `clear-cr-marker.sh`, `cr-*.sh`, `CR_MARKER*` | `clear-review-marker.sh`, `review-*.sh` (the CodeRabbit scripts to `coderabbit-*`), `REVIEW_MARKER*`; the `<git-dir>/cr-pending/` dir keeps its name (OD-3) | V2 | wrapper; env | release after v1.1.3 |
-| F6 | `headed-arm-leg.sh` | `headed-arm-worker.sh` | V4b | wrapper | release after v1.1.3 |
-| F7 | `leg-*.sh` helpers, `leg-digest*`, `close-wrapped-leg.sh`; profiles `leg-impl`, `leg-bus`, `leg-vm` | `worker-*`, `close-wrapped-worker.sh`; profiles `worker-impl`, `worker-bus`, `worker-vm` | V4b; V4a (profiles) | wrapper; the profile flag accepts both | release after v1.1.3 |
-| F8 | `scripts/handover/console-kit/`, `leg-preface*.md`, `console-template.md`, `leg-brief-template.md` | the former `chief-kit/` directory, `worker-preface*.md`, `chief-template.md`, `worker-brief-template.md` | T; M (the directory) | symlink; the launcher reads both preface names | release after v1.1.3 |
-| F9 | `/console`, `console.sh`, `console-context.sh`; skills `himmel-ops:console`, `himmel-ops:supervisor-session`; agents `console-judge`, `console-judge-ro` | `/chief` canonical, `chief.sh`, `chief-context.sh`; skill `himmel-ops:chief`; agents `judge`, `judge-ro` (never `chief-judge*`). `/supervisor-session` stays a permanent alias | V5 | command alias; wrapper; the dispatch guard reads both agent ids, exact match | release after v1.1.3 (`/supervisor-session` never) |
-| F10 | `overnight-shift`, `overnight-mode.md`, `OVERNIGHT_*`, `HIMMEL_OVERNIGHT`, `HIMMEL_INITIATIVE_OVERNIGHT` | `afk-shift`, `afk-mode.md`, `AFK_*`, `HIMMEL_AFK`, `HIMMEL_INITIATIVE_AFK` | V3 | command alias; env; redirect stub | release after v1.1.3 |
-| F11 | `watchdog` (auto-arm hooks only) | `auto-relaunch` in prose; ids deferred to the removal-release review | — | none yet | n/a |
-| F13 | `class-sweep`, `missing-class-sweep` (the `SWEEP` ledger keyword is unchanged) | `variant-sweep`, `missing-variant-sweep` | V2 | env; the exit reason is accepted in both spellings | release after v1.1.3 |
-| F14 | `speed bump` (message text) | `soft block` | D | none; text only | n/a |
-| F15 | fleet-sense `chain`, `wave` (and the interim `ticket sequence`, `batch`) | dependency chain, parallel wave: glossary and prose only; no fleet-sense identifier exists. Reserved forms: `DEPENDENCY_CHAIN_*`, `PARALLEL_WAVE_*` | R2, T, D | none; text only | n/a |
-| F16 | tick fields `legs=`, `legset=`, `bank=` | `workers=`, `workerset=`, `usage=`; `tails=` and `parked=` keep their names | T | the waiter reads both | release after v1.1.3 |
-| F17 | hooks `block-leg-askuserquestion.sh`, `guard-leg-wakeup.sh`, `console-compact-reinject.sh`, `guard-console-foreground.sh` | `block-worker-askuserquestion.sh`, `guard-worker-wakeup.sh`, `chief-*` | V4a; V5 | forwarders until the operator settings step | release after v1.1.3 |
+| Family | Old name | New name | Slice |
+|---|---|---|---|
+| F1 | `HIMMEL_CONSOLE_LEG`, `_RELAY`, `_JUDGE` | kept (OD-1): historical prefix, set only by launchers; the chief and its workers carry it | — |
+| F1b | `HIMMEL_CONSOLE_{DOC,NAME,WORKDIR,RUNDIR}`, `HIMMEL_CONSOLE_JUDGE_{DOC,QID,EFFORT}` | kept (OD-1) | — |
+| F1c | operator-typed `CONSOLE_*` (`CONSOLE_FG_OK`, `CONSOLE_DISPATCH_OK`, `CONSOLE_DISPATCH_DISABLE`, `CONSOLE_CONTEXT`, …) | `CHIEF_*` | V5 |
+| F2 | `HIMMEL_LEG_*`, `HIMMEL_LEAN_LEG`, `LEG_*`, `HEADED_ARM_LEG_*` | `HIMMEL_WORKER_SESSION_*`, `HIMMEL_LEAN_WORKER_SESSION`, `WORKER_SESSION_*`, `HEADED_ARM_WORKER_*` (never `HIMMEL_WORKER_*`) | V4a |
+| F3 | `CADENCE_BANK_*`, `BANK_LIFT_*`, `CODEX_BANK_*`, `CLAUDEX_BANK_*`, `PARKED-BANK` | `CADENCE_USAGE_*`, `USAGE_LIFT_*`, `CODEX_USAGE_*`, `CLAUDEX_USAGE_*`, `PARKED-USAGE` (usage, not budget) | V1 |
+| F4 | `bank-preflight.sh`, `bank-lift.sh` (+ `bank-lift.json`), `bank-monitor.sh`, `bank-attribution.sh`, `bank-status` | `usage-preflight.sh`, `usage-lift.sh` (+ `usage-lift.json`), `usage-monitor.sh`, `usage-attribution.sh`, `usage-status` | V1 |
+| F5 | `clear-cr-marker.sh`, `cr-*.sh`, `CR_MARKER*` | `clear-review-marker.sh`, `review-*.sh` (the CodeRabbit scripts to `coderabbit-*`), `REVIEW_MARKER*`; the `<git-dir>/cr-pending/` dir keeps its name (OD-3) | V2 |
+| F6 | `headed-arm-leg.sh` | `headed-arm-worker.sh` | V4b |
+| F7 | `leg-*.sh` helpers, `leg-digest*`, `close-wrapped-leg.sh`; profiles `leg-impl`, `leg-bus`, `leg-vm` | `worker-*`, `close-wrapped-worker.sh`; profiles `worker-impl`, `worker-bus`, `worker-vm` | V4b; V4a (profiles) |
+| F8 | `scripts/handover/console-kit/`, `leg-preface*.md`, `console-template.md`, `leg-brief-template.md` | the former `chief-kit/` directory, `worker-preface*.md`, `chief-template.md`, `worker-brief-template.md` | T; M (the directory) |
+| F9 | `/console`, `console.sh`, `console-context.sh`; skill `himmel-ops:console`; agents `console-judge`, `console-judge-ro` | `/chief` canonical, `chief.sh`, `chief-context.sh`; skill `himmel-ops:chief`; agents `judge`, `judge-ro` (never `chief-judge*`). `/supervisor-session` and `himmel-ops:supervisor-session` stay permanent aliases (OD-6) | V5 |
+| F10 | `overnight-shift`, `overnight-mode.md`, `OVERNIGHT_*`, `HIMMEL_OVERNIGHT`, `HIMMEL_INITIATIVE_OVERNIGHT` | `afk-shift`, `afk-mode.md`, `AFK_*`, `HIMMEL_AFK`, `HIMMEL_INITIATIVE_AFK` | V3 |
+| F11 | `watchdog` (auto-arm hooks only) | `auto-relaunch` in prose; ids deferred until a new id name is ruled | — |
+| F13 | `class-sweep`, `missing-class-sweep` (the `SWEEP` ledger keyword is unchanged) | `variant-sweep`, `missing-variant-sweep` | V2 |
+| F14 | `speed bump` (message text) | `soft block` | D |
+| F15 | fleet-sense `chain`, `wave` (and the interim `ticket sequence`, `batch`) | dependency chain, parallel wave: glossary and prose only; no fleet-sense identifier exists. Reserved forms: `DEPENDENCY_CHAIN_*`, `PARALLEL_WAVE_*` | R2, T, D |
+| F16 | tick fields `legs=`, `legset=`, `bank=` | `workers=`, `workerset=`, `usage=`; `tails=` and `parked=` keep their names | T |
+| F17 | hooks `block-leg-askuserquestion.sh`, `guard-leg-wakeup.sh`, `console-compact-reinject.sh`, `guard-console-foreground.sh` | `block-worker-askuserquestion.sh`, `guard-worker-wakeup.sh`, `chief-*` | V4a; V5 |
 
 F12 (`chokepoint-*`, docs-only) is on hold. Session-name suffixes (`-console`,
 `-relay`, `-N<k>-`, `-judge-<qid>`) are data contracts and are not renamed;
@@ -124,7 +132,7 @@ Names that stay as they are, and why. A rename slice and the old-term lint skip 
 | The `<git-dir>/cr-pending/` dir (OD-3) | An on-disk name nobody types, with readers in three languages; one missed reader fails open on `gh pr create`. |
 | The `RETASK` block keyword | Code parses it. Prose says "revision". |
 | The `leg-burn:` PR-body line, `SWEEP` ledger rows, tick `tails=` and `parked=` | Data contracts. |
-| The Results markers (`LIVE`, `WRAPPED`, …) | Data contract; `PARKED-BANK` is read-both, not dropped. |
+| The Results markers (`LIVE`, `WRAPPED`, …) | Data contract; `PARKED-BANK` was renamed to `PARKED-USAGE` by slice V1; handover docs already written keep the old spelling. |
 | `2026-07-28-chain-ledger.md`, frozen fixtures (`*/fixtures/**`) | Recorded data. |
 | The session-name suffix `-console` | A data contract (`-chief` is accepted in addition). |
 | The initiative chain `legs.sh` / `resolve_legs` | The auto-ship step sense, not the fleet sense. |
