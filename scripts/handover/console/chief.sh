@@ -1975,7 +1975,7 @@ cmd_next() {
         hf_direction="${hf_chain:+$hf_chain
 }$predecessor_direction"
         hf_wrapped="$(wrapped_open_prs_section "$predecessor_doc")"
-        hf_wrapped_bytes="$(printf '%s\n' "$hf_wrapped" | wc -c)"
+        hf_wrapped_bytes="$(printf '%s\n' "$hf_wrapped" | wc -c | tr -d ' ')"
         while :; do
             render_template "$handoff_template" "$predecessor_handoff" \
                 CURRENT_DIRECTION "$hf_direction" \
@@ -2007,7 +2007,7 @@ cmd_next() {
         [ -z "$hf_wrapped" ] || printf '%s\n' "$hf_wrapped" >> "$predecessor_handoff"
         # Still over budget after the pointer pass: the remainder is the rulings
         # and the wrapped-PR list, which are never trimmed — say so loudly.
-        hf_total="$(wc -c < "$predecessor_handoff")"
+        hf_total="$(wc -c < "$predecessor_handoff" | tr -d ' ')"
         if [ "$hf_total" -gt "$hf_budget" ]; then
             hf_note="HANDOFF over budget: $hf_total bytes (limit $hf_budget); wrapped-PR list $hf_wrapped_bytes bytes"
             printf '\n> %s\n' "$hf_note" >> "$predecessor_handoff"

@@ -723,8 +723,8 @@ fi
 grep -qi "cannot resolve this repo" "$TMP/err-leg-nwo-timeout-blocks" || { echo "FAIL leg-nwo-timeout-blocks reason missing"; fail=$((fail+1)); }
 rm -f "$GOROOT/.locks/go/42.abc123"
 
-# ── the case above still has a REAL `timeout`/`gtimeout` on
-# PATH. Strip both (shadow them with a stub whose `--version` fails, so
+# ── the case above ran with the portable shim (or a real `timeout`) on
+# PATH. Strip both `timeout` and `gtimeout` (shadow them with a stub whose `--version` fails, so
 # timeout-bin.sh's resolver finds neither and leaves `_TIMEOUT_BIN` empty —
 # the exact host shape the ticket is about) and prove the hook still bounds
 # a hanging `gh repo view`, not just the GNU-timeout-present path.

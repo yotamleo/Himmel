@@ -81,12 +81,12 @@ check "luna gains the five ignore entries" \
   '"graphify-out/**" "60-Maps/graph/**" "handovers/**/verdicts/*/scratch/**" "handovers/**/archive/**" "sessions/_archive/**" ' "$luna_ign"
 check "the luna-archive collection is added over the same vault" \
   "    path: $V|    pattern: \"{handovers/**/archive/**/*.md,sessions/_archive/**/*.md}\"" \
-  "$(awk '/^  luna-archive:/{f=1;next} f&&/^  [^ ]|^[^ ]/{f=0} f{print}' "$CFG" | paste -sd'|')"
+  "$(awk '/^  luna-archive:/{f=1;next} f&&/^  [^ ]|^[^ ]/{f=0} f{print}' "$CFG" | paste -sd'|' -)"
 him_ign="$(awk '/^  himmel:/{f=1;next} f&&/^  [^ ]/{f=0} f&&/^      - /{print $2}' "$CFG" | tr '\n' ' ')"
 check "himmel's own ignore list is untouched" '"graphify-out/**" "**/fixtures/**" ' "$him_ign"
 check "other collections and models survive" 3 "$(grep -c -E '^  (ggs-local|himmel):$|^models:$' "$CFG")"
 check "luna-archive sits before models" "luna-archive:|models:" \
-  "$(grep -E '^  luna-archive:$|^models:$' "$CFG" | tr -d ' ' | paste -sd'|')"
+  "$(grep -E '^  luna-archive:$|^models:$' "$CFG" | tr -d ' ' | paste -sd'|' -)"
 cp "$CFG" "$W/c1.once"
 bash "$SUT" --vault "$V" --qmd-config "$CFG" --apply >/dev/null 2>&1
 check "a second apply is a no-op" 0 "$(cmp -s "$CFG" "$W/c1.once" && echo 0 || echo 1)"
@@ -96,7 +96,7 @@ V="$W/v1b"; make_vault "$V"; CFG="$W/c1b.yml"; write_cfg "$CFG" "$V"
 awk '/^models:/{print "settings:"; print "  keep: 1"} {print}' "$CFG" > "$CFG.n" && mv "$CFG.n" "$CFG"
 bash "$SUT" --vault "$V" --qmd-config "$CFG" --apply >/dev/null 2>&1
 check "luna-archive sits inside collections, before the next section" "collections:|luna-archive:|settings:|models:" \
-  "$(grep -E '^collections:$|^  luna-archive:$|^models:$|^settings:$' "$CFG" | tr -d ' ' | paste -sd'|')"
+  "$(grep -E '^collections:$|^  luna-archive:$|^models:$|^settings:$' "$CFG" | tr -d ' ' | paste -sd'|' -)"
 
 # --- a pre-existing luna ignore list is merged, not replaced ------------------
 V="$W/v2"; make_vault "$V"; CFG="$W/c2.yml"; write_cfg "$CFG" "$V"

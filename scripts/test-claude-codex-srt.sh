@@ -16,7 +16,7 @@ bad() { echo "FAIL $1"; fails=$((fails + 1)); }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/claude-codex-srt-test.XXXXXX")" || exit 1
 # the launcher resolves physical paths; macOS's /tmp is a symlink to /private/tmp
-TMP="$(cd "$TMP" && pwd -P)"
+TMP="$(cd "$TMP" && pwd -P)" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 HOME_F="$TMP/home"; BIN="$TMP/bin"; WT="$TMP/wt"; SCRATCH="$TMP/scratch"; HANDOVER="$TMP/handover"

@@ -12,7 +12,7 @@ fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
 T="$(mktemp -d "${TMPDIR:-/tmp}/leg-graph-test.XXXXXX")" || exit 1
 # the script under test prints physical paths; macOS's /tmp is a symlink to /private/tmp
-T="$(cd "$T" && pwd -P)"
+T="$(cd "$T" && pwd -P)" || exit 1
 trap 'rm -rf "$T"' EXIT
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 P="$T/primary"

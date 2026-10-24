@@ -41,7 +41,7 @@ pass() { echo "PASS: $1"; }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/config-feed.XXXXXX") || exit 1
 # the code under test resolves physical paths; macOS's /tmp is a symlink to /private/tmp
-work=$(cd "$work" && pwd -P)
+work=$(cd "$work" && pwd -P) || exit 1
 trap 'rm -rf "$work"' EXIT
 
 # ── fixture repo root ───────────────────────────────────────────────────────

@@ -300,7 +300,8 @@ case "$1" in
 esac
 EOF
 chmod +x "$STUBS/pacman"
-export STUB_CLAUDE_PATH="$STUBS/claude"
+STUB_CLAUDE_PATH="$(cd "$STUBS" && pwd -P)/claude" || exit 1  # the updater asks pacman about the physical path (/tmp is /private/tmp on macOS)
+export STUB_CLAUDE_PATH
 run_only clis
 if has 'needs you.*sudo pacman -Syu claude-code' && [ ! -f "$STATE/pm.log" ] \
     && [ ! -f "$STATE/claude.update.log" ] && [ "$RC" -ne 0 ]; then

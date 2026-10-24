@@ -183,7 +183,7 @@ EOF
     _ver_row plugins "$ok/$total installed" "$total declared" behind "some not installed from @$mp_name, or shadowed by another marketplace${drifted:+; version drift:$drifted}"
     echo "    $ok/$total @$mp_name plugins installed from @$mp_name."
     if [ -n "$missing" ]; then
-        _probe_tool_row plugins skipped "$(printf '%s' "$missing" | sed 's/^ *//' | paste -sd ';' | sed 's/;/; /g')"
+        _probe_tool_row plugins skipped "$(printf '%s' "$missing" | sed 's/^ *//' | paste -sd ';' - | sed 's/;/; /g')"
     elif [ -n "$shadowed" ]; then
         _probe_tool_row plugins skipped "shadowed by another marketplace — see the migrate command above"
     fi

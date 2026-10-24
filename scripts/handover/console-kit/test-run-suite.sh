@@ -72,7 +72,7 @@ check "top: the top-level suite is not skipped" "0" "$(grep -c 'test-top.sh' "$C
 check "top: no suite is run outside the runner" "0" "$(grep -c '^scripts/test-top.sh$' "$CALLS")"
 
 : > "$CALLS"
-out="$(cd "$REPO/scripts/alpha" && bash "$(realpath --relative-to="$REPO/scripts/alpha" "$RS")" --runner "$WORK/runner.sh" scripts/alpha 2>&1)"; rc=$?
+out="$(cd "$REPO/scripts/alpha" && bash "$(python3 -c 'import os,sys; print(os.path.relpath(os.path.realpath(sys.argv[1]), os.path.realpath(sys.argv[2])))' "$RS" "$REPO/scripts/alpha")" --runner "$WORK/runner.sh" scripts/alpha 2>&1)"; rc=$?
 check "a relative \$0 from a subdirectory still runs" "0" "$rc"
 check "a relative \$0 from a subdirectory reaches the runner" "scripts/alpha" "$(head -1 "$CALLS")"
 

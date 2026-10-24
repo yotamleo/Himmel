@@ -2577,7 +2577,7 @@ check "81 refusal writes no HANDOFF" "$([ -f "$root/tester/dec81c/DEMO-nextleg-$
 mk81 dec81d "rename ruling 00:05; keep N2" "keep N2" "- 10:00 FINDING — DECISIONS-DROP: rename ruling superseded by the 10:00 ruling"; run81 dec81d
 check "81 shorter line plus DECISIONS-DROP bullet passes" "$rc81" "0"
 mk81 dec81d2 "rename ruling 00:05; keep N2" "keep N2"; printf -- '- DECISIONS-DROP: not in Results\n' >> "$root/tester/dec81d2/DEMO-nextleg-${today}B-console.md"
-sed -i 's/^## Results$/## Other/' "$root/tester/dec81d2/DEMO-nextleg-${today}B-console.md"; run81 dec81d2
+sed 's/^## Results$/## Other/' "$root/tester/dec81d2/DEMO-nextleg-${today}B-console.md" > "$root/tester/dec81d2.n" && mv "$root/tester/dec81d2.n" "$root/tester/dec81d2/DEMO-nextleg-${today}B-console.md"; run81 dec81d2
 check "81 DECISIONS-DROP bullet outside Results does not exempt" "$rc81" "1"
 mk81 dec81d3 "rename ruling 00:05; keep N2" "keep N2" "- 10:00 FINDING — DECISIONS-DROP: <reason>"; run81 dec81d3
 check "81 DECISIONS-DROP with a placeholder reason does not exempt" "$rc81" "1"
@@ -2591,7 +2591,7 @@ mk81 dec81h "none" "-"; run81 dec81h
 check "81 predecessor with placeholder decisions passes" "$rc81" "0"
 mk81 dec81i "-" "-"; run81 dec81i
 check "81 predecessor without a decisions line passes" "$rc81" "0"
-mk81 dec81j "rename ruling 00:05" "-"; sed -i '1s/successor to .*/successor to none (fill signal 70 %)/' "$root/tester/dec81j/DEMO-nextleg-${today}B-console.md"; run81 dec81j
+mk81 dec81j "rename ruling 00:05" "-"; sed '1s/successor to .*/successor to none (fill signal 70 %)/' "$root/tester/dec81j/DEMO-nextleg-${today}B-console.md" > "$root/tester/dec81j.n" && mv "$root/tester/dec81j.n" "$root/tester/dec81j/DEMO-nextleg-${today}B-console.md"; run81 dec81j
 check "81 doc with no predecessor passes" "$rc81" "0"
 mk81 dec81k "rename ruling 00:05" "-"; rm "$root/tester/dec81k/DEMO-nextleg-${today}A-console.md"; run81 dec81k
 check "81 predecessor doc absent passes" "$rc81" "0"

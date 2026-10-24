@@ -52,6 +52,12 @@ cat >"$STUBS/fake-smi" <<'EOF'
 [ -n "${FAKE_VRAM:-}" ] || exit 9
 echo "$FAKE_VRAM"
 EOF
+# uname stub: the capability rows model a Linux host, so an Apple-silicon runner
+# does not short-circuit to "build" before the nvidia-smi and meminfo seams.
+cat >"$STUBS/uname" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac
+EOF
 # Fake qmd: `embed --force` rewrites every vector's model to the one the config
 # names, and records what it saw; a plain `embed` prints the all-clear.
 cat >"$STUBS/qmd" <<'EOF'
@@ -424,14 +430,14 @@ assert_contains "the live index still holds gemma after the abort" "$GEMMA" "$(s
 PLUGIN_DAEMON="${QMD_DAEMON_SCRIPT:-$SCRIPT_DIR/../../marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh}"
 stale_verdicts() { # <script>: stale/live verdict per lock-dir shape
     bash -c '
-        eval "$(sed -n "/^swap_lock_stale() {/,/^}/p" "$1")"
+        eval "$(sed -n "$2" "$1")"
         d=$(mktemp -d) || exit 1; trap "rm -rf \"\$d\"" EXIT
         mkdir "$d/dead" "$d/live" "$d/nopid-fresh" "$d/nopid-old" "$d/junk"
         echo 2147483646 >"$d/dead/pid"; echo "$$" >"$d/live/pid"; echo abc >"$d/junk/pid"
         touch -t 200001010000 "$d/nopid-old" "$d/junk"
         for n in dead live nopid-fresh nopid-old junk; do
             if swap_lock_stale "$d/$n"; then echo "$n stale"; else echo "$n live"; fi
-        done' _ "$1"
+        done' _ "$1" '/^swap_lock_stale() {/,/^}/p'
 }
 want=$'dead stale\nlive live\nnopid-fresh live\nnopid-old stale\njunk stale'
 for copy in "$SCRIPT" "$PLUGIN_DAEMON"; do
@@ -472,7 +478,7 @@ new_home 50
 printf '%s\n' "$LOCAL_CFG" >"$(CFG)"; before="$(cksum <"$(CFG)")"
 rc=0; out=$(grun env QMD_RERANK_MODEL=openai:x FAKE_GATE_RC=1 FAKE_VRAM=24564 bash "$SCRIPT" set qwen 2>&1) || rc=$?
 assert_rc "env remote model + gate refusal aborts the write" 2 "$rc"
-assert_rc "the gate ran for a local-only config" 1 "$(wc -l <"$H/gate.log" 2>/dev/null || echo 0)"
+assert_rc "the gate ran for a local-only config" 1 "$({ wc -l <"$H/gate.log" 2>/dev/null || echo 0; } | tr -d ' ')"
 assert_rc "the live config is byte-identical after the refusal" 0 "$([ "$before" = "$(cksum <"$(CFG)")" ] && echo 0 || echo 1)"
 for v in QMD_EMBED_MODEL QMD_GENERATE_MODEL; do
     new_home "50$v"

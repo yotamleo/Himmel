@@ -742,7 +742,7 @@ for hook_mode in default skip; do
   [ "$hook_mode" != skip ] || hook_args+=(--skip-hooks)
   set +e
   out=$(PATH="$failurebin:$work/bin:$qmd_free_path" HOME="$failurehome" bash "$adopt" \
-        --profile core --scope project --target "$failuretarget" "${hook_args[@]}" 2>&1); rc=$?
+        --profile core --scope project --target "$failuretarget" ${hook_args[@]+"${hook_args[@]}"} 2>&1); rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "HIMMEL-2818 $hook_mode: plugin failure must abort adopt"
   grepq "$out" 'PLUGIN_INSTALL_FAILURE_STUB' \
