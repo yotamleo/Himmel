@@ -146,8 +146,8 @@ export default defineConfig({
         {
           label: 'Run many sessions',
           items: [
-            { label: 'Unattended runs', slug: 'handover/afk-mode' },
-            { label: 'Supervisor sessions', slug: 'handover/running-a-console' },
+            { label: 'AFK (unattended) runs', slug: 'handover/afk-mode' },
+            { label: 'The chief and its workers', slug: 'handover/running-a-console' },
             { label: 'Handover notes', slug: 'internals/handover-system' },
             { label: 'Orchestration patterns', slug: 'orchestration-patterns' },
             { label: 'Usage and cost', slug: 'token-economy' },

@@ -1,6 +1,6 @@
 # himmel
 
-> A harness that runs Claude Code as a managed, PR-gated, overnight-capable agent: hooks, git gates and guardrails enforce the workflow at the tool-call layer instead of asking the model to remember prose. Memory is durable, hand-editable markdown (handover files plus an optional companion vault), not a vector DB.
+> A harness that runs Claude Code as a managed, PR-gated agent that can run unattended: hooks, git gates and guardrails enforce the workflow at the tool-call layer instead of asking the model to remember prose. Memory is durable, hand-editable markdown (handover files plus an optional companion vault), not a vector DB.
 
 Working **inside** this repo? Read [CLAUDE.md](CLAUDE.md) first, the authoritative rule set. Just **pointed at** it to set it up? Start at Install. Everything below is a router: open the linked file.
 

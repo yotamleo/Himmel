@@ -80,7 +80,7 @@ commit gate and the worktree. The rest arrive as you add them, and the
 ## How it flows
 
 <p align="center">
-  <img src="docs/assets/flows.svg" alt="Four himmel flows, each a row of six steps: shipping a change, running a fleet of worker sessions from a supervisor session, carrying work across sessions, and finding what you already know" width="960">
+  <img src="docs/assets/flows.svg" alt="Four himmel flows, each a row of six steps: shipping a change, running a fleet of workers from a chief, carrying work across sessions, and finding what you already know" width="960">
 </p>
 
 The graph walks four flows that make up most of a day with himmel. Each box
@@ -95,15 +95,14 @@ format, secrets, the attestation lines that say what was tested. `/pr-check`
 then runs the review panel. Once CI is green on the suites the change touches,
 the PR merges and `/clean` prunes the finished worktree.
 
-**2. Run a fleet: one supervisor session, many worker sessions.** For bigger
-runs, one Claude session acts as the *supervisor session*. It plans the work
-and starts *worker sessions*, other Claude sessions that each own one ticket,
-one worktree and one PR. A worker session reports back with short status
-markers (`LIVE`, `READY`) and never merges on its own. The supervisor session
-checks the PR (and can ask an independent judge subagent for a second
-opinion), writes a GO file (merge approval) to sign off, and the worker
-session merges through `merge-on-green.sh`. The [glossary](docs/glossary.md) defines console,
-leg, judge and the rest.
+**2. Run a fleet: one chief, many workers.** For bigger runs, one Claude
+session acts as the *chief*. It plans the work and starts *workers*, other
+Claude sessions that each own one ticket, one worktree and one PR. A worker
+reports back with short status markers (`LIVE`, `READY`) and never merges on
+its own. The chief checks the PR (and can ask an independent judge subagent
+for a second opinion), writes a GO file (merge approval) to sign off, and the
+worker merges through `merge-on-green.sh`. The [glossary](docs/glossary.md)
+defines chief, worker, judge and the rest.
 
 **3. Carry work across sessions.** A session that has made decisions writes
 them into a handover doc with `/handover`. The doc lives in your handover
