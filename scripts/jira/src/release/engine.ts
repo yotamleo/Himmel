@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import {
   appendChain, contentSha, loadKey, mintKey, readChain, readSigned, withLock, withLockAsync, writeSigned, type Chain,
 } from './ledger.js';
+import { SECTOR_OPT_OUT, sectorField } from '../commands/sector.js';
 import { appendAdmission, assertAdmissionsWritable, readAdmissions } from '../commands/admissions-ledger.js';
 import { baselineId, effectOn, reduce, recordOf, scopeOk, terminalOf, unknownState, type ReleaseState } from './reducer.js';
 import type {
@@ -425,7 +426,8 @@ export function rule(ctx: Ctx, o: RuleOptions): RulingRow {
     if (!kinds) throw new Error(`release rule: ${req.verb} outcomes are ${Object.keys(OUTCOMES[req.verb]).join(', ')}`);
     if (!kinds.includes(o.op.kind)) throw new Error(`release rule: ${o.outcome} takes --op ${kinds.join('|')}`);
     checkOp(l.decl, o.op);
-    if (!o.sector.trim()) throw new Error('release rule: a ruling without a sector refuses; ask the console to set it');
+    const sector = o.sector.trim() || (sectorField() ? '' : SECTOR_OPT_OUT);
+    if (!sector) throw new Error('release rule: a ruling without a sector refuses; ask the console to set it');
     if (!o.ground.trim() || !o.reason.trim()) throw new Error('release rule: --ground and --reason are required');
 
     const s = reduceLoaded(l, { issues: null, sync: null });
@@ -458,7 +460,7 @@ export function rule(ctx: Ctx, o: RuleOptions): RulingRow {
     const id = seq(`R-${ctx.release}`, l.rulings.rows.map((r) => r.id));
     const row = appendChain<RulingRow>(f(ctx, 'rulings.jsonl'), l.k, {
       id, epoch: lease.epoch, req: req.req, ts: ts(ctx), verb: req.verb, key: req.key, op: o.op, outcome: o.outcome,
-      class: classOf(l.decl, o.op), sector: o.sector, ground: o.ground, reason: o.reason, supersedes: o.supersedes,
+      class: classOf(l.decl, o.op), sector, ground: o.ground, reason: o.reason, supersedes: o.supersedes,
       authority: o.authority, phase: 'intent',
     });
     const { prev: _p, mac: _m, ...rest } = req;

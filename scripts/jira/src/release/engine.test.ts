@@ -88,6 +88,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (savedLedger === undefined) delete process.env.HIMMEL_ADMISSIONS_LEDGER;
   else process.env.HIMMEL_ADMISSIONS_LEDGER = savedLedger;
 });
@@ -653,6 +654,7 @@ describe('rm-run: the on-demand release manager (HIMMEL-7201)', () => {
   });
 
   it('a decision the engine refuses is reported and its request stays claimed', async () => {
+    vi.stubEnv('JIRA_SECTOR_FIELD', 'customfield_10500');
     declared();
     ask('K-2');
     const lines = await rmRun(ctx(), async (input) => input.requests.map((q) => ({
@@ -660,6 +662,17 @@ describe('rm-run: the on-demand release manager (HIMMEL-7201)', () => {
     })));
     expect(lines).toEqual([expect.stringMatching(/^REFUSED Q-R1-0001: release rule: a ruling without a sector/)]);
     expect(state(ctx()).requests.claimed).toEqual(['Q-R1-0001']);
+  });
+
+  it('with no Sector field configured a ruling without a sector carries sector=none and applies', async () => {
+    vi.stubEnv('JIRA_SECTOR_FIELD', 'none');
+    declared();
+    ask('K-2');
+    const lines = await rmRun(ctx(), async (input) => input.requests.map((q) => ({
+      req: q.req, outcome: 'ADMIT', op: 'add', from: null, to: 'v1', sector: '', ground: 'regression', reason: 'x',
+    })));
+    expect(lines[0]).toMatch(/^RULING R-R1-0001 Q-R1-0001 INTAKE K-2 add backlog→v1 ADMIT current sector=none — regression: x/);
+    expect(jira.fv.get('K-2')).toEqual(['v1']);
   });
 
   it('a HOLD decision is reported as HELD, rules nothing and leaves the request claimed', async () => {

@@ -284,7 +284,9 @@ five minutes), not from a list in code. `jira sector setup [--dry-run] [--yes]
 [--sectors "A,B,C"]` explains what a sector is, proposes a default nine, creates
 the single-select field with its options, adds it to the default screen and
 prints the `jira.sectorField` config.json snippet (it never writes the file;
-config.json writes are operator-only); `--opt-out` prints the `none` snippet. Code:
+config.json writes are operator-only); `--opt-out` prints the `none` snippet. With no
+Sector configured a release ruling carries `sector=none` and applies (HIMMEL-7417); configured, a ruling
+without one still refuses. Code:
 `scripts/jira/src/commands/sector.ts` (config + options) and `sector-setup.ts`.
 
 **Bug placement (HIMMEL-6776).** `create --type Bug` without `--fix-version` is
