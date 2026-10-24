@@ -49,6 +49,11 @@ agent writes to those files yet.
 Secrets are read from `.env` only. A secret key planted in `himmel.conf` is
 never loaded.
 
+A policy key exported from a shell profile (for example a sourced
+`~/.config/himmel/env`) is process env too, so it is ignored with the same
+notice. Move it into `config.json` `.policy`; a behaviour key exported there
+still wins, as the list above says.
+
 The directory is always `$HOME/.himmel`. No environment variable moves it
 (`HIMMEL_LUNA_CONFIG_PATH`, which `himmelctl` honours for its own fields, is
 not consulted for policy).
@@ -94,6 +99,11 @@ behaviour config until the commit-message hook reads them through
 `load_policy`.
 
 ## Example files
+
+Tracked templates to copy: `docs/setup/himmel.conf.example` (every behaviour
+key, commented out) and `docs/setup/himmel-config.example.json` (the policy
+section, every key `null`, which reads as unset). `scripts/lib/test-load-config.sh`
+checks that each template names only keys of its own class.
 
 `~/.himmel/himmel.conf` uses the same `KEY=value` form as `.env`. It is
 parsed, never executed:

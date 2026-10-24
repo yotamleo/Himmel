@@ -148,6 +148,33 @@ assert_eq "(d) Bash cat himmel.conf.local is allowed" "0" "$(hook Bash command '
 assert_eq "(d) Read of himmel.conf is allowed" "0" "$(hook Read file_path "$HOME/.himmel/himmel.conf")"
 assert_eq "(d) Read of .env is denied" "2" "$(hook Read file_path "$REPO/.env")"
 
+# (f) The tracked templates only name keys of their own class, so an adopter
+# who copies them never parks a policy key in himmel.conf or a secret anywhere.
+CONF_TEMPLATE="$HERE/../../docs/setup/himmel.conf.example"
+POLICY_TEMPLATE="$HERE/../../docs/setup/himmel-config.example.json"
+conf_keys=$(sed -nE 's/^#?[[:space:]]*([A-Z][A-Z0-9_]*)=.*/\1/p' "$CONF_TEMPLATE" 2>/dev/null | sort -u)
+policy_keys=$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(Object.keys(d.policy||{}).join("\n"))' "$POLICY_TEMPLATE" 2>/dev/null)
+bad=""
+for k in $conf_keys; do
+    [ "$(run '_himmel_key_class "$k"')" = config ] || bad="$bad $k"
+done
+assert_eq "(f) himmel.conf.example names only behaviour keys" "yes|" "$([ -n "$conf_keys" ] && echo yes)|$bad"
+registry_conf_keys=$(awk '/^_himmel_key_class\(\)/{f=1} f&&/printf .config./{exit} f' "$LIB" \
+    | sed -n '/HANDOVER_DIR/,$p' | tr -d ' \\)' | tr '|' '\n' | sed '/^$/d' | sort -u)
+assert_eq "(f) himmel.conf.example names every behaviour key" "$registry_conf_keys" "$conf_keys"
+bad=""
+for k in $policy_keys; do
+    [ "$(run '_himmel_key_class "$k"')" = policy ] || bad="$bad $k"
+done
+assert_eq "(f) himmel-config.example.json .policy names only policy keys" "yes|" "$([ -n "$policy_keys" ] && echo yes)|$bad"
+
+# (g) The deprecation notice names the migration script as runnable now.
+out=$(run '_himmel_deprecation_notice HANDOVER_DIR')
+case "$out" in
+    *"once setup reads"*) assert_eq "(g) deprecation notice is current" "no stale clause" "$out" ;;
+    *) assert_has "(g) deprecation notice is current" "migrate-env-config.sh" "$out" ;;
+esac
+
 if [ "$FAILED" -gt 0 ]; then
     echo "test-load-config: $FAILED FAILED"
     exit 1

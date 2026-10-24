@@ -1,0 +1,39 @@
+# ~/.himmel/himmel.conf — himmel behaviour settings (non-secret).
+# Copy to ~/.himmel/himmel.conf and uncomment what you need. KEY=value lines,
+# parsed, never executed. A himmel.conf.local beside it overrides it for one
+# machine; a non-empty exported variable overrides both.
+#
+# Secrets stay in .env. Gate policy (CR_REQUIRE_CROSS_MODEL, CR_FLOOR_FALLBACK,
+# ARMAUTOMERGE) goes in ~/.himmel/config.json under "policy"
+# (docs/setup/himmel-config.example.json); a policy key here is ignored.
+# Meanings and defaults: .env.example. Layers: docs/internals/config-layers.md.
+
+# Handover state and identity
+# HANDOVER_DIR=/path/to/your/handover-repo/handovers
+# USER_SLUG=your-slug
+# LUNA_VAULT_PATH=/path/to/your/obsidian-vault
+
+# Commit-message gate
+# TRACKER=jira
+# TICKET_ID_REQUIRED=1
+# TICKET_ID_PATTERN=#[0-9]+
+# TICKET_ID_EXEMPT_AUTHORS=dependabot[bot],dependabot
+
+# Code review
+# CR_PROFILE=free,paid
+# CR_CLAUDE_AGENTS=1
+
+# Session hooks
+# HIMMEL_INITIATIVE=prcheck,pr,ticket,handover
+# HIMMEL_AFK=1
+# HIMMEL_INITIATIVE_AFK=all
+# Old names for the two above, read until the removal release:
+# HIMMEL_OVERNIGHT=1
+# HIMMEL_INITIATIVE_OVERNIGHT=all
+# HIMMEL_WHERE_ARE_WE=1
+# HIMMEL_WHERE_ARE_WE_STALE_HOURS=6
+# HIMMEL_DOC_FRESHNESS=all
+# HIMMEL_WORKTREE_NUDGE=1
+
+# Updates
+# HIMMEL_UPDATE_AUTOSTASH=1

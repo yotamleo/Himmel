@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "policy": {
+    "CR_REQUIRE_CROSS_MODEL": null,
+    "CR_FLOOR_FALLBACK": null,
+    "ARMAUTOMERGE": null
+  }
+}

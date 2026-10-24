@@ -331,7 +331,7 @@ _himmel_config_dir() {
 
 # One stderr line naming the keys (never their values) still read from .env.
 _himmel_deprecation_notice() {
-    printf 'himmel: DEPRECATED: %s read from .env, which is for secrets only. Move behaviour keys to ~/.himmel/himmel.conf and policy keys to ~/.himmel/config.json .policy (scripts/setup/migrate-env-config.sh, once setup reads those files). Until then .env keeps working.\n' "$*" >&2
+    printf 'himmel: DEPRECATED: %s read from .env, which is for secrets only. Move behaviour keys to ~/.himmel/himmel.conf and policy keys to ~/.himmel/config.json .policy: run scripts/setup/migrate-env-config.sh --dry-run. Until then .env keeps working.\n' "$*" >&2
 }
 
 # _himmel_policy_json <config.json> KEY... — print KEY=value for each key
