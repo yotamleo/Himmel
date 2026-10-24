@@ -16,7 +16,8 @@ run on a selected ref; the completed run's `headSha` names the exact commit it c
 There is no `push` trigger (HIMMEL-5113): per-merge runs on main
 cost about 2,300 runner hours on the green ones alone and competed with PR runs for the
 account's runner slots. The price is that a break on main surfaces up to a nominal 7 h
-later and spans every merge since the previous run; the sweep prints that range and the
+later (GitHub fires schedules late on this repo, so the real gap can reach about 11 to
+12 h) and spans every merge since the previous run; the sweep prints that range and the
 main-red issue names it.
 
 Because main is verified separately, a PR does **not** have to contain the current tip of
@@ -68,8 +69,11 @@ Quarantine is how a test-only red stops blocking the fleet without hiding.
   running and reports a failure as `[QUARANTINE]` without failing the run, in every tier
   mode: a PR, a schedule and a dispatch run alike. The shard-manifest
   verifier records its `ran rc!=0` line as a NOTE, never as passed coverage.
-- **A ticket is required.** The entry's trailing comment carries the ticket ID and the
-  reason. An entry without a ticket is a silent skip, which is not allowed.
+- **A ticket is required.** A quarantine entry's trailing comment carries the ticket ID
+  and the reason. A quarantine without a ticket is a silent skip, which is not allowed.
+  `SKIP_LIST` also holds standing skips that are not quarantines: suites that need a real
+  VM, a live `claude` or the hermes runtime. Their comment names what they need and
+  where they are covered instead (the VM e2e, a dedicated `ci.yml` job).
 - **Never silently.** A quarantined suite is "uncovered", never "CI verifies": a PR or
   handover that cites CI as evidence for a `SKIP_LIST` suite cites nothing.
   `bash scripts/handover/suite-coverage.sh <suite>...` answers per suite whether it runs

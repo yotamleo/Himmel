@@ -83,7 +83,8 @@ bump merges while the host still runs the old build.
   is pin-aware, refuses to bounce the proxy while a codex-lane client is actively
   connected, stages the swap with a rollback copy, and
   health-gates on `/v1/models`. A refused bounce is a correct safety refusal,
-  but it exits nonzero, so himmel-update reports the roll as failed — re-run when idle.
+  but it exits nonzero: himmel-update prints a `warn:` that the roll did not
+  complete and carries on, and `--only cli_proxy` exits nonzero — re-run when idle.
 - **installed-marketplaces catch-up** —
   `scripts/upstreams/update-marketplaces.sh` re-syncs the `mkt-manual`
   marketplaces (`autoUpdate` off) that nothing else updates. `himmel` is

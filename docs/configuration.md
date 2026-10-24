@@ -78,7 +78,7 @@ The step vocabulary and the AFK step set: **Initiative & autonomy** in
 | Setting | Scope · store | Takes effect | Verify | Reverse | Read by |
 |---|---|---|---|---|---|
 | Require a ticket ID in every commit subject (on by default) | machine · `TICKET_ID_REQUIRED=0` in `~/.himmel/himmel.conf` (older installs: the repo's `.env`), or a `TICKET_ID_REQUIRED=0 git commit …` prefix | next commit | a commit with no ticket reference is accepted | remove the line | `scripts/hooks/check-commit-msg.sh` |
-| Your own ticket ID shape | repo · `TICKET_ID_PATTERN=<extended regex>` in `.env` | next commit | a subject without a match is refused, one with a match passes | remove the line (back to `<KEY>-<number>`, or `#<number>` with no `JIRA_PROJECT_KEY`) | `scripts/hooks/check-commit-msg.sh` |
+| Your own ticket ID shape | machine · `TICKET_ID_PATTERN=<extended regex>` in `~/.himmel/himmel.conf` (older installs: the repo's `.env`) | next commit | a subject without a match is refused, one with a match passes | remove the line (back to `<KEY>-<number>`, or `#<number>` with no `JIRA_PROJECT_KEY`) | `scripts/hooks/check-commit-msg.sh` |
 | Ticket tracker: `jira`, `local` or `none` | repo · `git config himmel.tracker <tracker>` | next command that asks the resolver | `/himmel-doctor` row `C55-project-mode` | `git config --unset himmel.tracker` (back to detection) | `scripts/lib/project-mode.sh` |
 | Allow edits on the default branch in a single-writer repo | checkout · a `.single-writer` file at the repo root (gitignored) | next edit | an edit on `main` proceeds | delete the file | `scripts/hooks/block-edit-on-main.sh` |
 

@@ -106,8 +106,9 @@ the point.
 **Proving a macOS fix inside its PR: the `ci:macos` label.** A PR that fixes
 macOS code (or whose brief says macOS) gets the label before `READY`; the
 workflow then runs on the PR head when the label is added and on every later
-push, and both its jobs are skipped on a PR without the label (an unlabelled PR
-shows no macOS check at all, so the HIMMEL-3853 cost rule stands). A PR run
+push, and both its jobs are skipped on a PR without the label (after a push an unlabelled PR
+lists its two `macos-cadence` checks as skipped, which use no macOS runner, so
+the HIMMEL-3853 cost rule stands). A PR run
 never records breakages and never uploads `macos-breakage-record`: that record
 belongs to main's cadence runs.
 

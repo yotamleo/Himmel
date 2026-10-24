@@ -107,7 +107,7 @@ Where those plain hooks run, the commit-msg gate rejects a message with no
 ticket reference. When
 `JIRA_PROJECT_KEY` is unset it accepts `#<number>` (or `LOCAL-<number>`), as
 above. On a repository with no ticket convention, switch the requirement off with
-`TICKET_ID_REQUIRED=0 git commit …` (or set it in the repo's `.env`). On a repository with a branch-protected
+`TICKET_ID_REQUIRED=0 git commit …` (or set it in `~/.himmel/himmel.conf`, which applies to every project on this machine). On a repository with a branch-protected
 default branch, push the branch and merge it through a PR instead of the
 fast-forward. If the project has an `origin`, the worktree helper cuts new
 worktrees from `origin/main`, so the install commit must reach it first, and
@@ -134,10 +134,21 @@ merge gate, your hooks, your CI checks and the list itself. A change to one can
 switch a safety check off, so the agent that wrote it may not approve it. The
 list lives in `scripts/ci/ci-trust-paths.txt` on your default branch (the copy
 on a PR branch is never read); add any file that guards your project, such as
-deploy scripts or release config. Inside a Claude session, a PR touching a
-listed path needs a trust-reviewed GO, and a project that adopted himmel has no
-signer for that GO yet, so such a PR does not merge from a session: the
-operator merges it in the forge web UI or with a raw `gh pr merge`, which bypass `merge-on-green.sh`.
+deploy scripts or release config. You may add lines but never remove one that
+himmel's core list (`scripts/ci/ci-trust-paths-core.txt` in your himmel download)
+holds. A new list is seeded with every core line; an existing list is left as it
+is, so check that it holds them, because a PR touching a core path your list lacks
+is refused (`list core-missing <pattern>`).
+
+Inside a Claude session, a PR touching a listed path needs a trust-reviewed GO.
+Only a himmel chief signs one for your repo, and only once your repo is listed
+with `"merge_allowed": true` in `scripts/guardrails/himmel-adopted.json` on the
+default branch of the himmel repo your download tracks (it ships empty) and an
+independent judge has recorded its verdict on that head with
+`write-verdict.sh --repo <owner/name>`; the chief then runs
+`go.sh --repo <owner/name> --trust-reviewed <judge-qid> <pr> <head>`. Until then
+such a PR does not merge from a session: the operator merges it in the forge web
+UI or with a raw `gh pr merge`, which bypass `merge-on-green.sh`.
 
 These checks run only inside Claude sessions (the hooks) and in himmel's merge
 script (`merge-on-green.sh`) wherever it is run.
