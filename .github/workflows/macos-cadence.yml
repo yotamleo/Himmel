@@ -80,6 +80,30 @@ jobs:
         run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
       - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
         run: python -m pip install --disable-pip-version-check --require-hashes -r .github/ci-image/requirements-ci.txt
+      # The suites run `python3 -I` (no user site) and the runner's python3 is
+      # Homebrew's, which refuses pip installs (externally-managed). A venv first
+      # on PATH gives `python3` a PyYAML without touching the system interpreter.
+      - name: PyYAML for python3 (the coderabbit-yaml-carveouts suite)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/py3"
+          "$RUNNER_TEMP/py3/bin/python" -m pip install --disable-pip-version-check --require-hashes -r .github/ci-image/requirements-ci.txt
+          echo "$RUNNER_TEMP/py3/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/py3/bin/python" -I -c 'import yaml'
+      # The write-fence hooks parse commands with shfmt and refuse without it, so
+      # on a runner that lacks it every allow-row of those suites goes red. The
+      # SAME release ci.yml puts on Linux (HIMMEL-6548), darwin_arm64 build,
+      # sha256 from the release's own asset digest. Keep ver in lockstep with
+      # ci.yml and .github/ci-image/Dockerfile.
+      - name: Put pinned shfmt on PATH (bash-ast model rows)
+        run: |
+          ver=3.14.1
+          sha=b7c872db63553ccffc7253aba3ed7d4885a27d83f1ba567b1138c6315a5847e5
+          mkdir -p "$RUNNER_TEMP/shfmt-bin"
+          curl -sSfL "https://github.com/mvdan/sh/releases/download/v${ver}/shfmt_v${ver}_darwin_arm64" -o "$RUNNER_TEMP/shfmt-bin/shfmt"
+          echo "${sha}  $RUNNER_TEMP/shfmt-bin/shfmt" | shasum -a 256 -c -
+          chmod 755 "$RUNNER_TEMP/shfmt-bin/shfmt"
+          echo "$RUNNER_TEMP/shfmt-bin" >> "$GITHUB_PATH"
+          echo "HIMMEL_REQUIRE_SHFMT=1" >> "$GITHUB_ENV"
       # SUITE_TIER_MODE=all: the whole corpus, extended tier included -- the
       # coverage the nightly's macOS legs had.
       # A `suites` dispatch: the input reaches the shell through SUITES (never
